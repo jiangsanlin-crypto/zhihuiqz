@@ -19,6 +19,45 @@ export type Employer = {
   longitude: number | null;
 };
 
+export type PipelineCounts = {
+  applied: number;
+  contacted: number;
+  interview: number;
+  offered: number;
+  joined: number;
+  rejected: number;
+};
+
+export type EmployerApplication = {
+  id: number;
+  job_id: number;
+  job_title_km: string;
+  job_title_en: string;
+  job_title_zh: string;
+  candidate_user_id: number | null;
+  candidate_name: string;
+  phone: string;
+  location: string;
+  available_date: string;
+  cv_url: string | null;
+  status: string;
+};
+
+export type PipelineSummary = {
+  employer_id: number;
+  total_jobs: number;
+  target_headcount: number;
+  counts: PipelineCounts;
+  by_job: Array<{
+    job_id: number;
+    title_km: string;
+    title_en: string;
+    title_zh: string;
+    headcount: number;
+    counts: PipelineCounts;
+  }>;
+};
+
 export type JobResult = {
   id: number;
   employer_id: number;
@@ -140,4 +179,52 @@ export function searchNearbyJobs(latitude: number, longitude: number, radiusKm =
     limit: "50"
   });
   return request<JobResult[]>("/jobs?" + params.toString());
+}
+
+
+export function createJob(input: {
+  employer_id: number;
+  category: string;
+  title_km: string;
+  title_en: string;
+  title_zh: string;
+  location: string;
+  latitude: number | null;
+  longitude: number | null;
+  salary_min: number | null;
+  salary_max: number | null;
+  currency: string;
+  headcount: number;
+  job_type: string;
+  experience_required: boolean;
+  requires_cv: boolean;
+  benefits: string;
+  description: string;
+}) {
+  return request<JobResult>("/jobs", { method: "POST", body: JSON.stringify(input) }, true);
+}
+
+export function getEmployerJobs(employerId: number) {
+  return request<JobResult[]>("/employers/" + employerId + "/jobs", {}, true);
+}
+
+export function getEmployerApplications(employerId: number, status?: string) {
+  const suffix = status ? "?status=" + encodeURIComponent(status) : "";
+  return request<EmployerApplication[]>(
+    "/employers/" + employerId + "/applications" + suffix,
+    {},
+    true
+  );
+}
+
+export function getEmployerPipeline(employerId: number) {
+  return request<PipelineSummary>("/employers/" + employerId + "/pipeline", {}, true);
+}
+
+export function updateApplicationStatus(applicationId: number, status: string, note = "") {
+  return request(
+    "/applications/" + applicationId + "/status",
+    { method: "PATCH", body: JSON.stringify({ status, note }) },
+    true
+  );
 }
