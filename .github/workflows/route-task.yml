@@ -1,0 +1,19 @@
+name: Route Agent Task
+on:
+  issues:
+    types: [opened, reopened, edited, labeled]
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+permissions:
+  contents: read
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Relay event
+        env:
+          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
+        run: |
+          if [ -z "$ORCHESTRATOR_URL" ] || [ -z "$ORCHESTRATOR_TOKEN" ]; then exit 0; fi
+          curl --fail-with-body -sS -X POST "$ORCHESTRATOR_URL/github/events"             -H "Authorization: Bearer $ORCHESTRATOR_TOKEN"             -H "Content-Type: application/json"             -H "X-GitHub-Event: $GITHUB_EVENT_NAME"             -H "X-GitHub-Delivery: action-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"             --data-binary @"$GITHUB_EVENT_PATH"
