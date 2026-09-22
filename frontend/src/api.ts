@@ -113,7 +113,7 @@ export function submitEmployerVerification(
   employerId: number,
   input: { legal_name: string; registration_number: string; document_url: string }
 ) {
-  return request(
+  return request<{ id: number; employer_id: number; status: string; legal_name: string; registration_number: string; document_url: string; note: string }>(
     "/employers/" + employerId + "/verification",
     { method: "POST", body: JSON.stringify(input) },
     true
