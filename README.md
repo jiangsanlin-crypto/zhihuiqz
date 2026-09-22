@@ -1,6 +1,11 @@
 # zhihuiqz · GitHub Multi-Agent Orchestrator
 
-GitHub is the task bus. A persistent Orchestrator routes product/review work to WorkBuddy and an isolated Sandbox Runner; Codex implementation is executed by the official GitHub Action.
+GitHub is the task bus. The repository contains the orchestration layer for:
+
+- WorkBuddy Cloud Task -> product/specification + final product review
+- isolated Sandbox Runner -> deterministic PR QA
+- official Codex GitHub Action -> implementation
+- human-only merge to main
 
 ```text
 Issue -> WorkBuddy -> spec PR -> Sandbox -> Codex -> Sandbox -> WorkBuddy -> human merge
@@ -12,8 +17,9 @@ Safety defaults:
 - no real payment actions
 - no real candidate production data
 - no secrets committed to Git
+- WorkBuddy output is restricted to an explicit specification-file allowlist
 
-## Start the persistent services
+## Start persistent services
 
 ```bash
 cp .env.example .env
@@ -26,8 +32,4 @@ GitHub Actions Secrets:
 - ORCHESTRATOR_TOKEN
 - OPENAI_API_KEY
 
-Server-side integration:
-- WORKBUDDY_URL / WORKBUDDY_TOKEN
-- SANDBOX_TOKEN / SANDBOX_RUNNER_TOKEN
-
-The Sandbox Runner is included. WorkBuddy still requires a real callable API/CLI endpoint. Codex is handled by .github/workflows/codex-task.yml.
+Server configuration additionally requires GitHub and WorkBuddy credentials. See docs/DEPLOYMENT.md and docs/WORKBUDDY.md.
