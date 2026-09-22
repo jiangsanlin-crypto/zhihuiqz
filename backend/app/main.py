@@ -6,10 +6,10 @@ import secrets
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_db
+from .database import Base, DATABASE_URL, engine, get_db
 from .geo import haversine_km
 from .locations import DISTRICTS, PROVINCES, PROVINCE_CODES
 from .models import (
@@ -63,7 +63,8 @@ from .schemas import (
 )
 from .security import create_access_token, decode_access_token, hash_password, verify_password
 
-Base.metadata.create_all(bind=engine)
+if DATABASE_URL.startswith("sqlite"):
+    Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="KhmerHire AI API", version="0.2.0")
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
@@ -199,6 +200,12 @@ def parse_iso_datetime(value: str) -> datetime:
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "khmerhire-api", "version": "0.2.0"}
+
+
+@app.get("/ready")
+def ready(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    return {"status": "ready", "database": "ok"}
 
 
 @app.get("/categories")
