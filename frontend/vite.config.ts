@@ -11,7 +11,9 @@ export default defineConfig({
         employer: resolve(process.cwd(), "employer.html"),
         auth: resolve(process.cwd(), "auth.html"),
         nearby: resolve(process.cwd(), "nearby.html"),
-        employerOnboarding: resolve(process.cwd(), "employer-onboarding.html")
+        employerOnboarding: resolve(process.cwd(), "employer-onboarding.html"),
+        employerJob: resolve(process.cwd(), "employer-job.html"),
+        employerApplicants: resolve(process.cwd(), "employer-applicants.html")
       }
     }
   },
