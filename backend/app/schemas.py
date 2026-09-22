@@ -97,6 +97,12 @@ class JobCreate(BaseModel):
     experience_required: bool = False
     requires_cv: bool = False
     benefits: str = ""
+    benefit_codes: str = ""
+    shift: str = "day"
+    languages_required: str = ""
+    experience_level: str = "any"
+    province_code: str = ""
+    district_code: str = ""
     description: str = ""
 
 
@@ -171,3 +177,110 @@ class PipelineSummaryOut(BaseModel):
     target_headcount: int
     counts: PipelineCounts
     by_job: list[PipelineJobSummary]
+
+
+class EmployerInviteCreate(BaseModel):
+    phone: str = Field(min_length=6, max_length=40)
+    role: str = "hr"
+
+
+class EmployerInvitationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    employer_id: int
+    phone: str
+    role: str
+    token: str
+    status: str
+
+
+class EmployerMembershipOut(BaseModel):
+    id: int
+    employer_id: int
+    user_id: int
+    role: str
+    status: str
+    display_name: str
+    phone: str
+
+
+class InterviewCreate(BaseModel):
+    starts_at: str
+    location: str = ""
+    meeting_url: str = ""
+    note: str = ""
+
+
+class InterviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    application_id: int
+    scheduled_by_user_id: int
+    starts_at: str
+    location: str
+    meeting_url: str
+    note: str
+    status: str
+
+
+class MessageCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class MessageOut(BaseModel):
+    id: int
+    application_id: int
+    sender_user_id: int
+    sender_name: str
+    body: str
+    created_at: str
+
+
+class CandidateApplicationOut(BaseModel):
+    id: int
+    job_id: int
+    job_title_km: str
+    job_title_en: str
+    job_title_zh: str
+    employer_name: str
+    employer_verified: bool
+    status: str
+    location: str
+    available_date: str
+    latest_interview_at: str | None = None
+
+
+class MatchFactor(BaseModel):
+    name: str
+    score: float
+    detail: str
+
+
+class CandidateMatchOut(BaseModel):
+    candidate_user_id: int
+    candidate_name: str
+    score: float
+    factors: list[MatchFactor]
+
+
+class ModerationReportCreate(BaseModel):
+    target_type: str
+    target_id: int
+    reason: str
+    details: str = ""
+
+
+class ModerationReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    reporter_user_id: int | None
+    target_type: str
+    target_id: int
+    reason: str
+    details: str
+    status: str
+    resolution: str
+
+
+class ModerationResolve(BaseModel):
+    resolution: str = Field(min_length=2, max_length=1000)
