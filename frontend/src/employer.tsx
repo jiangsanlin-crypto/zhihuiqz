@@ -32,13 +32,9 @@ function EmployerDashboard(){
     (async()=>{
       try{
         const me=await getMe();
-        if(me.role!=="employer_admin" && me.role!=="platform_admin"){
-          window.location.href="/auth.html";
-          return;
-        }
         const employers=await getMyEmployers();
         if(!employers.length){
-          window.location.href="/employer-onboarding.html";
+          window.location.href=me.role==="employer_admin"||me.role==="platform_admin"?"/employer-onboarding.html":"/";
           return;
         }
         const current=employers[0];
@@ -87,6 +83,7 @@ function EmployerDashboard(){
       <section className="dashboardActions">
         <button onClick={()=>window.location.href=employer?.verified?"/employer-job.html":"/employer-onboarding.html"}>+ 发布职位</button>
         <button className="outline" onClick={()=>window.location.href="/employer-applicants.html"}>管理候选人</button>
+        <button className="outline" onClick={()=>window.location.href="/employer-team.html"}>HR 团队</button>
       </section>
 
       <section>
