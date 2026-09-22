@@ -6,11 +6,13 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from .adapters import HttpAgentAdapter
 from .config import settings
 from .github_client import GitHubClient
 from .models import AgentRunResult, Handoff
+from .readiness import all_ok, static_checks
 from .security import verify_bearer, verify_github_signature
 from .state_store import StateStore
 from .task_router import build, next_labels
@@ -268,7 +270,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="GitHub Multi-Agent Orchestrator",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -281,6 +283,40 @@ async def healthz():
         "github_writeback_configured": github.configured,
         "handoff_protocol": "1.0",
     }
+
+
+@app.get("/readyz")
+async def readyz():
+    checks = static_checks(settings)
+
+    workbuddy_health, sandbox_health = await asyncio.gather(
+        adapters["workbuddy"].health(),
+        adapters["sandbox"].health(),
+    )
+
+    checks["workbuddy_live"] = {
+        "ok": bool(workbuddy_health.get("ok"))
+        and bool(workbuddy_health.get("oauth_configured")),
+        "detail": {
+            key: value
+            for key, value in workbuddy_health.items()
+            if key not in {"token", "access_token", "refresh_token"}
+        },
+    }
+    checks["sandbox_live"] = {
+        "ok": bool(sandbox_health.get("ok")),
+        "detail": sandbox_health,
+    }
+
+    ready = all_ok(checks)
+    payload = {
+        "ok": ready,
+        "handoff_protocol": "1.0",
+        "checks": checks,
+    }
+    if ready:
+        return payload
+    return JSONResponse(status_code=503, content=payload)
 
 
 @app.post("/github/events", status_code=202)

@@ -15,6 +15,7 @@ COPY orchestrator ./orchestrator
 COPY agents ./agents
 COPY tasks ./tasks
 COPY docs ./docs
+COPY scripts ./scripts
 COPY tests ./tests
 
 RUN mkdir -p /app/data
