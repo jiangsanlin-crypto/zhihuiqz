@@ -26,7 +26,7 @@ def hash_password(password: str) -> str:
         raise ValueError("Password must be at least 8 characters")
     salt = os.urandom(16)
     digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
-    return f"scrypt$\{_b64encode(salt)}$\{_b64encode(digest)}"
+    return "scrypt$" + _b64encode(salt) + "$" + _b64encode(digest)
 
 
 def verify_password(password: str, encoded: str) -> bool:
@@ -48,9 +48,9 @@ def create_access_token(user_id: int, role: str) -> str:
     payload = {"sub": str(user_id), "role": role, "iat": now, "exp": now + TOKEN_TTL_SECONDS}
     header_part = _b64encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
     payload_part = _b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    signing_input = f"\{header_part}.\{payload_part}".encode("ascii")
+    signing_input = (header_part + "." + payload_part).encode("ascii")
     signature = hmac.new(TOKEN_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    return f"\{header_part}.\{payload_part}.\{_b64encode(signature)}"
+    return header_part + "." + payload_part + "." + _b64encode(signature)
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
@@ -61,7 +61,7 @@ def decode_access_token(token: str) -> dict[str, Any]:
     )
     try:
         header_part, payload_part, signature_part = token.split(".", 2)
-        signing_input = f"\{header_part}.\{payload_part}".encode("ascii")
+        signing_input = (header_part + "." + payload_part).encode("ascii")
         expected = hmac.new(TOKEN_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
         supplied = _b64decode(signature_part)
         if not hmac.compare_digest(expected, supplied):
