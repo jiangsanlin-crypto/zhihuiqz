@@ -2,7 +2,7 @@
 
 ## 1. Persistent host
 
-Deploy Orchestrator + Sandbox Runner on a persistent Linux VPS/private host.
+Deploy Orchestrator + WorkBuddy Runner + Sandbox Runner on a persistent Linux VPS/private host.
 
 ```bash
 git clone https://github.com/jiangsanlin-crypto/zhihuiqz.git
@@ -13,24 +13,27 @@ docker compose up -d --build
 curl http://127.0.0.1:8080/healthz
 ```
 
-Put HTTPS in front of port 8080 with Caddy/Nginx.
+Put HTTPS in front of port 8080 with Caddy/Nginx. The two runner ports remain private inside Docker.
 
 ## 2. Server environment
 
-Required:
+Required orchestration values:
 - GITHUB_REPOSITORY
-- GITHUB_TOKEN (fine-grained or GitHub App token)
+- GITHUB_TOKEN
 - ORCHESTRATOR_TOKEN
-- SANDBOX_TOKEN
-- SANDBOX_RUNNER_TOKEN
-
-Set SANDBOX_TOKEN and SANDBOX_RUNNER_TOKEN to the same long random value.
-
-WorkBuddy:
-- WORKBUDDY_URL
 - WORKBUDDY_TOKEN
+- SANDBOX_TOKEN
 
-If WorkBuddy has no callable API/runner, its tasks intentionally become blocked.
+WorkBuddy OAuth:
+- WORKBUDDY_CLIENT_ID
+- WORKBUDDY_CLIENT_SECRET
+- WORKBUDDY_REFRESH_TOKEN
+
+WorkBuddy app scopes:
+- user.task.invokable
+- user.task.readable
+
+The WorkBuddy runner refreshes access credentials server-side and can persist refreshed token state to /app/data/workbuddy_oauth.json.
 
 ## 3. GitHub Actions Secrets
 
@@ -39,7 +42,7 @@ Add:
 - ORCHESTRATOR_TOKEN
 - OPENAI_API_KEY
 
-Codex uses openai/codex-action@v1. The key is passed to the action input, not exported as a job-wide environment variable.
+Codex uses openai/codex-action@v1. The OpenAI key is provided only to the action input, not exported job-wide.
 
 ## 4. Labels
 
@@ -53,6 +56,6 @@ In GitHub Settings protect main:
 - disallow force pushes
 - do not permit agent bypass
 
-## 6. Production
+## 6. Production boundary
 
-No workflow in this repository deploys production. deploy-staging.yml is manually triggered and only publishes a staging container image.
+No workflow here deploys production. deploy-staging.yml is manual and only publishes a staging image.
