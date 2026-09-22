@@ -18,9 +18,21 @@ from .task_router import build, next_labels
 store = StateStore(settings.state_db)
 github = GitHubClient(settings.github_token)
 adapters = {
-    "workbuddy": HttpAgentAdapter("workbuddy", settings.workbuddy_url, settings.workbuddy_token),
-    "sandbox": HttpAgentAdapter("sandbox", settings.sandbox_url, settings.sandbox_token),
-    "codex": HttpAgentAdapter("codex", settings.codex_url, settings.codex_token),
+    "workbuddy": HttpAgentAdapter(
+        "workbuddy",
+        settings.workbuddy_url,
+        settings.workbuddy_token,
+    ),
+    "sandbox": HttpAgentAdapter(
+        "sandbox",
+        settings.sandbox_url,
+        settings.sandbox_token,
+    ),
+    "codex": HttpAgentAdapter(
+        "codex",
+        settings.codex_url,
+        settings.codex_token,
+    ),
 }
 
 
@@ -32,7 +44,9 @@ def default_target(req, status: str):
     if req.agent == "sandbox":
         labels = {
             item.get("name")
-            for item in ((req.payload.get("pull_request") or {}).get("labels") or [])
+            for item in (
+                (req.payload.get("pull_request") or {}).get("labels") or []
+            )
             if isinstance(item, dict)
         }
         return "workbuddy" if "needs:qa" in labels else "codex"
@@ -43,11 +57,17 @@ def default_target(req, status: str):
 
 def phase_for(req) -> str:
     if req.agent == "workbuddy":
-        return "specification" if req.source_kind == "issue" else "product_review"
+        return (
+            "specification"
+            if req.source_kind == "issue"
+            else "product_review"
+        )
     if req.agent == "sandbox":
         labels = {
             item.get("name")
-            for item in ((req.payload.get("pull_request") or {}).get("labels") or [])
+            for item in (
+                (req.payload.get("pull_request") or {}).get("labels") or []
+            )
             if isinstance(item, dict)
         }
         return "final_qa" if "needs:qa" in labels else "spec_qa"
@@ -61,6 +81,7 @@ def ensure_handoff(req, result: AgentRunResult) -> Handoff:
         handoff.source_ref = handoff.source_ref or req.source_ref
         handoff.source_sha = handoff.source_sha or req.source_sha
         return handoff
+
     return Handoff(
         task_id=req.task_id,
         from_agent=req.agent,
@@ -81,31 +102,43 @@ def handoff_comment(handoff: Handoff) -> str:
     data = handoff.model_dump()
     for check in data.get("checks", []):
         check["detail"] = str(check.get("detail") or "")[-2000:]
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
+
+    payload = json.dumps(
+        data,
+        ensure_ascii=False,
+        indent=2,
+    )
     return (
         "<!-- agent-handoff:v1 -->\n"
-        f"### Agent handoff: {handoff.from_agent} → {handoff.to_agent or 'none'}\n\n"
-        f"**Task:** \`{handoff.task_id}\`  \n"
-        f"**Phase:** \`{handoff.phase}\`  \n"
+        f"### Agent handoff: {handoff.from_agent} → "
+        f"{handoff.to_agent or 'none'}\n\n"
+        f"**Task:** `{handoff.task_id}`  \n"
+        f"**Phase:** `{handoff.phase}`  \n"
         f"**Status:** **{handoff.status}**\n\n"
         f"{handoff.summary}\n\n"
-        "\`\`\`json\n"
+        "```json\n"
         f"{payload}\n"
-        "\`\`\`"
+        "```"
     )
 
 
 async def process(event: dict) -> None:
-    routed = build(event["event_name"], event["payload"], settings.github_repository)
+    routed = build(
+        event["event_name"],
+        event["payload"],
+        settings.github_repository,
+    )
     if not routed:
         store.finish(event["delivery_id"], "ignored")
         return
 
     req, current_labels = routed
 
-    if settings.github_token:
+    if github.configured:
         running_labels = [
-            label for label in current_labels if not label.startswith("status:")
+            label
+            for label in current_labels
+            if not label.startswith("status:")
         ]
         running_labels.append("status:running")
         await github.set_labels(
@@ -124,14 +157,20 @@ async def process(event: dict) -> None:
         if not result.changes:
             result = AgentRunResult(
                 status="blocked",
-                summary="WorkBuddy returned success but no specification file changes were provided.",
+                summary=(
+                    "WorkBuddy returned success but no specification "
+                    "file changes were provided."
+                ),
                 artifacts=result.artifacts,
                 checks=result.checks,
             )
         elif not github.configured:
             result = AgentRunResult(
                 status="blocked",
-                summary="The orchestrator cannot create the specification PR because GitHub write-back is not configured.",
+                summary=(
+                    "The orchestrator cannot create the specification PR "
+                    "because GitHub write-back is not configured."
+                ),
                 artifacts=result.artifacts,
                 checks=result.checks,
                 changes=result.changes,
@@ -152,8 +191,12 @@ async def process(event: dict) -> None:
     handoff = ensure_handoff(req, result)
     message = handoff_comment(handoff)
 
-    if settings.github_token:
-        await github.comment(req.repository, req.source_number, message)
+    if github.configured:
+        await github.comment(
+            req.repository,
+            req.source_number,
+            message,
+        )
         await github.set_labels(
             req.repository,
             req.source_number,
@@ -175,7 +218,10 @@ async def process(event: dict) -> None:
             await github.comment(
                 req.repository,
                 result.pr_number,
-                f"Linked source issue: #{req.source_number}\n\n" + handoff_comment(handoff),
+                (
+                    f"Linked source issue: #{req.source_number}\n\n"
+                    + handoff_comment(handoff)
+                ),
             )
             await github.set_labels(
                 req.repository,
@@ -195,12 +241,17 @@ async def worker(stop: asyncio.Event) -> None:
         if not event:
             await asyncio.sleep(2)
             continue
+
         try:
             await process(event)
         except Exception as exc:
             store.finish(
                 event["delivery_id"],
-                "retry" if event["attempts"] < settings.max_retries else "failed",
+                (
+                    "retry"
+                    if event["attempts"] < settings.max_retries
+                    else "failed"
+                ),
                 str(exc),
             )
             await asyncio.sleep(2)
@@ -250,15 +301,25 @@ async def events(
         )
     )
     if not trusted:
-        raise HTTPException(401, "invalid webhook authentication")
+        raise HTTPException(
+            401,
+            "invalid webhook authentication",
+        )
 
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        raise HTTPException(400, "invalid JSON")
+        raise HTTPException(
+            400,
+            "invalid JSON",
+        )
 
     delivery_id = x_github_delivery or str(uuid.uuid4())
     return {
-        "queued": store.enqueue(delivery_id, x_github_event or "unknown", payload),
+        "queued": store.enqueue(
+            delivery_id,
+            x_github_event or "unknown",
+            payload,
+        ),
         "delivery_id": delivery_id,
     }
