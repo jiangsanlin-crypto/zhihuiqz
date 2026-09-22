@@ -27,31 +27,54 @@ jobs:
       - name: Mark Codex running
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh label create "status:running" --repo "${{ github.repository }}" --color FBCA04 --force
-          gh pr edit "${{ github.event.pull_request.number }}"             --repo "${{ github.repository }}"             --remove-label "status:todo" || true
-          gh pr edit "${{ github.event.pull_request.number }}"             --repo "${{ github.repository }}"             --add-label "status:running"
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --remove-label "status:todo" || true
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "status:running"
+
+      - name: Collect prior agent handoffs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+            --paginate \
+            --jq '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body' \
+            > "${{ runner.temp }}/handoffs.md"
 
       - name: Build safe Codex task prompt
         env:
           PROMPT_TEMPLATE: .github/codex/prompts/implement.md
         run: |
           python - <<'PY'
-          import json, os
+          import json
+          import os
           from pathlib import Path
-          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          pr=event["pull_request"]
-          template=Path(os.environ["PROMPT_TEMPLATE"]).read_text()
-          task=template + "\n\n## Pull request context\n" + \
-               f"PR #{pr['number']}: {pr['title']}\n\n" + \
-               (pr.get("body") or "")
-          out=Path(os.environ["RUNNER_TEMP"])/"codex-task.md"
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event["pull_request"]
+          template = Path(os.environ["PROMPT_TEMPLATE"]).read_text()
+          handoff_path = Path(os.environ["RUNNER_TEMP"]) / "handoffs.md"
+          handoffs = handoff_path.read_text() if handoff_path.exists() else ""
+
+          task = (
+              template
+              + "\n\n## Pull request context\n"
+              + f"PR #{pr['number']}: {pr['title']}\n\n"
+              + (pr.get("body") or "")
+              + "\n\n## Prior agent handoffs\n"
+              + (handoffs or "No handoff comments found.")
+          )
+
+          out = Path(os.environ["RUNNER_TEMP"]) / "codex-task.md"
           out.write_text(task)
           print(out)
           PY
 
       - name: Run Codex
         id: codex
+        continue-on-error: true
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -59,44 +82,155 @@ jobs:
           output-file: ${{ runner.temp }}/codex-output.md
           sandbox: workspace-write
 
-      - name: Check changes
+      - name: Block when Codex execution fails
+        if: steps.codex.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create "status:blocked" --repo "${{ github.repository }}" --color B60205 --force
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --remove-label "agent:codex" \
+            --remove-label "status:running" \
+            --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --body "Codex execution failed. The task is blocked and was not handed to QA."
+          exit 1
+
+      - name: Record changed files
+        if: steps.codex.outcome == 'success'
         id: changed
         run: |
-          if git diff --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          else
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | sed '/^$/d' | sort -u > "${{ runner.temp }}/changed-files.txt"
+
+          if [ -s "${{ runner.temp }}/changed-files.txt" ]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Block if Codex produced no changes
-        if: steps.changed.outputs.value != 'true'
+        if: steps.codex.outcome == 'success' && steps.changed.outputs.value != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh label create "status:blocked" --repo "${{ github.repository }}" --color B60205 --force
-          gh pr edit "${{ github.event.pull_request.number }}"             --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "status:running"             --add-label "status:blocked"
-          gh pr comment "${{ github.event.pull_request.number }}"             --repo "${{ github.repository }}"             --body "Codex completed without repository changes. Manual review is required."
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --remove-label "agent:codex" \
+            --remove-label "status:running" \
+            --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --body "Codex completed without repository changes. Manual review is required."
           exit 1
 
       - name: Commit and push Codex changes
-        if: steps.changed.outputs.value == 'true'
+        if: steps.codex.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh auth setup-git
           git config user.name "codex-agent"
           git config user.email "codex-agent@users.noreply.github.com"
           git add -A
-          git commit -m "feat: Codex implementation for PR #${{ github.event.pull_request.number }}"
+          git commit -m "feat: Codex implementation for PR #$PR_NUMBER"
           git push origin "HEAD:$HEAD_REF"
 
-      - name: Hand off to final sandbox QA
-        if: steps.changed.outputs.value == 'true'
+      - name: Publish Codex handoff
+        if: steps.codex.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event["pull_request"]
+          body = pr.get("body") or ""
+          match = re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
+          task_id = match.group(1) if match else f"GH-PULL_REQUEST-{pr['number']}"
+
+          changed_path = Path(os.environ["RUNNER_TEMP"]) / "changed-files.txt"
+          artifacts = [
+              line.strip()
+              for line in changed_path.read_text().splitlines()
+              if line.strip()
+          ]
+          output_path = Path(os.environ["RUNNER_TEMP"]) / "codex-output.md"
+          summary = (
+              output_path.read_text(errors="replace")[-4000:]
+              if output_path.exists()
+              else "Codex implementation completed."
+          )
+          sha = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"],
+              text=True,
+          ).strip()
+
+          handoff = {
+              "version": "1.0",
+              "task_id": task_id,
+              "from_agent": "codex",
+              "to_agent": "sandbox",
+              "phase": "implementation",
+              "status": "success",
+              "summary": summary,
+              "artifacts": artifacts,
+              "checks": [
+                  {
+                      "name": "codex_action",
+                      "status": "passed",
+                      "detail": "Codex action completed and changes were committed."
+                  }
+              ],
+              "blockers": [],
+              "source_ref": os.environ["HEAD_REF"],
+              "source_sha": sha,
+              "pr_number": int(os.environ["PR_NUMBER"])
+          }
+
+          comment = (
+              "<!-- agent-handoff:v1 -->\n"
+              "### Agent handoff: codex → sandbox\n\n"
+              f"**Task:** `{task_id}`  \n"
+              "**Phase:** `implementation`  \n"
+              "**Status:** **success**\n\n"
+              + summary
+              + "\n\n```json\n"
+              + json.dumps(handoff, ensure_ascii=False, indent=2)
+              + "\n```\n"
+          )
+          out = Path(os.environ["RUNNER_TEMP"]) / "codex-handoff.md"
+          out.write_text(comment)
+          PY
+
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --body-file "${{ runner.temp }}/codex-handoff.md"
+
+      - name: Hand off to final Sandbox QA
+        if: steps.codex.outcome == 'success' && steps.changed.outputs.value == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh label create "agent:sandbox" --repo "${{ github.repository }}" --color 1D76DB --force
           gh label create "needs:qa" --repo "${{ github.repository }}" --color BFDADC --force
           gh label create "status:todo" --repo "${{ github.repository }}" --color D4C5F9 --force
-          gh pr edit "${{ github.event.pull_request.number }}"             --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "status:running"             --add-label "needs:qa"             --add-label "agent:sandbox"             --add-label "status:todo"
+
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --remove-label "agent:codex" \
+            --remove-label "status:running" \
+            --add-label "needs:qa" \
+            --add-label "agent:sandbox" \
+            --add-label "status:todo"
