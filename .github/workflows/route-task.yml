@@ -1,19 +1,31 @@
-name: Route Agent Task
+name: Route WorkBuddy and Sandbox Tasks
+
 on:
   issues:
-    types: [opened, reopened, edited, labeled]
+    types: [labeled]
   pull_request:
-    types: [opened, reopened, synchronize, labeled]
+    types: [labeled, synchronize]
+
 permissions:
   contents: read
+
 jobs:
   route:
+    if: >
+      (github.event_name == 'issues' &&
+       contains(github.event.issue.labels.*.name, 'agent:workbuddy')) ||
+      (github.event_name == 'pull_request' &&
+       (contains(github.event.pull_request.labels.*.name, 'agent:workbuddy') ||
+        contains(github.event.pull_request.labels.*.name, 'agent:sandbox')))
     runs-on: ubuntu-latest
     steps:
-      - name: Relay event
+      - name: Relay event to orchestrator
         env:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
           ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
         run: |
-          if [ -z "$ORCHESTRATOR_URL" ] || [ -z "$ORCHESTRATOR_TOKEN" ]; then exit 0; fi
+          if [ -z "$ORCHESTRATOR_URL" ] || [ -z "$ORCHESTRATOR_TOKEN" ]; then
+            echo "Orchestrator secrets are not configured; skipping."
+            exit 0
+          fi
           curl --fail-with-body -sS -X POST "$ORCHESTRATOR_URL/github/events"             -H "Authorization: Bearer $ORCHESTRATOR_TOKEN"             -H "Content-Type: application/json"             -H "X-GitHub-Event: $GITHUB_EVENT_NAME"             -H "X-GitHub-Delivery: action-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"             --data-binary @"$GITHUB_EVENT_PATH"

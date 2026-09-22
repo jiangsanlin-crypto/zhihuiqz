@@ -2,6 +2,32 @@ services:
   orchestrator:
     build: .
     restart: unless-stopped
-    env_file: [.env]
-    ports: ["8080:8080"]
-    volumes: ["./data:/app/data"]
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - sandbox-runner
+
+  sandbox-runner:
+    build: .
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - orchestrator.sandbox_runner:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8092"
+    env_file:
+      - .env
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,exec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256

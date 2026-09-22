@@ -1,23 +1,33 @@
 # zhihuiqz · GitHub Multi-Agent Orchestrator
 
-GitHub 作为任务总线，Orchestrator 负责把 Issue/PR 路由到 WorkBuddy、Sandbox/QA、Codex Runner。
+GitHub is the task bus. A persistent Orchestrator routes product/review work to WorkBuddy and an isolated Sandbox Runner; Codex implementation is executed by the official GitHub Action.
 
-安全默认值：
-- 不自动合并 main
-- 不自动生产部署
-- 不接真实支付
-- 不写真实求职者生产数据
-- 密钥仅来自环境变量 / GitHub Secrets
+```text
+Issue -> WorkBuddy -> spec PR -> Sandbox -> Codex -> Sandbox -> WorkBuddy -> human merge
+```
 
-启动：
+Safety defaults:
+- no automatic merge to main
+- no production deployment
+- no real payment actions
+- no real candidate production data
+- no secrets committed to Git
+
+## Start the persistent services
+
 ```bash
 cp .env.example .env
 docker compose up -d --build
 curl http://localhost:8080/healthz
 ```
 
-GitHub Secrets：
+GitHub Actions Secrets:
 - ORCHESTRATOR_URL
 - ORCHESTRATOR_TOKEN
+- OPENAI_API_KEY
 
-服务器环境变量见 .env.example。
+Server-side integration:
+- WORKBUDDY_URL / WORKBUDDY_TOKEN
+- SANDBOX_TOKEN / SANDBOX_RUNNER_TOKEN
+
+The Sandbox Runner is included. WorkBuddy still requires a real callable API/CLI endpoint. Codex is handled by .github/workflows/codex-task.yml.
