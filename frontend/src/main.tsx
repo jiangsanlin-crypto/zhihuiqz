@@ -215,7 +215,7 @@ function App() {
             <Search size={20}/>
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.search}/>
           </div>
-          <button className="locationChip"><MapPin size={17}/> {t.location}: Phnom Penh <ChevronRight size={16}/></button>
+          <button className="locationChip" onClick={() => window.location.href = "/nearby.html"}><MapPin size={17}/> {t.location}: Phnom Penh <ChevronRight size={16}/></button>
           <div className="filterChips">
             {t.quick.map((label) => <button key={label}>{label}</button>)}
           </div>
@@ -280,10 +280,10 @@ function App() {
 
       <nav className="bottomNav">
         <button className="active"><Home/><span>{t.navHome}</span></button>
-        <button><MapPin/><span>{t.navNearby}</span></button>
+        <button onClick={() => window.location.href = "/nearby.html"}><MapPin/><span>{t.navNearby}</span></button>
         <button><MessageCircle/><span>{t.navChat}</span></button>
         <button><Building2/><span>{t.navApps}</span></button>
-        <button><UserRound/><span>{t.navMe}</span></button>
+        <button onClick={() => window.location.href = "/auth.html"}><UserRound/><span>{t.navMe}</span></button>
       </nav>
     </div>
   );
