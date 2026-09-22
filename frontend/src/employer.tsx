@@ -1,82 +1,134 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Building2, CheckCircle2, Clock3, MapPin, MessageCircle, Search, UsersRound } from "lucide-react";
+import { Building2, CheckCircle2, MapPin, UsersRound } from "lucide-react";
+import {
+  Employer,
+  EmployerApplication,
+  PipelineSummary,
+  getEmployerApplications,
+  getEmployerPipeline,
+  getMe,
+  getMyEmployers
+} from "./api";
 import "./styles.css";
 import "./employer.css";
 
-const metrics = [
-  ["本月招聘目标", "500", "人"],
-  ["已报名", "863", "人"],
-  ["待联系", "286", "人"],
-  ["已面试", "175", "人"],
-  ["已录用", "118", "人"],
-  ["已到岗", "96", "人"]
-];
-
-const roles = [
-  { title:"缝纫工", target:200, joined:68 },
-  { title:"普工", target:200, joined:20 },
-  { title:"质检员", target:50, joined:8 }
-];
-
-const candidates = [
-  { name:"Sok Dara", role:"Full-line sewing worker", distance:"4.3 km", exp:"制衣厂 2年", available:"立即", score:94 },
-  { name:"Chan Srey", role:"QC / Production", distance:"6.1 km", exp:"电子厂 1年", available:"明天", score:91 },
-  { name:"Vannak", role:"General worker", distance:"2.8 km", exp:"无需经验", available:"立即", score:89 }
-];
+const emptyPipeline: PipelineSummary = {
+  employer_id: 0,
+  total_jobs: 0,
+  target_headcount: 0,
+  counts: { applied:0, contacted:0, interview:0, offered:0, joined:0, rejected:0 },
+  by_job: []
+};
 
 function EmployerDashboard(){
+  const [employer,setEmployer]=useState<Employer|null>(null);
+  const [pipeline,setPipeline]=useState<PipelineSummary>(emptyPipeline);
+  const [recent,setRecent]=useState<EmployerApplication[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState("");
+
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const me=await getMe();
+        if(me.role!=="employer_admin" && me.role!=="platform_admin"){
+          window.location.href="/auth.html";
+          return;
+        }
+        const employers=await getMyEmployers();
+        if(!employers.length){
+          window.location.href="/employer-onboarding.html";
+          return;
+        }
+        const current=employers[0];
+        setEmployer(current);
+        const [p,a]=await Promise.all([
+          getEmployerPipeline(current.id),
+          getEmployerApplications(current.id)
+        ]);
+        setPipeline(p);
+        setRecent(a.slice(0,3));
+      }catch(e){
+        setError(e instanceof Error?e.message:"加载失败");
+      }finally{
+        setLoading(false);
+      }
+    })();
+  },[]);
+
+  const metrics=useMemo(()=>[
+    ["招聘目标",pipeline.target_headcount,"人"],
+    ["已报名",pipeline.counts.applied,"人"],
+    ["已联系",pipeline.counts.contacted,"人"],
+    ["已面试",pipeline.counts.interview,"人"],
+    ["已录用",pipeline.counts.offered,"人"],
+    ["已到岗",pipeline.counts.joined,"人"]
+  ],[pipeline]);
+
+  if(loading) return <div className="loadingScreen">KhmerHire AI...</div>;
+
   return <div className="employerApp">
     <header className="employerTop">
-      <div><small>KhmerHire AI</small><h1>Factory Recruitment</h1></div>
-      <button className="employerSwitch">中文 / EN / ខ្មែរ</button>
+      <div><small>KhmerHire AI</small><h1>招聘中心</h1></div>
+      <button className="employerSwitch" onClick={()=>window.location.href="/employer-onboarding.html"}>企业设置</button>
     </header>
 
     <main className="employerMain">
-      <section className="factoryHero">
+      {error && <div className="dashboardError">{error}</div>}
+      {employer && <section className="factoryHero">
         <div className="factoryHeroIcon"><Building2/></div>
-        <div><h2>ABC Garment Factory</h2><p><MapPin size={14}/> Phnom Penh · 已认证工厂</p></div>
-        <span className="factoryVerified"><CheckCircle2 size={15}/> Verified</span>
+        <div><h2>{employer.name}</h2><p><MapPin size={14}/> {employer.location}</p></div>
+        <span className={employer.verified?"factoryVerified":"factoryPending"}>
+          {employer.verified?<><CheckCircle2 size={15}/> 已认证</>:"待认证"}
+        </span>
+      </section>}
+
+      <section className="dashboardActions">
+        <button onClick={()=>window.location.href=employer?.verified?"/employer-job.html":"/employer-onboarding.html"}>+ 发布职位</button>
+        <button className="outline" onClick={()=>window.location.href="/employer-applicants.html"}>管理候选人</button>
       </section>
 
       <section>
-        <div className="employerSectionTitle"><h2>招聘总览</h2><span>September 2026</span></div>
+        <div className="employerSectionTitle"><h2>招聘总览</h2><span>{pipeline.total_jobs} 个职位</span></div>
         <div className="metricGrid">
-          {metrics.map(([label,value,unit],i)=><article key={label} className={i===0?"metricCard metricPrimary":"metricCard"}>
+          {metrics.map(([label,value,unit],i)=><article key={String(label)} className={i===0?"metricCard metricPrimary":"metricCard"}>
             <small>{label}</small><strong>{value}</strong><span>{unit}</span>
           </article>)}
         </div>
       </section>
 
       <section>
-        <div className="employerSectionTitle"><h2>岗位进度</h2><button>+ 发布岗位</button></div>
+        <div className="employerSectionTitle"><h2>岗位进度</h2><button onClick={()=>window.location.href="/employer-job.html"}>+ 新职位</button></div>
         <div className="roleList">
-          {roles.map(r=>{
-            const pct=Math.round(r.joined/r.target*100);
-            return <article className="roleCard" key={r.title}>
-              <div className="roleTop"><strong>{r.title}</strong><span>{r.joined}/{r.target} 已到岗</span></div>
+          {!pipeline.by_job.length && <div className="emptyState">还没有发布职位</div>}
+          {pipeline.by_job.map(r=>{
+            const joined=r.counts.joined;
+            const pct=r.headcount?Math.min(100,Math.round(joined/r.headcount*100)):0;
+            return <article className="roleCard" key={r.job_id}>
+              <div className="roleTop"><strong>{r.title_zh||r.title_en||r.title_km}</strong><span>{joined}/{r.headcount} 已到岗</span></div>
               <div className="progress"><i style={{width:pct+"%"}}/></div>
-              <small>完成 {pct}%</small>
+              <small>报名 {r.counts.applied} · 联系 {r.counts.contacted} · 面试 {r.counts.interview} · 录用 {r.counts.offered}</small>
             </article>
           })}
         </div>
       </section>
 
       <section>
-        <div className="employerSectionTitle"><h2>AI 推荐候选人</h2><button className="ghostBtn"><Search size={15}/>筛选</button></div>
+        <div className="employerSectionTitle"><h2>最新报名</h2><button onClick={()=>window.location.href="/employer-applicants.html"}>查看全部</button></div>
         <div className="candidateList">
-          {candidates.map(c=><article className="candidateCard" key={c.name}>
+          {!recent.length && <div className="emptyState">暂时还没有求职者报名</div>}
+          {recent.map(c=><article className="candidateCard" key={c.id}>
             <div className="candidateAvatar"><UsersRound/></div>
             <div className="candidateInfo">
-              <div className="candidateName"><strong>{c.name}</strong><b>{c.score}% 匹配</b></div>
-              <p>{c.role}</p>
+              <div className="candidateName"><strong>{c.candidate_name}</strong><b>{c.status}</b></div>
+              <p>{c.job_title_zh||c.job_title_en}</p>
               <div className="candidateMeta">
-                <span><MapPin size={13}/>{c.distance}</span>
-                <span>{c.exp}</span>
-                <span><Clock3 size={13}/>{c.available}可上班</span>
+                <span>{c.location||"未填写地区"}</span>
+                <span>{c.available_date||"到岗时间未填"}</span>
+                <span>{c.phone}</span>
               </div>
             </div>
-            <button className="messageBtn"><MessageCircle size={17}/></button>
           </article>)}
         </div>
       </section>
