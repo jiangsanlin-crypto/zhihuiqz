@@ -57,8 +57,7 @@ def build(event, payload, repo):
     if not obj or not isinstance(payload.get("number"), int):
         return None
 
-    action = payload.get("action")
-    if action != "labeled":
+    if payload.get("action") != "labeled":
         return None
 
     labels = label_names(obj.get("labels"))
@@ -85,7 +84,7 @@ def build(event, payload, repo):
         source_kind=kind,
         source_number=number,
         event_name=event,
-        action=action,
+        action="labeled",
         prompt_path=f"agents/{agent}_prompt.md",
         source_ref=head.get("ref") if kind == "pull_request" else None,
         source_sha=head.get("sha") if kind == "pull_request" else None,
@@ -98,7 +97,17 @@ def next_labels(agent, kind, current, status, explicit):
     keep = [label for label in current if label not in WORKFLOW_LABELS]
 
     if status != "success":
-        return sorted(set(keep + [f"agent:{agent}", "status:blocked"]))
+        retry_context = []
+        if agent == "sandbox" and kind == "pull_request" and "needs:qa" in current:
+            retry_context.append("needs:qa")
+        return sorted(
+            set(
+                keep
+                + retry_context
+                + [f"agent:{agent}", "status:blocked"]
+            )
+        )
+
     if explicit:
         return sorted(set(keep + explicit))
 
