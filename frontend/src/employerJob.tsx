@@ -1,7 +1,7 @@
 import React, { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ArrowLeft, LocateFixed } from "lucide-react";
-import { Employer, createJob, getMe, getMyEmployers } from "./api";
+import { Employer, createJob, getDistricts, getMe, getMyEmployers, getProvinces } from "./api";
 import "./portal.css";
 
 const categories = [
@@ -26,6 +26,14 @@ function EmployerJobPage(){
   const [salaryMax,setSalaryMax]=useState("");
   const [headcount,setHeadcount]=useState("1");
   const [benefits,setBenefits]=useState("");
+  const [benefitCodes,setBenefitCodes]=useState<string[]>([]);
+  const [shift,setShift]=useState("day");
+  const [languagesRequired,setLanguagesRequired]=useState("");
+  const [experienceLevel,setExperienceLevel]=useState("any");
+  const [provinceCode,setProvinceCode]=useState("phnom_penh");
+  const [districtCode,setDistrictCode]=useState("");
+  const [provinces,setProvinces]=useState<Array<{code:string;km:string;en:string;zh:string}>>([]);
+  const [districts,setDistricts]=useState<Array<{code:string;en:string;zh:string}>>([]);
   const [description,setDescription]=useState("");
   const [requiresCv,setRequiresCv]=useState(false);
 
@@ -33,20 +41,33 @@ function EmployerJobPage(){
     (async()=>{
       try{
         const me=await getMe();
-        if(me.role!=="employer_admin" && me.role!=="platform_admin") throw new Error("unauthorized");
         const employers=await getMyEmployers();
         const current=employers[0];
-        if(!current){window.location.href="/employer-onboarding.html";return;}
+        if(!current){window.location.href=me.role==="employer_admin"||me.role==="platform_admin"?"/employer-onboarding.html":"/";return;}
         if(!current.verified){window.location.href="/employer-onboarding.html";return;}
         setEmployer(current);
         setLocation(current.location||"Phnom Penh");
         setLat(current.latitude);
         setLon(current.longitude);
+        const provinceRows=await getProvinces();
+        setProvinces(provinceRows);
+        const districtRows=await getDistricts("phnom_penh");
+        setDistricts(districtRows);
       }catch{
         window.location.href="/auth.html";
       }
     })();
   },[]);
+
+  async function changeProvince(code:string){
+    setProvinceCode(code);
+    setDistrictCode("");
+    try{setDistricts(await getDistricts(code));}catch{setDistricts([]);}
+  }
+
+  function toggleBenefit(code:string){
+    setBenefitCodes(current=>current.includes(code)?current.filter(x=>x!==code):[...current,code]);
+  }
 
   function locate(){
     if(!navigator.geolocation){setMessage("当前浏览器不支持定位");return;}
@@ -80,6 +101,12 @@ function EmployerJobPage(){
         experience_required:false,
         requires_cv:requiresCv,
         benefits,
+        benefit_codes:benefitCodes.join(","),
+        shift,
+        languages_required:languagesRequired,
+        experience_level:experienceLevel,
+        province_code:provinceCode,
+        district_code:districtCode,
         description
       });
       window.location.href="/employer.html";
@@ -100,6 +127,15 @@ function EmployerJobPage(){
         <label>高棉语职位名<input value={titleKm} onChange={(e)=>setTitleKm(e.target.value)} placeholder="可填写高棉语"/></label>
         <label>英文职位名<input value={titleEn} onChange={(e)=>setTitleEn(e.target.value)} placeholder="General Worker"/></label>
         <label>中文职位名<input value={titleZh} onChange={(e)=>setTitleZh(e.target.value)} required placeholder="普工"/></label>
+        <div className="twoCol">
+          <label>省 / 市<select value={provinceCode} onChange={(e)=>changeProvince(e.target.value)}>
+            {provinces.map(p=><option key={p.code} value={p.code}>{p.zh} / {p.en}</option>)}
+          </select></label>
+          <label>区 / 县<select value={districtCode} onChange={(e)=>setDistrictCode(e.target.value)}>
+            <option value="">不指定</option>
+            {districts.map(d=><option key={d.code} value={d.code}>{d.zh} / {d.en}</option>)}
+          </select></label>
+        </div>
         <label>工作地点<input value={location} onChange={(e)=>setLocation(e.target.value)} required/></label>
         <button type="button" className="secondaryWide" onClick={locate}><LocateFixed/> 使用当前位置作为工作地点</button>
         <div className="twoCol">
@@ -107,7 +143,21 @@ function EmployerJobPage(){
           <label>最高工资 USD<input value={salaryMax} onChange={(e)=>setSalaryMax(e.target.value)} inputMode="decimal"/></label>
         </div>
         <label>招聘人数<input value={headcount} onChange={(e)=>setHeadcount(e.target.value)} inputMode="numeric"/></label>
-        <label>福利<input value={benefits} onChange={(e)=>setBenefits(e.target.value)} placeholder="工作餐, 厂车, NSSF, 住宿"/></label>
+        <div className="twoCol">
+          <label>班次<select value={shift} onChange={(e)=>setShift(e.target.value)}>
+            <option value="day">白班</option><option value="night">夜班</option><option value="rotating">轮班</option><option value="flexible">灵活</option>
+          </select></label>
+          <label>经验<select value={experienceLevel} onChange={(e)=>setExperienceLevel(e.target.value)}>
+            <option value="any">不限</option><option value="entry">可无经验</option><option value="experienced">需要经验</option><option value="senior">资深</option>
+          </select></label>
+        </div>
+        <label>语言要求<input value={languagesRequired} onChange={(e)=>setLanguagesRequired(e.target.value)} placeholder="km,en,zh"/></label>
+        <label>福利说明<input value={benefits} onChange={(e)=>setBenefits(e.target.value)} placeholder="工作餐, 厂车, NSSF, 住宿"/></label>
+        <div className="benefitPicker">
+          {[["meal","工作餐"],["bus","厂车"],["nssf","NSSF"],["dorm","住宿"],["ot","加班费"]].map(([code,label])=>
+            <button type="button" key={code} className={benefitCodes.includes(code)?"active":""} onClick={()=>toggleBenefit(code)}>{label}</button>
+          )}
+        </div>
         <label>职位说明<textarea value={description} onChange={(e)=>setDescription(e.target.value)} rows={4} placeholder="简单说明工作内容和要求"/></label>
         <label className="checkRow"><input type="checkbox" checked={requiresCv} onChange={(e)=>setRequiresCv(e.target.checked)}/> 此岗位必须上传简历/作品集</label>
         {message&&<div className="infoBox">{message}</div>}
