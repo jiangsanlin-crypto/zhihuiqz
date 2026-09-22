@@ -22,10 +22,17 @@ services:
       - 0.0.0.0
       - --port
       - "8091"
-    env_file:
-      - .env
     environment:
       WORKBUDDY_RUNNER_TOKEN: ${WORKBUDDY_TOKEN}
+      WORKBUDDY_ALLOWED_REPO: ${WORKBUDDY_ALLOWED_REPO}
+      WORKBUDDY_API_BASE: ${WORKBUDDY_API_BASE}
+      WORKBUDDY_CLIENT_ID: ${WORKBUDDY_CLIENT_ID}
+      WORKBUDDY_CLIENT_SECRET: ${WORKBUDDY_CLIENT_SECRET}
+      WORKBUDDY_REFRESH_TOKEN: ${WORKBUDDY_REFRESH_TOKEN}
+      WORKBUDDY_ACCESS_TOKEN: ${WORKBUDDY_ACCESS_TOKEN}
+      WORKBUDDY_TOKEN_FILE: /app/data/workbuddy_oauth.json
+      WORKBUDDY_TIMEOUT_SECONDS: ${WORKBUDDY_TIMEOUT_SECONDS}
+      WORKBUDDY_POLL_SECONDS: ${WORKBUDDY_POLL_SECONDS}
     read_only: true
     volumes:
       - ./data:/app/data
@@ -47,10 +54,11 @@ services:
       - 0.0.0.0
       - --port
       - "8092"
-    env_file:
-      - .env
     environment:
       SANDBOX_RUNNER_TOKEN: ${SANDBOX_TOKEN}
+      SANDBOX_ALLOWED_REPO: ${SANDBOX_ALLOWED_REPO}
+      SANDBOX_TIMEOUT_SECONDS: ${SANDBOX_TIMEOUT_SECONDS}
+      SANDBOX_WORK_ROOT: /tmp/sandbox-work
     read_only: true
     tmpfs:
       - /tmp:size=512m,exec
