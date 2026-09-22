@@ -76,6 +76,12 @@ export type JobResult = {
   experience_required: boolean;
   requires_cv: boolean;
   benefits: string;
+  benefit_codes: string;
+  shift: string;
+  languages_required: string;
+  experience_level: string;
+  province_code: string;
+  district_code: string;
   description: string;
   status: string;
   distance_km: number | null;
@@ -199,6 +205,12 @@ export function createJob(input: {
   experience_required: boolean;
   requires_cv: boolean;
   benefits: string;
+  benefit_codes: string;
+  shift: string;
+  languages_required: string;
+  experience_level: string;
+  province_code: string;
+  district_code: string;
   description: string;
 }) {
   return request<JobResult>("/jobs", { method: "POST", body: JSON.stringify(input) }, true);
