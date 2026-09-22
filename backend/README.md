@@ -31,6 +31,11 @@ FastAPI backend for the Cambodia mass-market recruitment MVP.
 - Verified-employer indicator in job results
 - Fast application without login for mass-market roles
 - Optional CV/portfolio requirement for professional roles
+- Employer job list and applicant list
+- Recruitment funnel summary by employer and job
+- Controlled applicant transitions: applied → contacted → interview → offered → joined
+- Rejection path from active stages
+- Application transition audit events
 
 ## Local run
 
@@ -87,14 +92,17 @@ python scripts/create_admin.py
 5. Approved employer publishes jobs with `POST /jobs`.
 6. Job seekers can search `GET /jobs?latitude=...&longitude=...&radius_km=...`.
 7. Candidates can submit a short application through `POST /applications`.
+8. Employer reads the funnel from `GET /employers/{id}/pipeline`.
+9. Employer manages candidates with `GET /employers/{id}/applications` and `PATCH /applications/{id}/status`.
 
 ## Next backend milestones
 
 1. Employer team membership and HR invitations.
 2. Normalized benefits, shifts, languages and experience requirements.
 3. Cambodia province/district reference data and geocoding.
-4. Hiring funnel events and interview scheduling.
-5. Messaging.
-6. AI candidate-job matching.
-7. Audit log, moderation and anti-fraud controls.
-8. Database migrations before persistent staging data is introduced.
+4. Interview scheduling.
+5. Messaging and application conversation threads.
+6. Candidate-side application history.
+7. AI candidate-job matching.
+8. Moderation, anti-fraud and broader audit logging.
+9. Database migrations before persistent staging data is introduced.
