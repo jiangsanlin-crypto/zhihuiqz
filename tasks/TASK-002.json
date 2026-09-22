@@ -1,0 +1,24 @@
+{
+  "id": "TASK-002",
+  "title": "Build KhmerHire AI blue-collar MVP",
+  "status": "ready",
+  "priority": "P0",
+  "owners": ["workbuddy", "sandbox", "codex"],
+  "scope": [
+    "worker mobile web",
+    "factory dashboard",
+    "Khmer/English/Chinese i18n",
+    "nearby jobs",
+    "fast application",
+    "candidate recommendations",
+    "factory verification"
+  ],
+  "acceptance": [
+    "worker can discover and filter jobs without login",
+    "worker can apply with a short form without CV",
+    "factory can publish bulk-hiring jobs",
+    "factory can track hiring funnel stages",
+    "all core screens support Khmer, English and Chinese",
+    "frontend passes build and responsive checks"
+  ]
+}
