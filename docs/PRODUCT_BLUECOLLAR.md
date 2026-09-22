@@ -1,27 +1,60 @@
-# KhmerHire AI — Cambodia Factory & Worker Recruitment
+# KhmerHire AI — Cambodia Mass-Market Recruitment
 
-## Product direction
+## Product position
 
-KhmerHire AI is a worker-first recruitment platform for Cambodia, designed primarily for factories and frontline workers.
+KhmerHire AI is a simple nationwide recruitment platform for Cambodia. Factory and frontline hiring remains a major advantage, but the platform is not limited to workers.
 
-### Worker experience
-- Default language: Khmer; English and Chinese are one-tap alternatives.
-- No CV required for initial application.
-- Prioritize location, salary, shift, OT, meals, dormitory, factory bus, NSSF, required experience, hiring headcount and earliest start date.
-- Nearby-job discovery is a primary navigation destination.
-- Fast application fields: phone, name, age, location, desired job and available date.
-- Jobs can be shared as web links and QR codes so workers can apply without installing the app first.
+The product should cover mass-market jobs, ordinary office jobs and selected professional roles without becoming as complicated as a traditional job portal.
 
-### Factory experience
-- Bulk hiring is the core use case.
+## Primary job categories
+
+The user-facing product uses only 10 top-level categories:
+
+1. Factory / Manufacturing
+2. Sales / Retail / Customer Service
+3. Warehouse / Logistics / Driver
+4. Technical / Construction / Repair
+5. Restaurant / Hotel / Service
+6. Administration / Finance / HR
+7. IT / Design / Engineering
+8. Education / Healthcare
+9. Security / Cleaning / Domestic Service
+10. Agriculture / Other
+
+Detailed job titles live under these categories. Management level and employment type are filters, not top-level categories.
+
+Examples:
+- Levels: staff, team leader, supervisor, manager, director
+- Job types: full-time, part-time, temporary, internship, contract
+
+## Worker / job-seeker experience
+
+- Khmer is the default language; English and Chinese are one-tap alternatives.
+- Search works even when the user does not understand the category taxonomy.
+- Jobs are discoverable by keyword, location, salary, category, experience requirement and availability.
+- Many mass-market roles can use a short application flow without a formal CV.
+- Professional roles may request CV, education and portfolio information.
+- Nearby jobs are a primary discovery method.
+- Strong quick filters: urgent, no experience, salary threshold, factory bus, accommodation, meals, part-time, Chinese-speaking, English-speaking.
+- Jobs can be shared as web links and QR codes so applicants can apply without installing the app first.
+
+## Employer experience
+
+### General employers
+- Publish a job with a short guided form.
+- Receive ranked applicants and AI recommendations.
+- Chat, schedule interviews and update hiring status.
+- Employer verification and anti-scam checks are visible to job seekers.
+
+### Factories and large employers
+- Bulk hiring remains a differentiated capability.
 - Recruitment funnel: target headcount → applicants → contacted → interview → offered → joined.
-- AI candidate recommendations should rank by role fit, distance, recency, availability and verified experience.
-- Multi-HR collaboration and factory-level permissions.
-- Employer monetization: subscription, urgent placement, targeted distribution and recruiting automation.
+- Multi-HR collaboration, factory-level permissions and hiring progress by role.
+- AI recommendations rank by role fit, distance, recency, availability, skills and verified experience.
 
 ## Launch geography
 
-Initial operational priority:
+Operational priority:
 1. Phnom Penh
 2. Kandal
 3. Kampong Speu
@@ -29,28 +62,37 @@ Initial operational priority:
 5. Svay Rieng / Bavet
 6. Preah Sihanouk
 
-The product architecture still supports nationwide Cambodia coverage from day one.
+The architecture supports nationwide Cambodia coverage from day one.
 
 ## Design principles
 
-1. Five-second comprehension for workers with limited digital experience.
-2. Large tap targets, short forms and strong visual hierarchy.
-3. Salary, distance and benefits appear before long job descriptions.
-4. Factory verification and anti-scam signals are visible.
-5. Khmer is the primary worker language; employer workspace supports Khmer, English and Chinese.
-6. Worker usage is free; factories fund the platform.
+1. Keep the homepage extremely simple.
+2. Use only a small number of top-level categories.
+3. Let search and AI normalize synonyms across Khmer, English and Chinese.
+4. Put salary, location, job type and key benefits before long descriptions.
+5. Use large tap targets and short forms.
+6. Job seekers are free; employers fund the platform.
+7. Factories get advanced bulk-hiring tools without forcing that complexity on ordinary employers.
 
 ## MVP routes
 
-- Worker home / recommended jobs
+### Job seeker
+- Home / recommendations
+- Search and category results
 - Nearby jobs
 - Job details
-- 30-second application
+- Fast application
+- CV/portfolio application for professional roles
 - Messages
 - Applications
-- Worker profile
-- Factory recruitment dashboard
-- Candidate recommendations
+- Profile
+
+### Employer
+- Employer dashboard
 - Job publishing
-- Hiring funnel
-- Factory / HR team settings
+- Applicant pipeline
+- Candidate recommendations
+- Interview / status workflow
+- Factory bulk-hiring dashboard
+- Team and permissions
+- Employer verification
