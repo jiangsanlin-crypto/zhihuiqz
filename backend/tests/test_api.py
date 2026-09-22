@@ -266,3 +266,230 @@ def test_employer_verification_job_publish_nearby_and_application():
         json={"status": "applied"},
     )
     assert invalid_backwards.status_code == 409
+
+
+
+def test_task004_team_interview_messages_matching_and_moderation():
+    owner_token = register_and_login("010300001", "employer_admin", "Operations Owner")
+    hr_token = register_and_login("010300002", "candidate", "HR Teammate")
+    candidate_token = register_and_login("010300003", "candidate", "Srey Mom")
+
+    provinces = client.get("/locations/provinces")
+    assert provinces.status_code == 200
+    assert len(provinces.json()) == 25
+
+    employer = client.post(
+        "/employers",
+        headers=auth_header(owner_token),
+        json={
+            "name": "Mekong Manufacturing",
+            "employer_type": "factory",
+            "location": "Phnom Penh",
+            "latitude": 11.56,
+            "longitude": 104.92,
+        },
+    )
+    assert employer.status_code == 201, employer.text
+    employer_id = employer.json()["id"]
+
+    verification = client.post(
+        f"/employers/{employer_id}/verification",
+        headers=auth_header(owner_token),
+        json={
+            "legal_name": "Mekong Manufacturing Co., Ltd.",
+            "registration_number": "KH-OPS-001",
+            "document_url": "https://example.com/mekong.pdf",
+        },
+    )
+    admin_token = create_platform_admin()
+    approved = client.post(
+        f"/admin/verifications/{verification.json()['id']}/decision",
+        headers=auth_header(admin_token),
+        json={"decision": "approved", "note": "verified"},
+    )
+    assert approved.status_code == 200, approved.text
+
+    invite = client.post(
+        f"/employers/{employer_id}/invitations",
+        headers=auth_header(owner_token),
+        json={"phone": "010300002", "role": "hr"},
+    )
+    assert invite.status_code == 201, invite.text
+    accepted = client.post(
+        f"/employer-invitations/{invite.json()['token']}/accept",
+        headers=auth_header(hr_token),
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["role"] == "hr"
+
+    hr_employers = client.get("/me/employers", headers=auth_header(hr_token))
+    assert hr_employers.status_code == 200
+    assert any(item["id"] == employer_id for item in hr_employers.json())
+
+    team = client.get(f"/employers/{employer_id}/team", headers=auth_header(owner_token))
+    assert team.status_code == 200
+    assert any(item["phone"] == "010300002" for item in team.json())
+
+    profile = client.put(
+        "/candidate/profile",
+        headers=auth_header(candidate_token),
+        json={
+            "location": "Phnom Penh",
+            "latitude": 11.57,
+            "longitude": 104.93,
+            "skills": "sewing quality production",
+            "languages": "km,en",
+            "available_date": "immediately",
+            "cv_url": None,
+            "portfolio_url": None,
+        },
+    )
+    assert profile.status_code == 200, profile.text
+
+    job = client.post(
+        "/jobs",
+        headers=auth_header(owner_token),
+        json={
+            "employer_id": employer_id,
+            "category": "factory",
+            "title_km": "កម្មករដេរ",
+            "title_en": "Sewing Production Worker",
+            "title_zh": "缝纫生产工",
+            "location": "Phnom Penh",
+            "latitude": 11.56,
+            "longitude": 104.92,
+            "salary_min": 240,
+            "salary_max": 360,
+            "headcount": 50,
+            "benefits": "meal,bus,NSSF",
+            "benefit_codes": "meal,bus,nssf",
+            "shift": "day",
+            "languages_required": "km,en",
+            "experience_level": "entry",
+            "province_code": "phnom_penh",
+            "district_code": "sen_sok",
+            "description": "sewing quality production",
+        },
+    )
+    assert job.status_code == 201, job.text
+    job_id = job.json()["id"]
+
+    application = client.post(
+        "/applications",
+        headers=auth_header(candidate_token),
+        json={
+            "job_id": job_id,
+            "candidate_name": "Srey Mom",
+            "phone": "010300003",
+            "location": "Phnom Penh",
+            "available_date": "immediately",
+            "cv_url": None,
+        },
+    )
+    assert application.status_code == 201, application.text
+    application_id = application.json()["id"]
+
+    duplicate = client.post(
+        "/applications",
+        headers=auth_header(candidate_token),
+        json={
+            "job_id": job_id,
+            "candidate_name": "Srey Mom",
+            "phone": "010300003",
+            "location": "Phnom Penh",
+            "available_date": "immediately",
+            "cv_url": None,
+        },
+    )
+    assert duplicate.status_code == 409
+
+    history = client.get("/me/applications", headers=auth_header(candidate_token))
+    assert history.status_code == 200, history.text
+    assert any(item["id"] == application_id for item in history.json())
+
+    hr_pipeline = client.get(
+        f"/employers/{employer_id}/pipeline",
+        headers=auth_header(hr_token),
+    )
+    assert hr_pipeline.status_code == 200
+
+    contacted = client.patch(
+        f"/applications/{application_id}/status",
+        headers=auth_header(hr_token),
+        json={"status": "contacted", "note": "called candidate"},
+    )
+    assert contacted.status_code == 200, contacted.text
+
+    moved_to_interview = client.patch(
+        f"/applications/{application_id}/status",
+        headers=auth_header(hr_token),
+        json={"status": "interview", "note": "schedule interview"},
+    )
+    assert moved_to_interview.status_code == 200, moved_to_interview.text
+
+    interview = client.post(
+        f"/applications/{application_id}/interviews",
+        headers=auth_header(hr_token),
+        json={
+            "starts_at": "2026-10-01T09:30:00",
+            "location": "Factory HR Office",
+            "meeting_url": "",
+            "note": "Bring ID",
+        },
+    )
+    assert interview.status_code == 201, interview.text
+
+    candidate_interviews = client.get(
+        f"/applications/{application_id}/interviews",
+        headers=auth_header(candidate_token),
+    )
+    assert candidate_interviews.status_code == 200
+    assert len(candidate_interviews.json()) == 1
+
+    employer_message = client.post(
+        f"/applications/{application_id}/messages",
+        headers=auth_header(hr_token),
+        json={"body": "Please come for interview at 9:30."},
+    )
+    assert employer_message.status_code == 201, employer_message.text
+
+    candidate_message = client.post(
+        f"/applications/{application_id}/messages",
+        headers=auth_header(candidate_token),
+        json={"body": "Confirmed, thank you."},
+    )
+    assert candidate_message.status_code == 201, candidate_message.text
+
+    thread = client.get(
+        f"/applications/{application_id}/messages",
+        headers=auth_header(candidate_token),
+    )
+    assert thread.status_code == 200
+    assert len(thread.json()) == 2
+
+    matches = client.get(
+        f"/jobs/{job_id}/matches",
+        headers=auth_header(owner_token),
+    )
+    assert matches.status_code == 200, matches.text
+    matched = next(item for item in matches.json() if item["candidate_user_id"] == profile.json()["user_id"])
+    assert matched["score"] > 0
+    assert {factor["name"] for factor in matched["factors"]} == {"distance", "languages", "skills", "availability"}
+
+    report = client.post(
+        "/reports",
+        headers=auth_header(candidate_token),
+        json={"target_type": "job", "target_id": job_id, "reason": "suspicious", "details": "test report"},
+    )
+    assert report.status_code == 201, report.text
+    resolved = client.post(
+        f"/admin/reports/{report.json()['id']}/resolve",
+        headers=auth_header(admin_token),
+        json={"resolution": "Reviewed in test"},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["status"] == "resolved"
+
+    audit = client.get("/admin/audit", headers=auth_header(admin_token))
+    assert audit.status_code == 200
+    assert any(item["action"] == "moderation.report_resolved" for item in audit.json())
