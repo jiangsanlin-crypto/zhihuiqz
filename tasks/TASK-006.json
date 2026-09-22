@@ -1,0 +1,29 @@
+{
+  "id": "TASK-006",
+  "title": "Launch KhmerHire public staging pilot",
+  "status": "ready",
+  "priority": "P0",
+  "owners": ["workbuddy", "codex", "sandbox"],
+  "depends_on": ["TASK-005"],
+  "scope": [
+    "select or connect a public staging host",
+    "configure staging domain and HTTPS",
+    "inject real staging secrets outside Git",
+    "deploy PostgreSQL frontend and backend containers",
+    "create first staging platform admin",
+    "load Cambodia pilot demo data",
+    "run remote end-to-end smoke test",
+    "add uptime and error monitoring",
+    "configure scheduled PostgreSQL backups",
+    "prepare first employer and candidate pilot checklist"
+  ],
+  "acceptance": [
+    "public HTTPS staging URL is reachable",
+    "no secrets are committed to GitHub",
+    "remote /api/ready passes",
+    "remote recruiting smoke flow passes",
+    "backup job is verified",
+    "monitoring detects backend unavailability",
+    "pilot users can test candidate and employer flows from mobile browsers"
+  ]
+}
