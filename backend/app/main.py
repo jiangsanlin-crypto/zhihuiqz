@@ -1,20 +1,50 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
+import re
+import secrets
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .geo import haversine_km
-from .models import Application, ApplicationEvent, CandidateProfile, Employer, EmployerVerification, Job, User
+from .locations import DISTRICTS, PROVINCES, PROVINCE_CODES
+from .models import (
+    Application,
+    ApplicationEvent,
+    ApplicationMessage,
+    AuditLog,
+    CandidateProfile,
+    Employer,
+    EmployerInvitation,
+    EmployerMembership,
+    EmployerVerification,
+    Interview,
+    Job,
+    ModerationReport,
+    User,
+)
 from .schemas import (
     ApplicationCreate,
     ApplicationOut,
     ApplicationStatusUpdate,
+    CandidateApplicationOut,
+    CandidateMatchOut,
     EmployerApplicationOut,
+    EmployerInviteCreate,
+    EmployerInvitationOut,
+    EmployerMembershipOut,
+    InterviewCreate,
+    InterviewOut,
+    MatchFactor,
+    MessageCreate,
+    MessageOut,
+    ModerationReportCreate,
+    ModerationReportOut,
+    ModerationResolve,
     CandidateProfileOut,
     CandidateProfileUpsert,
     EmployerCreate,
@@ -114,9 +144,56 @@ def get_employer_for_user(employer_id: int, user: User, db: Session) -> Employer
     employer = db.get(Employer, employer_id)
     if not employer:
         raise HTTPException(status_code=404, detail="Employer not found")
-    if user.role != "platform_admin" and employer.owner_user_id != user.id:
+    if user.role == "platform_admin" or employer.owner_user_id == user.id:
+        return employer
+    membership = db.scalar(
+        select(EmployerMembership).where(
+            EmployerMembership.employer_id == employer_id,
+            EmployerMembership.user_id == user.id,
+            EmployerMembership.status == "active",
+        )
+    )
+    if not membership:
         raise HTTPException(status_code=403, detail="Employer access denied")
     return employer
+
+
+def can_access_application(application: Application, user: User, db: Session) -> bool:
+    if application.candidate_user_id == user.id:
+        return True
+    try:
+        get_employer_for_user(application.job.employer_id, user, db)
+        return True
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            return False
+        raise
+
+
+def add_audit(
+    db: Session,
+    action: str,
+    entity_type: str,
+    entity_id: int | None,
+    actor_user_id: int | None,
+    detail: str = "",
+) -> None:
+    db.add(
+        AuditLog(
+            actor_user_id=actor_user_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            detail=detail,
+        )
+    )
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid datetime format") from exc
 
 
 @app.get("/health")
@@ -127,6 +204,18 @@ def health():
 @app.get("/categories")
 def categories():
     return CATEGORIES
+
+
+@app.get("/locations/provinces")
+def provinces():
+    return PROVINCES
+
+
+@app.get("/locations/districts")
+def districts(province_code: str):
+    if province_code not in PROVINCE_CODES:
+        raise HTTPException(status_code=404, detail="Province not found")
+    return DISTRICTS.get(province_code, [])
 
 
 @app.post("/auth/register", response_model=UserOut, status_code=201)
@@ -217,10 +306,13 @@ def get_my_employers(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    require_role(user, "employer_admin", "platform_admin")
     stmt = select(Employer)
     if user.role != "platform_admin":
-        stmt = stmt.where(Employer.owner_user_id == user.id)
+        membership_ids = select(EmployerMembership.employer_id).where(
+            EmployerMembership.user_id == user.id,
+            EmployerMembership.status == "active",
+        )
+        stmt = stmt.where(or_(Employer.owner_user_id == user.id, Employer.id.in_(membership_ids)))
     return list(db.scalars(stmt.order_by(Employer.created_at.desc())).all())
 
 
@@ -334,13 +426,15 @@ def create_job(
 ):
     if payload.category not in CATEGORY_IDS:
         raise HTTPException(status_code=422, detail="Unknown category")
-    employer = db.get(Employer, payload.employer_id)
-    if not employer:
-        raise HTTPException(status_code=404, detail="Employer not found")
-    if user.role != "platform_admin" and employer.owner_user_id != user.id:
-        raise HTTPException(status_code=403, detail="Employer access denied")
+    employer = get_employer_for_user(payload.employer_id, user, db)
     if not employer.verified and user.role != "platform_admin":
         raise HTTPException(status_code=403, detail="Employer must be verified before publishing jobs")
+    if payload.province_code and payload.province_code not in PROVINCE_CODES:
+        raise HTTPException(status_code=422, detail="Unknown province_code")
+    if payload.district_code and payload.province_code:
+        valid_districts = {item["code"] for item in DISTRICTS.get(payload.province_code, [])}
+        if valid_districts and payload.district_code not in valid_districts:
+            raise HTTPException(status_code=422, detail="Unknown district_code for province")
     job = Job(**payload.model_dump())
     db.add(job)
     db.commit()
@@ -561,6 +655,23 @@ def create_application(
         profile = db.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user.id))
         if not profile or not (profile.cv_url or profile.portfolio_url):
             raise HTTPException(status_code=422, detail="This job requires a CV or portfolio")
+    if user and user.role == "candidate":
+        duplicate = db.scalar(
+            select(Application).where(
+                Application.job_id == payload.job_id,
+                Application.candidate_user_id == user.id,
+            )
+        )
+    else:
+        duplicate = db.scalar(
+            select(Application).where(
+                Application.job_id == payload.job_id,
+                Application.phone == payload.phone,
+            )
+        )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Application already submitted")
+
     application = Application(
         candidate_user_id=user.id if user and user.role == "candidate" else None,
         **payload.model_dump(),
@@ -569,3 +680,456 @@ def create_application(
     db.commit()
     db.refresh(application)
     return application
+
+
+@app.post("/employers/{employer_id}/invitations", response_model=EmployerInvitationOut, status_code=201)
+def invite_hr(
+    employer_id: int,
+    payload: EmployerInviteCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    employer = db.get(Employer, employer_id)
+    if not employer:
+        raise HTTPException(status_code=404, detail="Employer not found")
+    if user.role != "platform_admin" and employer.owner_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Only employer owner can invite team members")
+    pending = db.scalar(
+        select(EmployerInvitation).where(
+            EmployerInvitation.employer_id == employer_id,
+            EmployerInvitation.phone == payload.phone.strip(),
+            EmployerInvitation.status == "pending",
+        )
+    )
+    if pending:
+        return pending
+    invitation = EmployerInvitation(
+        employer_id=employer_id,
+        phone=payload.phone.strip(),
+        role=payload.role,
+        token=secrets.token_urlsafe(24),
+        status="pending",
+        invited_by_user_id=user.id,
+        expires_at=datetime.utcnow() + timedelta(days=7),
+    )
+    db.add(invitation)
+    add_audit(db, "employer.invite_created", "employer", employer_id, user.id, payload.phone.strip())
+    db.commit()
+    db.refresh(invitation)
+    return invitation
+
+
+@app.post("/employer-invitations/{token}/accept", response_model=EmployerMembershipOut)
+def accept_employer_invitation(
+    token: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    invitation = db.scalar(select(EmployerInvitation).where(EmployerInvitation.token == token))
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    if invitation.status != "pending":
+        raise HTTPException(status_code=409, detail="Invitation is no longer pending")
+    if invitation.expires_at < datetime.utcnow():
+        invitation.status = "expired"
+        db.commit()
+        raise HTTPException(status_code=410, detail="Invitation expired")
+    if invitation.phone != user.phone:
+        raise HTTPException(status_code=403, detail="Invitation phone does not match signed-in account")
+
+    membership = db.scalar(
+        select(EmployerMembership).where(
+            EmployerMembership.employer_id == invitation.employer_id,
+            EmployerMembership.user_id == user.id,
+        )
+    )
+    if not membership:
+        membership = EmployerMembership(
+            employer_id=invitation.employer_id,
+            user_id=user.id,
+            role=invitation.role,
+            status="active",
+            invited_by_user_id=invitation.invited_by_user_id,
+        )
+        db.add(membership)
+        db.flush()
+    else:
+        membership.status = "active"
+        membership.role = invitation.role
+    invitation.status = "accepted"
+    invitation.accepted_at = datetime.utcnow()
+    add_audit(db, "employer.invite_accepted", "employer_membership", membership.id, user.id)
+    db.commit()
+    db.refresh(membership)
+    return {
+        "id": membership.id,
+        "employer_id": membership.employer_id,
+        "user_id": membership.user_id,
+        "role": membership.role,
+        "status": membership.status,
+        "display_name": user.display_name,
+        "phone": user.phone,
+    }
+
+
+@app.get("/employers/{employer_id}/team", response_model=list[EmployerMembershipOut])
+def employer_team(
+    employer_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    get_employer_for_user(employer_id, user, db)
+    memberships = list(
+        db.scalars(
+            select(EmployerMembership)
+            .where(EmployerMembership.employer_id == employer_id)
+            .order_by(EmployerMembership.created_at.asc())
+        ).all()
+    )
+    result = []
+    for membership in memberships:
+        member = db.get(User, membership.user_id)
+        result.append({
+            "id": membership.id,
+            "employer_id": membership.employer_id,
+            "user_id": membership.user_id,
+            "role": membership.role,
+            "status": membership.status,
+            "display_name": member.display_name if member else "",
+            "phone": member.phone if member else "",
+        })
+    return result
+
+
+@app.get("/me/applications", response_model=list[CandidateApplicationOut])
+def my_applications(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role(user, "candidate")
+    rows = list(
+        db.scalars(
+            select(Application)
+            .where(Application.candidate_user_id == user.id)
+            .order_by(Application.created_at.desc())
+        ).all()
+    )
+    result = []
+    for item in rows:
+        latest_interview = db.scalar(
+            select(Interview)
+            .where(Interview.application_id == item.id)
+            .order_by(Interview.starts_at.desc())
+        )
+        result.append({
+            "id": item.id,
+            "job_id": item.job_id,
+            "job_title_km": item.job.title_km,
+            "job_title_en": item.job.title_en,
+            "job_title_zh": item.job.title_zh,
+            "employer_name": item.job.employer.name,
+            "employer_verified": item.job.employer.verified,
+            "status": item.status,
+            "location": item.location,
+            "available_date": item.available_date,
+            "latest_interview_at": latest_interview.starts_at.isoformat() if latest_interview else None,
+        })
+    return result
+
+
+@app.post("/applications/{application_id}/interviews", response_model=InterviewOut, status_code=201)
+def schedule_interview(
+    application_id: int,
+    payload: InterviewCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    application = db.get(Application, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    get_employer_for_user(application.job.employer_id, user, db)
+    interview = Interview(
+        application_id=application_id,
+        scheduled_by_user_id=user.id,
+        starts_at=parse_iso_datetime(payload.starts_at),
+        location=payload.location,
+        meeting_url=payload.meeting_url,
+        note=payload.note,
+        status="scheduled",
+    )
+    db.add(interview)
+    add_audit(db, "interview.scheduled", "application", application_id, user.id, payload.starts_at)
+    db.commit()
+    db.refresh(interview)
+    return {
+        "id": interview.id,
+        "application_id": interview.application_id,
+        "scheduled_by_user_id": interview.scheduled_by_user_id,
+        "starts_at": interview.starts_at.isoformat(),
+        "location": interview.location,
+        "meeting_url": interview.meeting_url,
+        "note": interview.note,
+        "status": interview.status,
+    }
+
+
+@app.get("/applications/{application_id}/interviews", response_model=list[InterviewOut])
+def list_application_interviews(
+    application_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    application = db.get(Application, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if not can_access_application(application, user, db):
+        raise HTTPException(status_code=403, detail="Application access denied")
+    rows = list(
+        db.scalars(
+            select(Interview)
+            .where(Interview.application_id == application_id)
+            .order_by(Interview.starts_at.asc())
+        ).all()
+    )
+    return [{
+        "id": item.id,
+        "application_id": item.application_id,
+        "scheduled_by_user_id": item.scheduled_by_user_id,
+        "starts_at": item.starts_at.isoformat(),
+        "location": item.location,
+        "meeting_url": item.meeting_url,
+        "note": item.note,
+        "status": item.status,
+    } for item in rows]
+
+
+@app.get("/applications/{application_id}/messages", response_model=list[MessageOut])
+def list_messages(
+    application_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    application = db.get(Application, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if not can_access_application(application, user, db):
+        raise HTTPException(status_code=403, detail="Application access denied")
+    rows = list(
+        db.scalars(
+            select(ApplicationMessage)
+            .where(ApplicationMessage.application_id == application_id)
+            .order_by(ApplicationMessage.created_at.asc())
+        ).all()
+    )
+    result = []
+    for item in rows:
+        sender = db.get(User, item.sender_user_id)
+        result.append({
+            "id": item.id,
+            "application_id": item.application_id,
+            "sender_user_id": item.sender_user_id,
+            "sender_name": sender.display_name if sender else "",
+            "body": item.body,
+            "created_at": item.created_at.isoformat(),
+        })
+    return result
+
+
+@app.post("/applications/{application_id}/messages", response_model=MessageOut, status_code=201)
+def send_message(
+    application_id: int,
+    payload: MessageCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    application = db.get(Application, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if not can_access_application(application, user, db):
+        raise HTTPException(status_code=403, detail="Application access denied")
+    message = ApplicationMessage(
+        application_id=application_id,
+        sender_user_id=user.id,
+        body=payload.body.strip(),
+    )
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    return {
+        "id": message.id,
+        "application_id": message.application_id,
+        "sender_user_id": message.sender_user_id,
+        "sender_name": user.display_name,
+        "body": message.body,
+        "created_at": message.created_at.isoformat(),
+    }
+
+
+def tokenize(value: str) -> set[str]:
+    return {token for token in re.split(r"[^\w\u1780-\u17ff]+", value.lower()) if len(token) >= 2}
+
+
+@app.get("/jobs/{job_id}/matches", response_model=list[CandidateMatchOut])
+def job_matches(
+    job_id: int,
+    limit: int = Query(default=20, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    get_employer_for_user(job.employer_id, user, db)
+
+    job_tokens = tokenize(" ".join([job.title_km, job.title_en, job.title_zh, job.description]))
+    required_languages = tokenize(job.languages_required.replace(",", " "))
+    profiles = list(db.scalars(select(CandidateProfile)).all())
+    matches = []
+    for profile in profiles:
+        candidate = profile.user
+        factors = []
+        score = 0.0
+
+        distance_score = 0.0
+        distance_detail = "Location unavailable"
+        if (
+            job.latitude is not None and job.longitude is not None
+            and profile.latitude is not None and profile.longitude is not None
+        ):
+            distance = haversine_km(job.latitude, job.longitude, profile.latitude, profile.longitude)
+            if distance <= 10:
+                distance_score = 30
+            elif distance <= 25:
+                distance_score = 24
+            elif distance <= 50:
+                distance_score = 15
+            else:
+                distance_score = 5
+            distance_detail = f"{distance:.1f} km from job"
+        score += distance_score
+        factors.append({"name":"distance","score":distance_score,"detail":distance_detail})
+
+        candidate_languages = tokenize(profile.languages.replace(",", " "))
+        if required_languages:
+            overlap = len(required_languages & candidate_languages) / max(1, len(required_languages))
+            language_score = round(25 * overlap, 1)
+            language_detail = f"{len(required_languages & candidate_languages)}/{len(required_languages)} required languages matched"
+        else:
+            language_score = 15.0
+            language_detail = "No mandatory language requirement"
+        score += language_score
+        factors.append({"name":"languages","score":language_score,"detail":language_detail})
+
+        skill_tokens = tokenize(profile.skills)
+        overlap_count = len(job_tokens & skill_tokens)
+        skill_score = min(35.0, overlap_count * 12.0)
+        skill_detail = f"{overlap_count} skill keywords matched"
+        score += skill_score
+        factors.append({"name":"skills","score":skill_score,"detail":skill_detail})
+
+        availability_score = 10.0 if profile.available_date else 0.0
+        score += availability_score
+        factors.append({
+            "name":"availability",
+            "score":availability_score,
+            "detail":profile.available_date or "Availability not provided",
+        })
+
+        matches.append({
+            "candidate_user_id": profile.user_id,
+            "candidate_name": candidate.display_name if candidate else "",
+            "score": round(min(100.0, score), 1),
+            "factors": factors,
+        })
+
+    matches.sort(key=lambda item: item["score"], reverse=True)
+    return matches[:limit]
+
+
+@app.post("/reports", response_model=ModerationReportOut, status_code=201)
+def create_report(
+    payload: ModerationReportCreate,
+    user: User | None = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    if payload.target_type not in {"job", "employer"}:
+        raise HTTPException(status_code=422, detail="Unsupported report target")
+    if payload.target_type == "job" and not db.get(Job, payload.target_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    if payload.target_type == "employer" and not db.get(Employer, payload.target_id):
+        raise HTTPException(status_code=404, detail="Employer not found")
+    if user:
+        duplicate = db.scalar(
+            select(ModerationReport).where(
+                ModerationReport.reporter_user_id == user.id,
+                ModerationReport.target_type == payload.target_type,
+                ModerationReport.target_id == payload.target_id,
+                ModerationReport.status == "open",
+            )
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="Report already submitted")
+    report = ModerationReport(
+        reporter_user_id=user.id if user else None,
+        **payload.model_dump(),
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+@app.get("/admin/reports", response_model=list[ModerationReportOut])
+def admin_reports(
+    report_status: str = Query(default="open", alias="status"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role(user, "platform_admin")
+    return list(
+        db.scalars(
+            select(ModerationReport)
+            .where(ModerationReport.status == report_status)
+            .order_by(ModerationReport.created_at.asc())
+        ).all()
+    )
+
+
+@app.post("/admin/reports/{report_id}/resolve", response_model=ModerationReportOut)
+def resolve_report(
+    report_id: int,
+    payload: ModerationResolve,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role(user, "platform_admin")
+    report = db.get(ModerationReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    report.status = "resolved"
+    report.resolution = payload.resolution
+    report.resolved_by_user_id = user.id
+    report.resolved_at = datetime.utcnow()
+    add_audit(db, "moderation.report_resolved", report.target_type, report.target_id, user.id, payload.resolution)
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+@app.get("/admin/audit")
+def audit_log(
+    limit: int = Query(default=100, ge=1, le=500),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role(user, "platform_admin")
+    rows = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)).all())
+    return [{
+        "id": item.id,
+        "actor_user_id": item.actor_user_id,
+        "action": item.action,
+        "entity_type": item.entity_type,
+        "entity_id": item.entity_id,
+        "detail": item.detail,
+        "created_at": item.created_at.isoformat(),
+    } for item in rows]
