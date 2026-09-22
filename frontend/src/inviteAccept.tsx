@@ -28,7 +28,7 @@ function InviteAccept(){
         {message&&<div className="errorBox">{message}</div>}
         {done
           ?<button className="primaryWide" onClick={()=>window.location.href="/employer.html"}>进入企业后台</button>
-          :<><button className="primaryWide" onClick={accept}>接受邀请</button><button className="textAction" onClick={()=>window.location.href="/auth.html"}>先登录 / 注册</button></>
+          :<><button className="primaryWide" onClick={accept}>接受邀请</button><button className="textAction" onClick={()=>window.location.href="/auth.html?next="+encodeURIComponent(window.location.pathname+window.location.search)}>先登录 / 注册</button></>
         }
       </div>
     </main>
