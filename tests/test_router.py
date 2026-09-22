@@ -25,7 +25,10 @@ def test_pr_preserves_original_task_id():
         "label": {"name": "agent:sandbox"},
         "pull_request": {
             "body": "<!-- agent-task-id:GH-ISSUE-12 -->",
-            "head": {"ref": "agent/workbuddy/issue-12", "sha": "abc123"},
+            "head": {
+                "ref": "agent/workbuddy/issue-12",
+                "sha": "abc123",
+            },
             "labels": [{"name": "agent:sandbox"}],
         },
     }
@@ -72,3 +75,17 @@ def test_final_sandbox_hands_to_workbuddy():
     )
     assert "agent:workbuddy" in labels
     assert "status:review" in labels
+    assert "needs:qa" not in labels
+
+
+def test_blocked_final_qa_preserves_retry_phase():
+    labels = next_labels(
+        "sandbox",
+        "pull_request",
+        ["agent:sandbox", "needs:qa", "status:running"],
+        "blocked",
+        [],
+    )
+    assert "agent:sandbox" in labels
+    assert "needs:qa" in labels
+    assert "status:blocked" in labels
