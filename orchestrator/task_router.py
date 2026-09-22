@@ -1,76 +1,113 @@
+from __future__ import annotations
+
+import re
+
 from .models import AgentRunRequest
 
-WF={
-    "agent:workbuddy","agent:sandbox","agent:codex","needs:qa","ready-for-codex",
-    "status:todo","status:running","status:blocked","status:review","status:done",
+WORKFLOW_LABELS = {
+    "agent:workbuddy",
+    "agent:sandbox",
+    "agent:codex",
+    "needs:qa",
+    "ready-for-codex",
+    "status:todo",
+    "status:running",
+    "status:blocked",
+    "status:review",
+    "status:done",
 }
+TASK_MARKER = re.compile(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->")
 
-def names(items):
-    return [x if isinstance(x,str) else x.get("name") for x in (items or [])
-            if isinstance(x,str) or x.get("name")]
 
-def choose(labels):
-    s=set(labels)
-    if "agent:workbuddy" in s: return "workbuddy"
-    if "agent:sandbox" in s: return "sandbox"
-    if "agent:codex" in s or "ready-for-codex" in s: return "codex"
+def label_names(items):
+    return [
+        item if isinstance(item, str) else item.get("name")
+        for item in (items or [])
+        if isinstance(item, str) or item.get("name")
+    ]
 
-def build(event,payload,repo):
-    obj=(payload.get("issue") if event=="issues"
-         else payload.get("pull_request") if event=="pull_request"
-         else None)
-    if not obj or not isinstance(payload.get("number"),int):
+
+def choose_agent(labels):
+    label_set = set(labels)
+    if "agent:workbuddy" in label_set:
+        return "workbuddy"
+    if "agent:sandbox" in label_set:
+        return "sandbox"
+    if "agent:codex" in label_set or "ready-for-codex" in label_set:
+        return "codex"
+    return None
+
+
+def correlated_task_id(kind: str, obj: dict, number: int) -> str:
+    if kind == "pull_request":
+        match = TASK_MARKER.search(str(obj.get("body") or ""))
+        if match:
+            return match.group(1)
+    return f"GH-{kind.upper()}-{number}"
+
+
+def build(event, payload, repo):
+    obj = (
+        payload.get("issue")
+        if event == "issues"
+        else payload.get("pull_request")
+        if event == "pull_request"
+        else None
+    )
+    if not obj or not isinstance(payload.get("number"), int):
         return None
 
-    action=payload.get("action")
-    if action not in {"labeled","synchronize"}:
+    action = payload.get("action")
+    if action != "labeled":
         return None
 
-    labels=names(obj.get("labels"))
-    agent=choose(labels)
+    labels = label_names(obj.get("labels"))
+    agent = choose_agent(labels)
     if not agent or "status:done" in labels:
         return None
 
-    # A status label can generate another labeled webhook. Only the actual
-    # agent label is allowed to start a labeled run.
-    if action=="labeled":
-        added=(payload.get("label") or {}).get("name")
-        trigger={"workbuddy":"agent:workbuddy","sandbox":"agent:sandbox","codex":"agent:codex"}[agent]
-        if added!=trigger:
-            return None
+    added = (payload.get("label") or {}).get("name")
+    trigger = {
+        "workbuddy": "agent:workbuddy",
+        "sandbox": "agent:sandbox",
+        "codex": "agent:codex",
+    }[agent]
+    if added != trigger:
+        return None
 
-    kind="issue" if event=="issues" else "pull_request"
-    req=AgentRunRequest(
-        task_id=f"GH-{kind.upper()}-{payload['number']}",
+    kind = "issue" if event == "issues" else "pull_request"
+    number = payload["number"]
+    head = obj.get("head") or {}
+    req = AgentRunRequest(
+        task_id=correlated_task_id(kind, obj, number),
         agent=agent,
         repository=repo,
         source_kind=kind,
-        source_number=payload["number"],
+        source_number=number,
         event_name=event,
         action=action,
         prompt_path=f"agents/{agent}_prompt.md",
+        source_ref=head.get("ref") if kind == "pull_request" else None,
+        source_sha=head.get("sha") if kind == "pull_request" else None,
         payload=payload,
     )
-    return req,labels
+    return req, labels
 
-def next_labels(agent,kind,current,status,explicit):
-    keep=[x for x in current if x not in WF]
 
-    if status!="success":
-        return sorted(set(keep+[f"agent:{agent}","status:blocked"]))
+def next_labels(agent, kind, current, status, explicit):
+    keep = [label for label in current if label not in WORKFLOW_LABELS]
+
+    if status != "success":
+        return sorted(set(keep + [f"agent:{agent}", "status:blocked"]))
     if explicit:
-        return sorted(set(keep+explicit))
+        return sorted(set(keep + explicit))
 
-    # WorkBuddy creates the spec PR from an issue, and does final product
-    # review on a PR. In both cases human review remains the terminal state.
-    if agent=="workbuddy":
-        return sorted(set(keep+["status:review"]))
+    if agent == "workbuddy":
+        return sorted(set(keep + ["status:review"]))
 
-    if agent=="sandbox" and kind=="pull_request":
-        # First QA gate: spec -> Codex implementation.
+    if agent == "sandbox" and kind == "pull_request":
         if "needs:qa" not in current:
-            return sorted(set(keep+["agent:codex","status:todo"]))
-        # Second QA gate: implemented PR -> WorkBuddy final review.
-        return sorted(set(keep+["agent:workbuddy","status:review"]))
+            return sorted(set(keep + ["agent:codex", "status:todo"]))
+        return sorted(set(keep + ["agent:workbuddy", "status:review"]))
 
-    return sorted(set(keep+["status:review"]))
+    return sorted(set(keep + ["status:review"]))
