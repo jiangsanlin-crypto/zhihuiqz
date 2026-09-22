@@ -5,3 +5,6 @@ body{background:#edf3f2}.employerApp{max-width:1120px;margin:0 auto;min-height:1
 .dashboardActions button.outline{background:#fff;color:#0f766e;border:1px solid #bde7df}
 .dashboardError{background:#fff0ec;color:#b5452d;border:1px solid #ffd5c8;border-radius:12px;padding:12px}
 .emptyState{background:#fff;border:1px dashed #cddbd9;border-radius:14px;padding:22px;text-align:center;color:#748180}
+
+.roleFooter{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.roleFooter button{border:1px solid #bde7df;background:#f3fffc;color:#0f766e;border-radius:9px;padding:6px 9px;font-size:11px;font-weight:800}
