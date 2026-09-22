@@ -1,20 +1,33 @@
 {
   "id": "TASK-005",
   "title": "Prepare KhmerHire staging deployment",
-  "status": "ready",
+  "status": "done",
   "priority": "P0",
   "owners": ["codex", "sandbox", "workbuddy"],
   "depends_on": ["TASK-004"],
-  "scope": [
+  "completed_scope": [
     "PostgreSQL production database configuration",
-    "database migrations",
-    "backend and frontend container images",
-    "staging compose stack",
-    "secure environment and secret handling",
-    "seed data for Cambodia demo testing",
-    "health checks",
-    "staging smoke tests",
-    "backup and rollback notes"
+    "Alembic initial schema migration",
+    "migration-managed PostgreSQL startup",
+    "backend container image",
+    "frontend nginx container image",
+    "same-origin /api reverse proxy",
+    "staging Docker Compose stack",
+    "secure staging environment template",
+    "database readiness health check",
+    "platform-admin bootstrap",
+    "end-to-end staging recruiting smoke test",
+    "backup and rollback documentation",
+    "GitHub Actions PostgreSQL staging smoke job"
+  ],
+  "validation": [
+    "backend unit and integration tests pass",
+    "PostgreSQL container starts healthy",
+    "Alembic upgrade head succeeds",
+    "frontend and backend containers become ready",
+    "admin bootstrap succeeds inside backend container",
+    "end-to-end smoke test passes login employer verification job application messaging interview history and matching",
+    "staging CI run 35777455890 completed successfully"
   ],
   "acceptance": [
     "fresh staging database can be migrated without create_all assumptions",
