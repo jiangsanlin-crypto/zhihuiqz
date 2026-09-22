@@ -219,3 +219,50 @@ def test_employer_verification_job_publish_nearby_and_application():
     )
     assert application.status_code == 201, application.text
     assert application.json()["status"] == "applied"
+    application_id = application.json()["id"]
+
+    employer_jobs = client.get(
+        f"/employers/{employer_id}/jobs",
+        headers=auth_header(employer_token),
+    )
+    assert employer_jobs.status_code == 200, employer_jobs.text
+    assert len(employer_jobs.json()) == 2
+
+    applicants = client.get(
+        f"/employers/{employer_id}/applications",
+        headers=auth_header(employer_token),
+    )
+    assert applicants.status_code == 200, applicants.text
+    assert len(applicants.json()) == 1
+    assert applicants.json()[0]["candidate_name"] == "Chan Srey"
+
+    first_pipeline = client.get(
+        f"/employers/{employer_id}/pipeline",
+        headers=auth_header(employer_token),
+    )
+    assert first_pipeline.status_code == 200, first_pipeline.text
+    assert first_pipeline.json()["target_headcount"] == 120
+    assert first_pipeline.json()["counts"]["applied"] == 1
+
+    for next_status in ["contacted", "interview", "offered", "joined"]:
+        moved = client.patch(
+            f"/applications/{application_id}/status",
+            headers=auth_header(employer_token),
+            json={"status": next_status, "note": "test transition"},
+        )
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["status"] == next_status
+
+    final_pipeline = client.get(
+        f"/employers/{employer_id}/pipeline",
+        headers=auth_header(employer_token),
+    )
+    assert final_pipeline.status_code == 200, final_pipeline.text
+    assert final_pipeline.json()["counts"]["joined"] == 1
+
+    invalid_backwards = client.patch(
+        f"/applications/{application_id}/status",
+        headers=auth_header(employer_token),
+        json={"status": "applied"},
+    )
+    assert invalid_backwards.status_code == 409
