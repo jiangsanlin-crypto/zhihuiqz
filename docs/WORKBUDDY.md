@@ -1,42 +1,61 @@
 # WorkBuddy integration
 
-This repository includes a WorkBuddy Runner based on the official WorkBuddy Open API.
+The WorkBuddy runner uses WorkBuddy Cloud Tasks for product/specification work and final product review.
 
-## Required scopes
+## Public GitHub read mode
 
-Create/authorize a WorkBuddy third-party application with:
+The repository is public, so WorkBuddy is instructed to read:
 
-- user.task.invokable
-- user.task.readable
+- https://github.com/jiangsanlin-crypto/zhihuiqz
+- public PR pages
+- public files and commit history
 
-The runner uses the Cloud Task API rather than giving WorkBuddy a GitHub credential.
+directly. WorkBuddy does not receive a GitHub token, connector authorization, or GitHub OAuth grant.
 
-## Required server variables
+GitHub write operations remain outside WorkBuddy.
+
+## WorkBuddy authentication
+
+The orchestrator still needs to start WorkBuddy Cloud Tasks. Configure WorkBuddy's own API/OAuth credentials on the persistent server:
 
 - WORKBUDDY_CLIENT_ID
 - WORKBUDDY_CLIENT_SECRET
 - WORKBUDDY_REFRESH_TOKEN
 
-You may temporarily use WORKBUDDY_ACCESS_TOKEN, but a refresh token is preferred for unattended operation.
+A temporary WORKBUDDY_ACCESS_TOKEN can be used during setup, but refresh-token operation is preferred for unattended use.
 
-Keep OAuth material only on the persistent server. Never put it in GitHub source files or an Issue.
+## Specification handoff
 
-## What the runner does
+For a source Issue, WorkBuddy returns JSON only. The runner accepts changes only for:
 
-For an Issue:
-1. reads safe repository context through the server-side GitHub token;
-2. creates a WorkBuddy Cloud Task;
-3. waits for completion;
-4. reads the task overview artifact;
-5. accepts JSON output only;
-6. permits writes only to docs/PRD.md, docs/MATCHING_SPEC.md, docs/I18N.md, docs/MONETIZATION.md, and TASKS.md;
-7. creates a new agent/workbuddy/* branch and PR using the server-side GitHub credential.
+- docs/PRD.md
+- docs/MATCHING_SPEC.md
+- docs/I18N.md
+- docs/MONETIZATION.md
+- TASKS.md
 
-For final PR review:
-1. reads PR metadata and bounded patch excerpts;
-2. asks WorkBuddy for a success/blocked product review;
-3. never writes to the PR branch.
+The WorkBuddy runner does not push those files itself. It returns the validated file payload to the Orchestrator.
+
+The Orchestrator then:
+1. creates or reuses agent/workbuddy/issue-<number>;
+2. writes only the validated allowlisted files;
+3. creates the specification PR;
+4. records the stable task ID in the PR body;
+5. publishes the structured handoff comment;
+6. hands the PR to Sandbox QA.
+
+## Final review
+
+For final review, WorkBuddy receives the public repository and PR URLs and is instructed to read the PR diff, specification files, implementation, and previous handoff comments directly.
+
+Its result is only success or blocked. It cannot merge the PR.
 
 ## Security boundary
 
-WorkBuddy never receives GITHUB_TOKEN, production credentials, candidate production data, or payment credentials. Its response cannot choose arbitrary repository paths.
+WorkBuddy receives no:
+- GITHUB_TOKEN
+- production payment credential
+- production database credential
+- real candidate production data
+
+Only the Orchestrator holds the GitHub credential used for the WorkBuddy specification write-back.
