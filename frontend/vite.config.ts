@@ -17,7 +17,8 @@ export default defineConfig({
         applications: resolve(process.cwd(), "applications.html"),
         application: resolve(process.cwd(), "application.html"),
         employerTeam: resolve(process.cwd(), "employer-team.html"),
-        invite: resolve(process.cwd(), "invite.html")
+        invite: resolve(process.cwd(), "invite.html"),
+        employerMatches: resolve(process.cwd(), "employer-matches.html")
       }
     }
   },
