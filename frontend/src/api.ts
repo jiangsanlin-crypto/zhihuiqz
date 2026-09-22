@@ -228,3 +228,120 @@ export function updateApplicationStatus(applicationId: number, status: string, n
     true
   );
 }
+
+
+export type EmployerTeamMember = {
+  id: number;
+  employer_id: number;
+  user_id: number;
+  role: string;
+  status: string;
+  display_name: string;
+  phone: string;
+};
+
+export type CandidateApplication = {
+  id: number;
+  job_id: number;
+  job_title_km: string;
+  job_title_en: string;
+  job_title_zh: string;
+  employer_name: string;
+  employer_verified: boolean;
+  status: string;
+  location: string;
+  available_date: string;
+  latest_interview_at: string | null;
+};
+
+export type Interview = {
+  id: number;
+  application_id: number;
+  scheduled_by_user_id: number;
+  starts_at: string;
+  location: string;
+  meeting_url: string;
+  note: string;
+  status: string;
+};
+
+export type ApplicationMessage = {
+  id: number;
+  application_id: number;
+  sender_user_id: number;
+  sender_name: string;
+  body: string;
+  created_at: string;
+};
+
+export type CandidateMatch = {
+  candidate_user_id: number;
+  candidate_name: string;
+  score: number;
+  factors: Array<{ name: string; score: number; detail: string }>;
+};
+
+export function inviteEmployerTeamMember(employerId: number, phone: string, role = "hr") {
+  return request<{ id: number; employer_id: number; phone: string; role: string; token: string; status: string }>(
+    "/employers/" + employerId + "/invitations",
+    { method: "POST", body: JSON.stringify({ phone, role }) },
+    true
+  );
+}
+
+export function acceptEmployerInvitation(token: string) {
+  return request<EmployerTeamMember>(
+    "/employer-invitations/" + encodeURIComponent(token) + "/accept",
+    { method: "POST" },
+    true
+  );
+}
+
+export function getEmployerTeam(employerId: number) {
+  return request<EmployerTeamMember[]>("/employers/" + employerId + "/team", {}, true);
+}
+
+export function getMyApplications() {
+  return request<CandidateApplication[]>("/me/applications", {}, true);
+}
+
+export function scheduleInterview(
+  applicationId: number,
+  input: { starts_at: string; location: string; meeting_url: string; note: string }
+) {
+  return request<Interview>(
+    "/applications/" + applicationId + "/interviews",
+    { method: "POST", body: JSON.stringify(input) },
+    true
+  );
+}
+
+export function getApplicationInterviews(applicationId: number) {
+  return request<Interview[]>("/applications/" + applicationId + "/interviews", {}, true);
+}
+
+export function getApplicationMessages(applicationId: number) {
+  return request<ApplicationMessage[]>("/applications/" + applicationId + "/messages", {}, true);
+}
+
+export function sendApplicationMessage(applicationId: number, body: string) {
+  return request<ApplicationMessage>(
+    "/applications/" + applicationId + "/messages",
+    { method: "POST", body: JSON.stringify({ body }) },
+    true
+  );
+}
+
+export function getJobMatches(jobId: number) {
+  return request<CandidateMatch[]>("/jobs/" + jobId + "/matches", {}, true);
+}
+
+export function getProvinces() {
+  return request<Array<{ code: string; km: string; en: string; zh: string }>>("/locations/provinces");
+}
+
+export function getDistricts(provinceCode: string) {
+  return request<Array<{ code: string; en: string; zh: string }>>(
+    "/locations/districts?province_code=" + encodeURIComponent(provinceCode)
+  );
+}
