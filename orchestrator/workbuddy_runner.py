@@ -1,30 +1,31 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 
-from .models import AgentRunRequest, AgentRunResult
+from .models import AgentRunRequest, AgentRunResult, FileChange, Handoff
 from .security import verify_bearer
 
 RUNNER_TOKEN = os.getenv("WORKBUDDY_RUNNER_TOKEN", "")
 ALLOWED_REPO = os.getenv("WORKBUDDY_ALLOWED_REPO", "")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-
-WB_BASE = os.getenv("WORKBUDDY_API_BASE", "https://www.workbuddy.cn/openapi/v2").rstrip("/")
+WB_BASE = os.getenv(
+    "WORKBUDDY_API_BASE",
+    "https://www.workbuddy.cn/openapi/v2",
+).rstrip("/")
 WB_ACCESS_TOKEN = os.getenv("WORKBUDDY_ACCESS_TOKEN", "")
 WB_REFRESH_TOKEN = os.getenv("WORKBUDDY_REFRESH_TOKEN", "")
 WB_CLIENT_ID = os.getenv("WORKBUDDY_CLIENT_ID", "")
 WB_CLIENT_SECRET = os.getenv("WORKBUDDY_CLIENT_SECRET", "")
-WB_TOKEN_FILE = Path(os.getenv("WORKBUDDY_TOKEN_FILE", "/app/data/workbuddy_oauth.json"))
+WB_TOKEN_FILE = Path(
+    os.getenv("WORKBUDDY_TOKEN_FILE", "/app/data/workbuddy_oauth.json")
+)
 WB_TIMEOUT = int(os.getenv("WORKBUDDY_TIMEOUT_SECONDS", "900"))
 WB_POLL = max(2, int(os.getenv("WORKBUDDY_POLL_SECONDS", "5")))
 
@@ -36,7 +37,6 @@ ALLOWED_SPEC_FILES = {
     "TASKS.md",
 }
 MAX_FILE_BYTES = 100_000
-MAX_CONTEXT_CHARS = 80_000
 
 app = FastAPI(title="WorkBuddy Runner")
 
@@ -133,12 +133,22 @@ class WorkBuddyClient:
         headers["Authorization"] = f"Bearer {token}"
         headers.setdefault("Accept", "application/json")
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.request(method, url, headers=headers, **kwargs)
+            response = await client.request(
+                method,
+                url,
+                headers=headers,
+                **kwargs,
+            )
         if response.status_code == 401 and self.refresh_token:
             token = await self.refresh()
             headers["Authorization"] = f"Bearer {token}"
             async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.request(method, url, headers=headers, **kwargs)
+                response = await client.request(
+                    method,
+                    url,
+                    headers=headers,
+                    **kwargs,
+                )
         response.raise_for_status()
         return response
 
@@ -161,7 +171,9 @@ class WorkBuddyClient:
             if status == "completed":
                 break
             if status in {"failed", "archived", "deleted"}:
-                raise RuntimeError(f"WorkBuddy task ended with status={status}")
+                raise RuntimeError(
+                    f"WorkBuddy task ended with status={status}"
+                )
             await asyncio.sleep(WB_POLL)
             query = await self.request("GET", f"{WB_BASE}/tasks/{task_id}")
             last = unwrap(query.json())
@@ -176,7 +188,9 @@ class WorkBuddyClient:
             link = last.get("link")
             ticket = last.get("token")
         if not link or not ticket:
-            raise RuntimeError("WorkBuddy completed but did not return ACP link/token")
+            raise RuntimeError(
+                "WorkBuddy completed but did not return ACP link/token"
+            )
 
         sandbox_url = str(link)
         if sandbox_url.endswith("/acp"):
@@ -209,169 +223,44 @@ class WorkBuddyClient:
                     (artifact.get("updatedAt") or 0, artifact["text"])
                 )
         if not candidates:
-            raise RuntimeError("WorkBuddy task produced no overview artifact")
+            raise RuntimeError(
+                "WorkBuddy task produced no overview artifact"
+            )
         candidates.sort(key=lambda item: item[0])
         return str(candidates[-1][1])
 
 
-class GitHubRepo:
-    def __init__(self, token: str, repo: str):
-        self.token = token
-        self.repo = repo
-        self.base = f"https://api.github.com/repos/{repo}"
-
-    def headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-
-    async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.request(
-                method, url, headers=self.headers(), **kwargs
-            )
-        response.raise_for_status()
-        return response
-
-    async def text_file(self, path: str, ref: str | None = None) -> str:
-        params = {"ref": ref} if ref else None
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(
-                f"{self.base}/contents/{path}",
-                headers=self.headers(),
-                params=params,
-            )
-        if response.status_code == 404:
-            return ""
-        response.raise_for_status()
-        data = response.json()
-        if data.get("encoding") == "base64":
-            return base64.b64decode(data.get("content") or "").decode(
-                "utf-8", "replace"
-            )
-        return ""
-
-    async def create_spec_pr(
-        self,
-        issue_number: int,
-        title: str,
-        files: list[dict[str, str]],
-    ) -> int:
-        repo = (await self.request("GET", self.base)).json()
-        default = repo["default_branch"]
-        branch_info = (
-            await self.request("GET", f"{self.base}/branches/{default}")
-        ).json()
-        base_sha = branch_info["commit"]["sha"]
-        branch = f"agent/workbuddy/issue-{issue_number}-{uuid.uuid4().hex[:8]}"
-
-        await self.request(
-            "POST",
-            f"{self.base}/git/refs",
-            json={"ref": f"refs/heads/{branch}", "sha": base_sha},
-        )
-
-        for item in files:
-            path = item["path"]
-            file_content = item["content"]
-            get_url = f"{self.base}/contents/{path}"
-            async with httpx.AsyncClient(timeout=30) as client:
-                current = await client.get(
-                    get_url,
-                    headers=self.headers(),
-                    params={"ref": branch},
-                )
-            body: dict[str, Any] = {
-                "message": f"docs: WorkBuddy update {path}",
-                "content": base64.b64encode(file_content.encode()).decode(),
-                "branch": branch,
-            }
-            if current.status_code == 200:
-                body["sha"] = current.json()["sha"]
-            elif current.status_code != 404:
-                current.raise_for_status()
-            await self.request("PUT", get_url, json=body)
-
-        pr = (
-            await self.request(
-                "POST",
-                f"{self.base}/pulls",
-                json={
-                    "title": f"spec: {title[:180]}",
-                    "head": branch,
-                    "base": default,
-                    "body": (
-                        f"WorkBuddy product/specification handoff for issue "
-                        f"#{issue_number}.\n\n"
-                        f"Closes #{issue_number}\n\n"
-                        "This PR must pass Sandbox QA, Codex implementation, "
-                        "final QA, and human approval before merge."
-                    ),
-                },
-            )
-        ).json()
-        return int(pr["number"])
-
-    async def pr_context(self, number: int) -> str:
-        pr = (await self.request("GET", f"{self.base}/pulls/{number}")).json()
-        files = (
-            await self.request(
-                "GET",
-                f"{self.base}/pulls/{number}/files",
-                params={"per_page": 100},
-            )
-        ).json()
-        parts = [
-            f"PR #{number}: {pr.get('title', '')}",
-            f"Base: {pr.get('base', {}).get('ref', '')}",
-            f"Head: {pr.get('head', {}).get('ref', '')}",
-            "",
-            pr.get("body") or "",
-            "",
-            "Changed files:",
-        ]
-        used = sum(len(item) for item in parts)
-        for file_item in files:
-            patch = (file_item.get("patch") or "")[:5000]
-            block = (
-                f"\n### {file_item.get('filename')} "
-                f"({file_item.get('status')})\n{patch}\n"
-            )
-            if used + len(block) > MAX_CONTEXT_CHARS:
-                break
-            parts.append(block)
-            used += len(block)
-        return "\n".join(parts)
-
-
-def validate_spec_result(
-    obj: dict[str, Any],
-) -> tuple[str, list[dict[str, str]]]:
-    status = str(obj.get("status") or "").lower()
-    if status != "success":
+def validate_spec_result(obj: dict[str, Any]) -> tuple[str, list[FileChange]]:
+    if str(obj.get("status") or "").lower() != "success":
         raise ValueError(
-            obj.get("summary") or "WorkBuddy did not approve the specification"
+            obj.get("summary")
+            or "WorkBuddy did not approve the specification"
         )
+
     raw = obj.get("files")
     if not isinstance(raw, list):
         raise ValueError("WorkBuddy JSON has no files array")
 
-    files: list[dict[str, str]] = []
+    changes: list[FileChange] = []
     seen = set()
     for item in raw:
         if not isinstance(item, dict):
             raise ValueError("Invalid files item")
         path = str(item.get("path") or "")
-        file_content = item.get("content")
+        content = item.get("content")
         if path not in ALLOWED_SPEC_FILES:
             raise ValueError(f"Path not allowed: {path}")
-        if not isinstance(file_content, str) or not file_content.strip():
+        if not isinstance(content, str) or not content.strip():
             raise ValueError(f"Empty content for {path}")
-        if len(file_content.encode()) > MAX_FILE_BYTES:
+        if len(content.encode()) > MAX_FILE_BYTES:
             raise ValueError(f"File too large: {path}")
-        files.append({"path": path, "content": file_content})
+        changes.append(
+            FileChange(
+                path=path,
+                content=content,
+                purpose=str(item.get("purpose") or ""),
+            )
+        )
         seen.add(path)
 
     missing = ALLOWED_SPEC_FILES - seen
@@ -381,42 +270,48 @@ def validate_spec_result(
         )
     return str(
         obj.get("summary") or "WorkBuddy specification completed"
-    ), files
+    ), changes
 
 
-def spec_prompt(req: AgentRunRequest, current_context: str) -> str:
+def specification_prompt(req: AgentRunRequest) -> str:
     issue = req.payload.get("issue") or {}
     title = str(issue.get("title") or req.task_id)
     body = str(issue.get("body") or "")
-    return f"""You are WorkBuddy, acting as the product/business specification agent.
+    repo_url = f"https://github.com/{req.repository}"
 
-Task: {title}
+    return f"""You are WorkBuddy, the product/business specification agent.
+
+Task ID: {req.task_id}
+Public repository: {repo_url}
+Issue: {title}
 
 Issue body:
 {body}
 
-Repository context:
-{current_context}
+The repository is public. Read it directly without asking for GitHub OAuth,
+GitHub tokens, or connector authorization. Inspect README, AGENTS.md, TASKS.md
+and relevant public files before producing the specification.
 
-Produce the product/specification handoff for a multilingual Cambodia recruitment product.
+Produce the handoff for a multilingual Cambodia recruitment product.
 
 Hard constraints:
 - Default language is Khmer, then English, then Chinese.
-- Paid employer features may improve discovery/filtering/reach, but payment must never directly increase relevance score.
+- Paid employer features may improve discovery/filtering/reach, but payment
+  must never directly increase relevance score.
 - Use synthetic examples only; never invent real candidate personal data.
 - Do not propose automatic production deployment or automatic merge to main.
 - Do not request or expose secrets.
 
-Return JSON ONLY, with exactly this shape:
+Return JSON ONLY:
 {{
   "status": "success",
   "summary": "short summary",
   "files": [
-    {{"path":"docs/PRD.md","content":"full markdown"}},
-    {{"path":"docs/MATCHING_SPEC.md","content":"full markdown"}},
-    {{"path":"docs/I18N.md","content":"full markdown"}},
-    {{"path":"docs/MONETIZATION.md","content":"full markdown"}},
-    {{"path":"TASKS.md","content":"full markdown"}}
+    {{"path":"docs/PRD.md","content":"full markdown","purpose":"product requirements"}},
+    {{"path":"docs/MATCHING_SPEC.md","content":"full markdown","purpose":"matching specification"}},
+    {{"path":"docs/I18N.md","content":"full markdown","purpose":"language specification"}},
+    {{"path":"docs/MONETIZATION.md","content":"full markdown","purpose":"monetization boundaries"}},
+    {{"path":"TASKS.md","content":"full markdown","purpose":"engineering tasks"}}
   ]
 }}
 
@@ -424,19 +319,26 @@ Do not include code fences or commentary outside the JSON.
 """
 
 
-def review_prompt(context: str) -> str:
+def final_review_prompt(req: AgentRunRequest) -> str:
+    pr_url = f"https://github.com/{req.repository}/pull/{req.source_number}"
+    repo_url = f"https://github.com/{req.repository}"
     return f"""You are WorkBuddy performing the final product/business review.
 
-Review this pull request against the product requirements and safety boundaries.
+Task ID: {req.task_id}
+Public repository: {repo_url}
+Pull request: {pr_url}
 
-{context}
+Both are public. Read them directly without asking for GitHub authorization.
+Read the PR diff, PR discussion/handoff comments, specification documents and
+current implementation.
 
 Check:
-- product requirements are represented coherently;
-- Khmer default, English second, Chinese third;
+- the implementation matches the approved product requirements;
+- Khmer is default, English second, Chinese third;
 - employer payment never directly changes relevance score;
 - no production credentials or real candidate data were introduced;
-- no automatic production deployment or main auto-merge was introduced.
+- no automatic production deployment or main auto-merge was introduced;
+- earlier Sandbox and Codex handoffs have been addressed.
 
 Return JSON ONLY:
 {{"status":"success","summary":"review passed: ..."}}
@@ -453,6 +355,7 @@ async def healthz():
         "ok": True,
         "agent": "workbuddy",
         "allowed_repo": ALLOWED_REPO,
+        "github_auth_required_for_read": False,
         "oauth_configured": bool(
             WB_ACCESS_TOKEN
             or (
@@ -474,51 +377,42 @@ async def run(
         raise HTTPException(401, "invalid runner token")
     if req.agent != "workbuddy":
         raise HTTPException(
-            400, "workbuddy runner only accepts workbuddy tasks"
+            400,
+            "workbuddy runner only accepts workbuddy tasks",
         )
     if ALLOWED_REPO and req.repository != ALLOWED_REPO:
         raise HTTPException(403, "repository not allowed")
-    if not GITHUB_TOKEN:
-        return AgentRunResult(
-            status="blocked",
-            summary="GITHUB_TOKEN is not configured",
-        )
 
     wb = WorkBuddyClient()
-    gh = GitHubRepo(GITHUB_TOKEN, req.repository)
 
     try:
         if req.source_kind == "issue":
-            context_parts = []
-            for path in ("README.md", "AGENTS.md", "TASKS.md"):
-                text = await gh.text_file(path)
-                if text:
-                    context_parts.append(
-                        f"## {path}\n{text[:20000]}"
-                    )
             output = await wb.run_cloud_task(
-                spec_prompt(req, "\n\n".join(context_parts)),
+                specification_prompt(req),
                 f"Spec {req.task_id}",
             )
             obj = parse_json_object(output)
-            summary, files = validate_spec_result(obj)
-            issue = req.payload.get("issue") or {}
-            pr_number = await gh.create_spec_pr(
-                req.source_number,
-                str(issue.get("title") or req.task_id),
-                files,
-            )
+            summary, changes = validate_spec_result(obj)
+            artifacts = [change.path for change in changes]
             return AgentRunResult(
                 status="success",
                 summary=summary,
-                artifacts=[item["path"] for item in files],
-                pr_number=pr_number,
+                artifacts=artifacts,
+                changes=changes,
+                handoff=Handoff(
+                    task_id=req.task_id,
+                    from_agent="workbuddy",
+                    to_agent="sandbox",
+                    phase="specification",
+                    status="success",
+                    summary=summary,
+                    artifacts=artifacts,
+                ),
             )
 
-        context = await gh.pr_context(req.source_number)
         output = await wb.run_cloud_task(
-            review_prompt(context),
-            f"Review PR {req.source_number}",
+            final_review_prompt(req),
+            f"Review {req.task_id} PR {req.source_number}",
         )
         obj = parse_json_object(output)
         status = str(obj.get("status") or "").lower()
@@ -526,14 +420,56 @@ async def run(
             obj.get("summary") or "WorkBuddy returned no summary"
         )
         if status == "success":
-            return AgentRunResult(status="success", summary=summary)
-        return AgentRunResult(status="blocked", summary=summary)
+            return AgentRunResult(
+                status="success",
+                summary=summary,
+                handoff=Handoff(
+                    task_id=req.task_id,
+                    from_agent="workbuddy",
+                    to_agent="human",
+                    phase="product_review",
+                    status="success",
+                    summary=summary,
+                    source_ref=req.source_ref,
+                    source_sha=req.source_sha,
+                    pr_number=req.source_number,
+                ),
+            )
+        return AgentRunResult(
+            status="blocked",
+            summary=summary,
+            handoff=Handoff(
+                task_id=req.task_id,
+                from_agent="workbuddy",
+                to_agent="human",
+                phase="product_review",
+                status="blocked",
+                summary=summary,
+                blockers=[summary],
+                source_ref=req.source_ref,
+                source_sha=req.source_sha,
+                pr_number=req.source_number,
+            ),
+        )
 
     except Exception as exc:
+        summary = (
+            "WorkBuddy integration failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return AgentRunResult(
             status="failed",
-            summary=(
-                "WorkBuddy integration failed: "
-                f"{type(exc).__name__}: {exc}"
+            summary=summary,
+            handoff=Handoff(
+                task_id=req.task_id,
+                from_agent="workbuddy",
+                to_agent="human",
+                phase="specification" if req.source_kind == "issue" else "product_review",
+                status="failed",
+                summary=summary,
+                blockers=[summary],
+                source_ref=req.source_ref,
+                source_sha=req.source_sha,
+                pr_number=req.source_number if req.source_kind == "pull_request" else None,
             ),
         )
