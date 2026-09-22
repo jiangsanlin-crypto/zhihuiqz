@@ -16,4 +16,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - run: python -m compileall -q orchestrator scripts tests
       - run: PYTHONPATH=. pytest -q
+      - run: docker compose config -q
