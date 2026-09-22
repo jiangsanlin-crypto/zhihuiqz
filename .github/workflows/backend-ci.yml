@@ -30,3 +30,52 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: PYTHONPATH=. pytest -q tests
+
+  staging-smoke:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/khmerhire-bluecollar-mvp'
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_DB: khmerhire
+      POSTGRES_USER: khmerhire
+      POSTGRES_PASSWORD: staging-ci-db-password
+      TOKEN_SECRET: staging-ci-token-secret-32-bytes-minimum
+      TOKEN_TTL_SECONDS: "604800"
+      PUBLIC_ORIGIN: http://localhost:8088
+      KHMERHIRE_PORT: "8088"
+      SMOKE_ADMIN_PHONE: "099999999"
+      SMOKE_ADMIN_PASSWORD: "StagingAdminPass123!"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start staging stack
+        run: docker compose -f docker-compose.khmerhire-staging.yml up -d --build
+      - name: Wait for readiness
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://localhost:8088/api/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f docker-compose.khmerhire-staging.yml logs --no-color
+          exit 1
+      - name: Bootstrap smoke admin
+        run: |
+          docker compose -f docker-compose.khmerhire-staging.yml exec -T \
+            -e ADMIN_PHONE="$SMOKE_ADMIN_PHONE" \
+            -e ADMIN_PASSWORD="$SMOKE_ADMIN_PASSWORD" \
+            backend python scripts/create_admin.py
+      - name: Run end-to-end smoke
+        run: |
+          docker compose -f docker-compose.khmerhire-staging.yml exec -T \
+            -e SMOKE_BASE_URL="http://frontend/api" \
+            -e SMOKE_ADMIN_PHONE="$SMOKE_ADMIN_PHONE" \
+            -e SMOKE_ADMIN_PASSWORD="$SMOKE_ADMIN_PASSWORD" \
+            backend python scripts/smoke_staging.py
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.khmerhire-staging.yml logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.khmerhire-staging.yml down -v
