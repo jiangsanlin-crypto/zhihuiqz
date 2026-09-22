@@ -25,7 +25,8 @@ function AuthPage() {
       }
       await loginAccount(phone, password);
       const me = await getMe();
-      window.location.href = me.role === "employer_admin" ? "/employer-onboarding.html" : "/";
+      const next = new URLSearchParams(window.location.search).get("next");
+      window.location.href = next || (me.role === "employer_admin" ? "/employer-onboarding.html" : "/");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Request failed");
     } finally {
