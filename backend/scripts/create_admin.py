@@ -1,10 +1,18 @@
 import os
+import sys
+from pathlib import Path
 
-from app.database import Base, SessionLocal, engine
+# Allow running this script directly from /app/scripts or backend/scripts.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.database import Base, DATABASE_URL, SessionLocal, engine
 from app.models import User
 from app.security import hash_password
 
-Base.metadata.create_all(bind=engine)
+# SQLite is the local-development fallback. PostgreSQL staging/production
+# must be migrated with Alembic before this bootstrap script is executed.
+if DATABASE_URL.startswith("sqlite"):
+    Base.metadata.create_all(bind=engine)
 
 phone = os.getenv("ADMIN_PHONE")
 password = os.getenv("ADMIN_PASSWORD")
