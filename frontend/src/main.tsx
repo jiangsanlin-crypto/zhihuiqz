@@ -281,8 +281,8 @@ function App() {
       <nav className="bottomNav">
         <button className="active"><Home/><span>{t.navHome}</span></button>
         <button onClick={() => window.location.href = "/nearby.html"}><MapPin/><span>{t.navNearby}</span></button>
-        <button><MessageCircle/><span>{t.navChat}</span></button>
-        <button><Building2/><span>{t.navApps}</span></button>
+        <button onClick={() => window.location.href = "/applications.html"}><MessageCircle/><span>{t.navChat}</span></button>
+        <button onClick={() => window.location.href = "/applications.html"}><Building2/><span>{t.navApps}</span></button>
         <button onClick={() => window.location.href = "/auth.html"}><UserRound/><span>{t.navMe}</span></button>
       </nav>
     </div>
