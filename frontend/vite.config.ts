@@ -13,7 +13,11 @@ export default defineConfig({
         nearby: resolve(process.cwd(), "nearby.html"),
         employerOnboarding: resolve(process.cwd(), "employer-onboarding.html"),
         employerJob: resolve(process.cwd(), "employer-job.html"),
-        employerApplicants: resolve(process.cwd(), "employer-applicants.html")
+        employerApplicants: resolve(process.cwd(), "employer-applicants.html"),
+        applications: resolve(process.cwd(), "applications.html"),
+        application: resolve(process.cwd(), "application.html"),
+        employerTeam: resolve(process.cwd(), "employer-team.html"),
+        invite: resolve(process.cwd(), "invite.html")
       }
     }
   },
