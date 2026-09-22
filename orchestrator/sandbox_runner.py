@@ -69,7 +69,37 @@ async def run_cmd(
         process.kill()
         await process.communicate()
         return 124, "timeout"
-    return process.returncode, output.decode("utf-8", "replace")[-12000:]
+    return process.returncode, output.decode(
+        "utf-8",
+        "replace",
+    )[-12000:]
+
+
+def blocked_handoff(
+    req: AgentRunRequest,
+    phase: str,
+    summary: str,
+    checks: list[CheckResult],
+    status: str = "blocked",
+) -> AgentRunResult:
+    return AgentRunResult(
+        status=status,
+        summary=summary,
+        checks=checks,
+        handoff=Handoff(
+            task_id=req.task_id,
+            from_agent="sandbox",
+            to_agent="human",
+            phase=phase,
+            status=status,
+            summary=summary,
+            checks=checks,
+            blockers=[summary],
+            source_ref=req.source_ref,
+            source_sha=req.source_sha,
+            pr_number=req.source_number,
+        ),
+    )
 
 
 @app.get("/healthz")
@@ -90,7 +120,10 @@ async def run(
     if not verify_bearer(TOKEN, authorization):
         raise HTTPException(401, "invalid runner token")
     if req.agent != "sandbox":
-        raise HTTPException(400, "sandbox runner only accepts sandbox tasks")
+        raise HTTPException(
+            400,
+            "sandbox runner only accepts sandbox tasks",
+        )
     if ALLOWED_REPO and req.repository != ALLOWED_REPO:
         raise HTTPException(403, "repository not allowed")
     if req.source_kind != "pull_request":
@@ -101,7 +134,9 @@ async def run(
 
     labels = {
         item.get("name")
-        for item in ((req.payload.get("pull_request") or {}).get("labels") or [])
+        for item in (
+            (req.payload.get("pull_request") or {}).get("labels") or []
+        )
         if isinstance(item, dict)
     }
     final_gate = "needs:qa" in labels
@@ -110,85 +145,137 @@ async def run(
 
     root = Path(WORK_ROOT)
     root.mkdir(parents=True, exist_ok=True)
-    task_dir = Path(tempfile.mkdtemp(prefix=f"pr-{req.source_number}-", dir=str(root)))
+    task_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f"pr-{req.source_number}-",
+            dir=str(root),
+        )
+    )
     workspace = task_dir / "repo"
     checks: list[CheckResult] = []
 
     try:
         safe_env = clean_env(workspace)
         code, out = await run_cmd(
-            ["git", "clone", "--no-checkout", f"https://github.com/{req.repository}.git", str(workspace)],
+            [
+                "git",
+                "clone",
+                "--no-checkout",
+                f"https://github.com/{req.repository}.git",
+                str(workspace),
+            ],
             task_dir,
             safe_env,
         )
+        checks.append(
+            CheckResult(
+                name="git_clone",
+                status="passed" if code == 0 else "failed",
+                detail=out,
+            )
+        )
         if code != 0:
-            summary = f"git clone failed: {out}"
-            return AgentRunResult(
+            return blocked_handoff(
+                req,
+                phase,
+                f"git clone failed: {out}",
+                checks,
                 status="failed",
-                summary=summary,
-                checks=[CheckResult(name="git_clone", status="failed", detail=out)],
-                handoff=Handoff(
-                    task_id=req.task_id,
-                    from_agent="sandbox",
-                    to_agent="human",
-                    phase=phase,
-                    status="failed",
-                    summary=summary,
-                    blockers=[summary],
-                    source_ref=req.source_ref,
-                    source_sha=req.source_sha,
-                    pr_number=req.source_number,
+            )
+
+        code, out = await run_cmd(
+            [
+                "git",
+                "fetch",
+                "origin",
+                f"pull/{req.source_number}/head:agent-source",
+            ],
+            workspace,
+            safe_env,
+        )
+        checks.append(
+            CheckResult(
+                name="pr_fetch",
+                status="passed" if code == 0 else "failed",
+                detail=out,
+            )
+        )
+        if code != 0:
+            return blocked_handoff(
+                req,
+                phase,
+                f"PR fetch failed: {out}",
+                checks,
+                status="failed",
+            )
+
+        target_revision = req.source_sha or "agent-source"
+        code, out = await run_cmd(
+            ["git", "checkout", "--detach", target_revision],
+            workspace,
+            safe_env,
+        )
+        if code != 0:
+            return blocked_handoff(
+                req,
+                phase,
+                f"checkout failed for {target_revision}: {out}",
+                checks,
+                status="failed",
+            )
+
+        code, actual_sha = await run_cmd(
+            ["git", "rev-parse", "HEAD"],
+            workspace,
+            safe_env,
+        )
+        actual_sha = actual_sha.strip()
+        revision_ok = code == 0 and (
+            not req.source_sha or actual_sha == req.source_sha
+        )
+        checks.append(
+            CheckResult(
+                name="source_revision",
+                status="passed" if revision_ok else "failed",
+                detail=(
+                    f"expected={req.source_sha or 'PR head'} "
+                    f"actual={actual_sha}"
                 ),
             )
-
-        code, out = await run_cmd(
-            ["git", "fetch", "origin", f"pull/{req.source_number}/head:agent-source"],
-            workspace,
-            safe_env,
         )
-        if code != 0:
-            summary = f"PR fetch failed: {out}"
-            return AgentRunResult(
+        if not revision_ok:
+            return blocked_handoff(
+                req,
+                phase,
+                "Sandbox checked out a different revision than the "
+                "orchestrator supplied.",
+                checks,
                 status="failed",
-                summary=summary,
-                checks=[CheckResult(name="pr_fetch", status="failed", detail=out)],
             )
 
-        code, out = await run_cmd(
-            ["git", "checkout", "agent-source"],
-            workspace,
-            safe_env,
-        )
-        if code != 0:
-            return AgentRunResult(status="failed", summary=f"checkout failed: {out}")
-
-        missing = [path for path in SPEC_FILES if not (workspace / path).exists()]
+        missing = [
+            path
+            for path in SPEC_FILES
+            if not (workspace / path).exists()
+        ]
         checks.append(
             CheckResult(
                 name="specification_artifacts",
                 status="failed" if missing else "passed",
-                detail=("missing: " + ", ".join(missing)) if missing else "all required specification artifacts are present",
+                detail=(
+                    "missing: " + ", ".join(missing)
+                    if missing
+                    else "all required specification artifacts are present"
+                ),
             )
         )
         if missing:
-            summary = "Required handoff artifacts are missing: " + ", ".join(missing)
-            return AgentRunResult(
-                status="blocked",
-                summary=summary,
-                checks=checks,
-                handoff=Handoff(
-                    task_id=req.task_id,
-                    from_agent="sandbox",
-                    to_agent="human",
-                    phase=phase,
-                    status="blocked",
-                    summary=summary,
-                    checks=checks,
-                    blockers=[summary],
-                    source_ref=req.source_ref,
-                    source_sha=req.source_sha,
-                    pr_number=req.source_number,
-                ),
+            return blocked_handoff(
+                req,
+                phase,
+                "Required handoff artifacts are missing: "
+                + ", ".join(missing),
+                checks,
             )
 
         diff_code, diff_out = await run_cmd(
@@ -204,11 +291,11 @@ async def run(
             )
         )
         if diff_code != 0:
-            summary = "git diff --check failed:\n" + diff_out
-            return AgentRunResult(
-                status="blocked",
-                summary=summary,
-                checks=checks,
+            return blocked_handoff(
+                req,
+                phase,
+                "git diff --check failed:\n" + diff_out,
+                checks,
             )
 
         if (workspace / "tests").exists():
@@ -225,24 +312,11 @@ async def run(
                 )
             )
             if test_code != 0:
-                summary = "Sandbox tests failed:\n" + test_out
-                return AgentRunResult(
-                    status="blocked",
-                    summary=summary,
-                    checks=checks,
-                    handoff=Handoff(
-                        task_id=req.task_id,
-                        from_agent="sandbox",
-                        to_agent="human",
-                        phase=phase,
-                        status="blocked",
-                        summary=summary,
-                        checks=checks,
-                        blockers=[summary],
-                        source_ref=req.source_ref,
-                        source_sha=req.source_sha,
-                        pr_number=req.source_number,
-                    ),
+                return blocked_handoff(
+                    req,
+                    phase,
+                    "Sandbox tests failed:\n" + test_out,
+                    checks,
                 )
         else:
             checks.append(
@@ -253,7 +327,11 @@ async def run(
                 )
             )
 
-        summary = "Sandbox final QA passed." if final_gate else "Sandbox specification QA passed."
+        summary = (
+            "Sandbox final QA passed."
+            if final_gate
+            else "Sandbox specification QA passed."
+        )
         return AgentRunResult(
             status="success",
             summary=summary,
@@ -268,7 +346,7 @@ async def run(
                 artifacts=list(SPEC_FILES),
                 checks=checks,
                 source_ref=req.source_ref,
-                source_sha=req.source_sha,
+                source_sha=actual_sha,
                 pr_number=req.source_number,
             ),
         )
