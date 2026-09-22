@@ -20,3 +20,24 @@
 .cvLink{display:inline-block;color:var(--brand-dark);font-weight:800;font-size:12px;margin-bottom:12px}
 .pipelineActions{display:flex;gap:8px;flex-wrap:wrap}.pipelineActions button{border:0;background:#0f766e;color:#fff;border-radius:10px;padding:9px 12px;font-weight:800}.pipelineActions .dangerBtn{background:#fff0ed;color:#ad4734;border:1px solid #ffd7cf}
 @media(max-width:560px){.twoCol{grid-template-columns:1fr}.applicantHead{align-items:flex-start}}
+
+.historyMeta{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0;color:#607071;font-size:12px}
+.historyMeta span{display:flex;align-items:center;gap:4px}.historyMeta svg{width:14px}
+.applicationHistory h2{font-size:18px;margin:0}.applicationHistory p{margin:5px 0 0;color:var(--muted)}
+.sectionMiniTitle{display:flex;align-items:center;gap:7px;font-weight:800;margin:12px 2px 8px}
+.sectionMiniTitle svg{width:18px;color:var(--brand-dark)}
+.compactMuted{color:var(--muted);text-align:center;padding:14px}
+.interviewCard{display:grid;gap:7px}.interviewCard>span{color:#4e6060;font-size:13px}.interviewCard p{margin:0;color:var(--muted);font-size:13px}
+.messageThread{display:grid;gap:9px;margin:8px 0 12px}
+.messageBubble{background:#fff;border:1px solid var(--line);border-radius:15px;padding:11px 13px}
+.messageBubble>div{display:flex;justify-content:space-between;gap:10px}.messageBubble small{color:var(--muted);font-size:10px}.messageBubble p{margin:7px 0 0;white-space:pre-wrap;line-height:1.45}
+.messageComposer{display:grid;grid-template-columns:1fr 46px;gap:8px;position:sticky;bottom:8px;background:#f8faf9;padding:8px 0}
+.messageComposer input{height:46px;border:1px solid var(--line);border-radius:13px;padding:0 12px;outline:none}
+.messageComposer button{border:0;border-radius:13px;background:#0f766e;color:#fff;display:grid;place-items:center}
+.teamMember{display:flex;align-items:center;gap:12px}.teamMember>div:nth-child(2){flex:1}.teamMember b{display:block}.teamMember small{display:block;color:var(--muted);margin-top:4px}
+.candidateAvatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:#e1f8f4;color:#0f766e;flex:none}
+.inviteResult{display:grid;grid-template-columns:1fr 42px;gap:8px;background:#f1f6f5;border-radius:12px;padding:9px;align-items:center}
+.inviteResult span{font-size:11px;word-break:break-all;color:#526263}.inviteResult button{height:38px;border:0;border-radius:9px;background:#0f766e;color:#fff;display:grid;place-items:center}.inviteResult svg{width:17px}
+.inviteCenter{min-height:100vh;display:grid;place-items:center}
+.benefitPicker{display:flex;gap:7px;flex-wrap:wrap}.benefitPicker button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 11px;color:#546565}.benefitPicker button.active{background:#e4f8f4;border-color:#6bd4c8;color:#0f766e;font-weight:800}
+.pipelineActions .secondaryAction{background:#fff!important;color:#0f766e!important;border:1px solid #bde7df!important}
