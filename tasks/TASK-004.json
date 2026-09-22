@@ -1,0 +1,27 @@
+{
+  "id": "TASK-004",
+  "title": "Build KhmerHire recruiting operations and communication",
+  "status": "ready",
+  "priority": "P0",
+  "owners": ["workbuddy", "codex", "sandbox"],
+  "depends_on": ["TASK-003"],
+  "scope": [
+    "employer HR invitations and team membership",
+    "interview scheduling",
+    "candidate and employer messaging",
+    "candidate application history",
+    "Cambodia province and district reference data",
+    "normalized benefits shifts languages and experience fields",
+    "AI candidate-job matching baseline",
+    "moderation audit and anti-fraud controls"
+  ],
+  "acceptance": [
+    "employer admin can invite HR users without sharing owner credentials",
+    "HR can schedule an interview and candidate can see it",
+    "candidate and employer can exchange messages inside one application thread",
+    "candidate can see all application statuses",
+    "job forms use normalized Cambodia location and job attributes",
+    "AI matching returns explainable ranking factors",
+    "moderation actions are auditable"
+  ]
+}
