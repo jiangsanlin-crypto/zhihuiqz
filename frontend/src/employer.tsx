@@ -105,7 +105,10 @@ function EmployerDashboard(){
             return <article className="roleCard" key={r.job_id}>
               <div className="roleTop"><strong>{r.title_zh||r.title_en||r.title_km}</strong><span>{joined}/{r.headcount} 已到岗</span></div>
               <div className="progress"><i style={{width:pct+"%"}}/></div>
-              <small>报名 {r.counts.applied} · 联系 {r.counts.contacted} · 面试 {r.counts.interview} · 录用 {r.counts.offered}</small>
+              <div className="roleFooter">
+                <small>报名 {r.counts.applied} · 联系 {r.counts.contacted} · 面试 {r.counts.interview} · 录用 {r.counts.offered}</small>
+                <button onClick={()=>window.location.href="/employer-matches.html?job="+r.job_id}>AI 推荐</button>
+              </div>
             </article>
           })}
         </div>
