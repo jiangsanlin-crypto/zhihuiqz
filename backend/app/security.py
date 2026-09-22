@@ -9,6 +9,8 @@ from typing import Any
 from fastapi import HTTPException, status
 
 TOKEN_SECRET = os.getenv("TOKEN_SECRET", "dev-only-change-me")
+if os.getenv("APP_ENV") == "production" and TOKEN_SECRET == "dev-only-change-me":
+    raise RuntimeError("TOKEN_SECRET must be configured in production")
 TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 
 
