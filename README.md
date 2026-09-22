@@ -1,23 +1,26 @@
 # zhihuiqz · GitHub Multi-Agent Orchestrator
 
-GitHub is the task bus. The repository contains the orchestration layer for:
-
-- WorkBuddy Cloud Task -> product/specification + final product review
-- isolated Sandbox Runner -> deterministic PR QA
-- official Codex GitHub Action -> implementation
-- human-only merge to main
+GitHub is the task bus for a chained multi-agent workflow:
 
 ```text
-Issue -> WorkBuddy -> spec PR -> Sandbox -> Codex -> Sandbox -> WorkBuddy -> human merge
+Issue
+  -> WorkBuddy specification
+  -> Sandbox specification QA
+  -> Codex implementation
+  -> Sandbox final QA
+  -> WorkBuddy product review
+  -> Human merge
 ```
 
-Safety defaults:
-- no automatic merge to main
-- no production deployment
-- no real payment actions
-- no real candidate production data
-- no secrets committed to Git
-- WorkBuddy output is restricted to an explicit specification-file allowlist
+The same task ID follows the work through every phase. Each stage publishes a structured `agent-handoff:v1` record so the next agent receives the previous artifacts, checks, source SHA, blockers, and ownership.
+
+## Permission model
+
+- WorkBuddy reads the public repository directly and receives no GitHub credential.
+- Sandbox reads public repository/PR data and receives no GitHub credential.
+- Codex may write only to the current PR branch through GitHub Actions.
+- Orchestrator owns GitHub routing/write-back for Issue/PR labels, comments, and WorkBuddy specification files.
+- Only a human approves main merge and production release.
 
 ## Start persistent services
 
@@ -32,4 +35,10 @@ GitHub Actions Secrets:
 - ORCHESTRATOR_TOKEN
 - OPENAI_API_KEY
 
-Server configuration additionally requires GitHub and WorkBuddy credentials. See docs/DEPLOYMENT.md and docs/WORKBUDDY.md.
+Server configuration requires Orchestrator GitHub write credentials and WorkBuddy's own API/OAuth credentials. WorkBuddy does not need GitHub OAuth for this public repository.
+
+See:
+- docs/ARCHITECTURE.md
+- docs/HANDOFF_PROTOCOL.md
+- docs/WORKBUDDY.md
+- docs/DEPLOYMENT.md
