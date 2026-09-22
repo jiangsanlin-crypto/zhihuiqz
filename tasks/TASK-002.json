@@ -1,0 +1,31 @@
+{
+  "id": "TASK-002",
+  "title": "Build KhmerHire AI Cambodia mass-market recruitment MVP",
+  "status": "in_progress",
+  "priority": "P0",
+  "owners": ["workbuddy", "sandbox", "codex"],
+  "scope": [
+    "simple nationwide job-seeker mobile web",
+    "10 top-level job categories",
+    "Khmer/English/Chinese i18n",
+    "keyword and category discovery",
+    "nearby jobs",
+    "fast application for mass-market roles",
+    "CV/portfolio option for professional roles",
+    "general employer dashboard",
+    "factory bulk-hiring dashboard",
+    "candidate recommendations",
+    "employer verification"
+  ],
+  "acceptance": [
+    "job seeker can browse all major Cambodian job types without a complex taxonomy",
+    "10 user-facing top-level categories cover factory, service, office and professional roles",
+    "job seeker can discover and filter jobs without login",
+    "mass-market applicants can apply with a short form without CV",
+    "professional jobs can request a CV or portfolio",
+    "employer can publish a normal job",
+    "factory can publish and track bulk-hiring jobs",
+    "all core screens support Khmer, English and Chinese",
+    "frontend passes build and responsive checks"
+  ]
+}

@@ -31,8 +31,8 @@ def build(event,payload,repo):
     if not agent or "status:done" in labels:
         return None
 
-    # A status label can generate another labeled webhook. Only the actual
-    # agent label is allowed to start a labeled run.
+    # set_labels can emit several labeled webhooks. Only the actual agent
+    # label is allowed to start a labeled run; status/marker events are ignored.
     if action=="labeled":
         added=(payload.get("label") or {}).get("name")
         trigger={"workbuddy":"agent:workbuddy","sandbox":"agent:sandbox","codex":"agent:codex"}[agent]
@@ -61,16 +61,22 @@ def next_labels(agent,kind,current,status,explicit):
     if explicit:
         return sorted(set(keep+explicit))
 
-    # WorkBuddy creates the spec PR from an issue, and does final product
-    # review on a PR. In both cases human review remains the terminal state.
+    # WorkBuddy creates the spec PR from an issue and performs final product
+    # review on the implemented PR.
     if agent=="workbuddy":
         return sorted(set(keep+["status:review"]))
 
     if agent=="sandbox" and kind=="pull_request":
-        # First QA gate: spec -> Codex implementation.
+        # First QA gate: approved spec -> Codex implementation.
         if "needs:qa" not in current:
             return sorted(set(keep+["agent:codex","status:todo"]))
         # Second QA gate: implemented PR -> WorkBuddy final review.
         return sorted(set(keep+["agent:workbuddy","status:review"]))
+
+    if agent=="codex" and kind=="pull_request":
+        # Codex implementation always returns to the sandbox with an explicit
+        # second-gate marker. The agent:sandbox label is the actual webhook
+        # trigger; needs:qa tells the sandbox this is the post-implementation gate.
+        return sorted(set(keep+["agent:sandbox","needs:qa","status:todo"]))
 
     return sorted(set(keep+["status:review"]))

@@ -1,0 +1,41 @@
+{
+  "id": "TASK-003",
+  "title": "Build KhmerHire core recruitment backend",
+  "status": "in_progress",
+  "priority": "P0",
+  "owners": ["codex", "sandbox", "workbuddy"],
+  "depends_on": ["TASK-002"],
+  "completed_scope": [
+    "employer and job data model",
+    "10-category API contract",
+    "mass-market fast application",
+    "professional CV-required application",
+    "authentication and role permissions",
+    "candidate profiles",
+    "employer verification workflow",
+    "latitude/longitude nearby search",
+    "database persistence foundation",
+    "backend CI"
+  ],
+  "next_scope": [
+    "employer HR invitations and team membership",
+    "Cambodia province/district reference data",
+    "normalized shift benefit and language fields",
+    "hiring funnel",
+    "interview scheduling",
+    "messaging",
+    "AI matching",
+    "audit and anti-fraud"
+  ],
+  "acceptance": [
+    "candidate and employer admin can self-register and login",
+    "platform admin cannot be created from a public registration endpoint",
+    "candidate can maintain a profile",
+    "employer must pass verification before publishing jobs",
+    "platform admin can approve or reject employer verification",
+    "job seeker can search jobs by category keyword and radius",
+    "job seeker can submit a short application without login",
+    "professional jobs can require CV or portfolio",
+    "backend CI runs pytest"
+  ]
+}
