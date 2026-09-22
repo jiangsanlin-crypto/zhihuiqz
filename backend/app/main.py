@@ -1,7 +1,9 @@
 from datetime import datetime
+import os
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -31,6 +33,14 @@ from .security import create_access_token, decode_access_token, hash_password, v
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="KhmerHire AI API", version="0.2.0")
+CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 bearer = HTTPBearer(auto_error=False)
 
 CATEGORIES = [
@@ -179,6 +189,18 @@ def create_employer(
     db.commit()
     db.refresh(employer)
     return employer
+
+
+@app.get("/me/employers", response_model=list[EmployerOut])
+def get_my_employers(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_role(user, "employer_admin", "platform_admin")
+    stmt = select(Employer)
+    if user.role != "platform_admin":
+        stmt = stmt.where(Employer.owner_user_id == user.id)
+    return list(db.scalars(stmt.order_by(Employer.created_at.desc())).all())
 
 
 @app.get("/employers/{employer_id}", response_model=EmployerOut)
