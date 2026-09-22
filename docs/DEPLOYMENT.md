@@ -13,27 +13,28 @@ docker compose up -d --build
 curl http://127.0.0.1:8080/healthz
 ```
 
-Put HTTPS in front of port 8080 with Caddy/Nginx. The two runner ports remain private inside Docker.
+Put HTTPS in front of port 8080 with Caddy/Nginx. Runner ports 8091 and 8092 stay private inside Docker.
 
-## 2. Server environment
+## 2. Credential separation
 
-Required orchestration values:
+Orchestrator only:
 - GITHUB_REPOSITORY
 - GITHUB_TOKEN
 - ORCHESTRATOR_TOKEN
-- WORKBUDDY_TOKEN
-- SANDBOX_TOKEN
 
-WorkBuddy OAuth:
+WorkBuddy runner only:
+- WORKBUDDY_TOKEN
 - WORKBUDDY_CLIENT_ID
 - WORKBUDDY_CLIENT_SECRET
 - WORKBUDDY_REFRESH_TOKEN
+- optional WORKBUDDY_ACCESS_TOKEN
 
-WorkBuddy app scopes:
-- user.task.invokable
-- user.task.readable
+Sandbox runner only:
+- SANDBOX_TOKEN
 
-The WorkBuddy runner refreshes access credentials server-side and can persist refreshed token state to /app/data/workbuddy_oauth.json.
+The Compose file does not pass GITHUB_TOKEN to WorkBuddy or Sandbox.
+
+WorkBuddy reads the public GitHub repository without GitHub authorization.
 
 ## 3. GitHub Actions Secrets
 
@@ -42,20 +43,20 @@ Add:
 - ORCHESTRATOR_TOKEN
 - OPENAI_API_KEY
 
-Codex uses openai/codex-action@v1. The OpenAI key is provided only to the action input, not exported job-wide.
+Codex uses openai/codex-action@v1. The OpenAI key is supplied to the action input and is not stored in the repository.
 
 ## 4. Labels
 
-Run Bootstrap Agent Labels once from Actions after this PR is merged.
+Run Bootstrap Agent Labels once after the orchestration workflows are on main.
 
 ## 5. Main protection
 
-In GitHub Settings protect main:
+Protect main:
 - require pull request before merging
-- require status checks
+- require CI/status checks
 - disallow force pushes
-- do not permit agent bypass
+- do not allow agent bypass
 
 ## 6. Production boundary
 
-No workflow here deploys production. deploy-staging.yml is manual and only publishes a staging image.
+No automated agent is authorized to merge main or deploy production. The staging image workflow is manually triggered and does not perform production deployment.
