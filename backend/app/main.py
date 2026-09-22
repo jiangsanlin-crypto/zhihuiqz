@@ -9,10 +9,12 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .geo import haversine_km
-from .models import Application, CandidateProfile, Employer, EmployerVerification, Job, User
+from .models import Application, ApplicationEvent, CandidateProfile, Employer, EmployerVerification, Job, User
 from .schemas import (
     ApplicationCreate,
     ApplicationOut,
+    ApplicationStatusUpdate,
+    EmployerApplicationOut,
     CandidateProfileOut,
     CandidateProfileUpsert,
     EmployerCreate,
@@ -20,6 +22,7 @@ from .schemas import (
     JobCreate,
     JobOut,
     JobSearchOut,
+    PipelineSummaryOut,
     LoginRequest,
     RegisterRequest,
     TokenOut,
@@ -57,6 +60,15 @@ CATEGORIES = [
 ]
 CATEGORY_IDS = {item["id"] for item in CATEGORIES}
 SELF_REGISTER_ROLES = {"candidate", "employer_admin"}
+PIPELINE_STATUSES = ("applied", "contacted", "interview", "offered", "joined", "rejected")
+PIPELINE_TRANSITIONS = {
+    "applied": {"contacted", "rejected"},
+    "contacted": {"interview", "rejected"},
+    "interview": {"offered", "rejected"},
+    "offered": {"joined", "rejected"},
+    "joined": set(),
+    "rejected": set(),
+}
 
 
 def _credentials_error() -> HTTPException:
@@ -96,6 +108,15 @@ def get_optional_user(
 def require_role(user: User, *roles: str) -> None:
     if user.role not in roles:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
+def get_employer_for_user(employer_id: int, user: User, db: Session) -> Employer:
+    employer = db.get(Employer, employer_id)
+    if not employer:
+        raise HTTPException(status_code=404, detail="Employer not found")
+    if user.role != "platform_admin" and employer.owner_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Employer access denied")
+    return employer
 
 
 @app.get("/health")
@@ -325,6 +346,143 @@ def create_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+@app.get("/employers/{employer_id}/jobs", response_model=list[JobOut])
+def list_employer_jobs(
+    employer_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    get_employer_for_user(employer_id, user, db)
+    stmt = select(Job).where(Job.employer_id == employer_id).order_by(Job.created_at.desc())
+    return list(db.scalars(stmt).all())
+
+
+@app.get("/employers/{employer_id}/applications", response_model=list[EmployerApplicationOut])
+def list_employer_applications(
+    employer_id: int,
+    application_status: str | None = Query(default=None, alias="status"),
+    job_id: int | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    get_employer_for_user(employer_id, user, db)
+    stmt = (
+        select(Application)
+        .join(Job, Application.job_id == Job.id)
+        .where(Job.employer_id == employer_id)
+        .order_by(Application.created_at.desc())
+    )
+    if application_status:
+        if application_status not in PIPELINE_STATUSES:
+            raise HTTPException(status_code=422, detail="Unknown application status")
+        stmt = stmt.where(Application.status == application_status)
+    if job_id is not None:
+        stmt = stmt.where(Application.job_id == job_id)
+
+    rows = list(db.scalars(stmt).all())
+    return [
+        {
+            "id": item.id,
+            "job_id": item.job_id,
+            "job_title_km": item.job.title_km,
+            "job_title_en": item.job.title_en,
+            "job_title_zh": item.job.title_zh,
+            "candidate_user_id": item.candidate_user_id,
+            "candidate_name": item.candidate_name,
+            "phone": item.phone,
+            "location": item.location,
+            "available_date": item.available_date,
+            "cv_url": item.cv_url,
+            "status": item.status,
+        }
+        for item in rows
+    ]
+
+
+@app.get("/employers/{employer_id}/pipeline", response_model=PipelineSummaryOut)
+def employer_pipeline(
+    employer_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    get_employer_for_user(employer_id, user, db)
+    jobs = list(db.scalars(select(Job).where(Job.employer_id == employer_id)).all())
+    applications = list(
+        db.scalars(
+            select(Application)
+            .join(Job, Application.job_id == Job.id)
+            .where(Job.employer_id == employer_id)
+        ).all()
+    )
+
+    def empty_counts():
+        return {key: 0 for key in PIPELINE_STATUSES}
+
+    total_counts = empty_counts()
+    per_job = {job.id: empty_counts() for job in jobs}
+    for item in applications:
+        if item.status in total_counts:
+            total_counts[item.status] += 1
+            per_job[item.job_id][item.status] += 1
+
+    return {
+        "employer_id": employer_id,
+        "total_jobs": len(jobs),
+        "target_headcount": sum(job.headcount for job in jobs),
+        "counts": total_counts,
+        "by_job": [
+            {
+                "job_id": job.id,
+                "title_km": job.title_km,
+                "title_en": job.title_en,
+                "title_zh": job.title_zh,
+                "headcount": job.headcount,
+                "counts": per_job[job.id],
+            }
+            for job in jobs
+        ],
+    }
+
+
+@app.patch("/applications/{application_id}/status", response_model=ApplicationOut)
+def update_application_status(
+    application_id: int,
+    payload: ApplicationStatusUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    application = db.get(Application, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    get_employer_for_user(application.job.employer_id, user, db)
+
+    if payload.status not in PIPELINE_STATUSES:
+        raise HTTPException(status_code=422, detail="Unknown application status")
+    if payload.status == application.status:
+        return application
+    allowed = PIPELINE_TRANSITIONS.get(application.status, set())
+    if payload.status not in allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot move application from {application.status} to {payload.status}",
+        )
+
+    previous = application.status
+    application.status = payload.status
+    db.add(
+        ApplicationEvent(
+            application_id=application.id,
+            actor_user_id=user.id,
+            from_status=previous,
+            to_status=payload.status,
+            note=payload.note,
+        )
+    )
+    db.commit()
+    db.refresh(application)
+    return application
 
 
 @app.get("/jobs", response_model=list[JobSearchOut])
