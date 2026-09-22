@@ -1,0 +1,28 @@
+{
+  "id": "TASK-005",
+  "title": "Prepare KhmerHire staging deployment",
+  "status": "ready",
+  "priority": "P0",
+  "owners": ["codex", "sandbox", "workbuddy"],
+  "depends_on": ["TASK-004"],
+  "scope": [
+    "PostgreSQL production database configuration",
+    "database migrations",
+    "backend and frontend container images",
+    "staging compose stack",
+    "secure environment and secret handling",
+    "seed data for Cambodia demo testing",
+    "health checks",
+    "staging smoke tests",
+    "backup and rollback notes"
+  ],
+  "acceptance": [
+    "fresh staging database can be migrated without create_all assumptions",
+    "frontend and backend build as containers",
+    "staging stack uses PostgreSQL",
+    "secrets are not committed",
+    "health endpoint is used for service readiness",
+    "smoke test covers login employer job application and messaging flow",
+    "deployment and rollback steps are documented"
+  ]
+}
