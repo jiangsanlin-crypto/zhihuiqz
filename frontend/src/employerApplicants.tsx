@@ -32,9 +32,8 @@ function EmployerApplicants(){
     (async()=>{
       try{
         const me=await getMe();
-        if(me.role!=="employer_admin"&&me.role!=="platform_admin")throw new Error("unauthorized");
         const employers=await getMyEmployers();
-        if(!employers.length){window.location.href="/employer-onboarding.html";return;}
+        if(!employers.length){window.location.href=me.role==="employer_admin"||me.role==="platform_admin"?"/employer-onboarding.html":"/";return;}
         setEmployerId(employers[0].id);
         await load(employers[0].id,"all");
       }catch{window.location.href="/auth.html";}
@@ -81,7 +80,10 @@ function EmployerApplicants(){
             <span>⏱ {item.available_date||"未填写到岗时间"}</span>
           </div>
           {item.cv_url&&<a className="cvLink" href={item.cv_url} target="_blank" rel="noreferrer">查看简历 / CV</a>}
-          <div className="pipelineActions">{actions(item)}</div>
+          <div className="pipelineActions">
+            <button className="secondaryAction" onClick={()=>window.location.href="/application.html?id="+item.id}>消息 / 面试</button>
+            {actions(item)}
+          </div>
         </article>)}
       </section>
     </main>
