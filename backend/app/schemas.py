@@ -125,3 +125,49 @@ class ApplicationOut(ApplicationCreate):
     id: int
     candidate_user_id: int | None
     status: str
+
+
+class ApplicationStatusUpdate(BaseModel):
+    status: str
+    note: str = ""
+
+
+class EmployerApplicationOut(BaseModel):
+    id: int
+    job_id: int
+    job_title_km: str
+    job_title_en: str
+    job_title_zh: str
+    candidate_user_id: int | None
+    candidate_name: str
+    phone: str
+    location: str
+    available_date: str
+    cv_url: str | None
+    status: str
+
+
+class PipelineCounts(BaseModel):
+    applied: int = 0
+    contacted: int = 0
+    interview: int = 0
+    offered: int = 0
+    joined: int = 0
+    rejected: int = 0
+
+
+class PipelineJobSummary(BaseModel):
+    job_id: int
+    title_km: str
+    title_en: str
+    title_zh: str
+    headcount: int
+    counts: PipelineCounts
+
+
+class PipelineSummaryOut(BaseModel):
+    employer_id: int
+    total_jobs: int
+    target_headcount: int
+    counts: PipelineCounts
+    by_job: list[PipelineJobSummary]
