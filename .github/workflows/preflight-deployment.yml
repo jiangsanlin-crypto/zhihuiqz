@@ -130,8 +130,31 @@ jobs:
           done
           echo "agent labels are ready"
 
+      - name: Publish preflight result
+        run: |
+          {
+            echo "## Preflight result"
+            echo
+            echo "- Repository files: passed"
+            echo "- Model policy: passed"
+            echo "- main protection: passed"
+            echo "- production approval gate: passed"
+            echo "- Agent labels: passed"
+            if [ "${{ inputs.check_server }}" = "true" ]; then
+              echo "- Live /readyz: passed"
+            else
+              echo "- Live /readyz: skipped (run again with check_server=true after deployment)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  live-readiness:
+    if: ${{ inputs.confirm == 'PREFLIGHT-DEPLOYMENT' && inputs.check_server == 'true' }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: orchestrator-production
+    steps:
       - name: Probe live orchestrator readiness
-        if: ${{ inputs.check_server == 'true' }}
         env:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
           ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
@@ -151,19 +174,11 @@ jobs:
           }
           echo "live orchestrator is ready"
 
-      - name: Publish preflight result
+      - name: Publish live readiness result
         run: |
           {
-            echo "## Preflight result"
+            echo "## Live readiness result"
             echo
-            echo "- Repository files: passed"
-            echo "- Model policy: passed"
-            echo "- main protection: passed"
-            echo "- production approval gate: passed"
-            echo "- Agent labels: passed"
-            if [ "${{ inputs.check_server }}" = "true" ]; then
-              echo "- Live /readyz: passed"
-            else
-              echo "- Live /readyz: skipped (run again with check_server=true after deployment)"
-            fi
+            echo "- Orchestrator environment: approved"
+            echo "- Live /readyz: passed"
           } >> "$GITHUB_STEP_SUMMARY"
