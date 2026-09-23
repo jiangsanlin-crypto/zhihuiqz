@@ -1,8 +1,5 @@
 # Agent Handoff Protocol v1
 
-The same stable task ID follows the work from the source Issue through every
-phase.
-
 ## Canonical sequence
 
 ```text
@@ -11,163 +8,86 @@ Codex / product_planning
   -> ChatGPT / implementation
   -> WorkBuddy / qa_acceptance
   -> Codex / release_review
-  -> Human / merge + production approval
-  -> WorkBuddy / deployment
+  -> WorkBuddy / deployment_plan
+  -> GitHub Actions / merge_and_deploy
+  -> health_verification
+  -> done
 ```
 
-No AI work body may skip a blocked phase.
+No phase may skip a blocked predecessor.
 
 ## Stable task ID
 
-The source Issue uses:
+The source Issue uses `GH-ISSUE-<number>`. The planning PR body carries the
+same task ID and every later handoff reuses it.
 
-`GH-ISSUE-<number>`
+## Required handoff fields
 
-The planning PR body contains:
+Every `agent-handoff:v1` records:
+- task_id
+- from_agent / to_agent
+- phase / status
+- model / effort
+- required_inputs
+- expected_outputs
+- acceptance
+- artifacts
+- checks
+- blockers
+- source_ref / source_sha
+- pr_number
 
-`<!-- agent-task-id:GH-ISSUE-<number> -->`
+The next phase starts only when task ID, ownership, phase, success status,
+empty blockers and current PR head SHA all match.
 
-Every later handoff reuses the same ID.
+## Phase ownership
 
-## Handoff record
+Codex product planning outputs product/business/data/taxonomy documents.
 
-Every phase publishes a PR/Issue comment starting with:
+WorkBuddy prototype validation outputs prototype, data-analysis,
+classification-validation and UI/UX reports.
 
-`<!-- agent-handoff:v1 -->`
+ChatGPT implementation outputs application code, migrations/data services and
+tests.
 
-The JSON payload records:
-- task_id;
-- from_agent / to_agent;
-- phase / status;
-- exact model and effort;
-- required_inputs;
-- expected_outputs;
-- acceptance criteria;
-- artifacts;
-- checks;
-- blockers;
-- source_ref / source_sha;
-- pr_number.
+WorkBuddy QA outputs deterministic test evidence plus classification and UI/UX
+acceptance.
 
-The next agent must read the latest successful handoff and all referenced
-artifacts before working. A phase starts only when task ID, from/to agent, expected phase, success status, empty blockers, and the current PR head SHA all match.
+Codex release review outputs `CHANGELOG.md`, `docs/RELEASE_NOTES.md` and
+`reports/release_gate.json`.
 
-## Phase contracts
+WorkBuddy deployment planning outputs:
+- `reports/deployment_plan.md`
+- `reports/deployment_gate.json`
 
-### Codex product planning
+A successful deployment plan dispatches the automatic production workflow.
 
-Inputs:
-- source Issue;
-- public repository;
-- current product documents.
+## Automatic production execution
 
-Outputs:
-- docs/PRD.md
-- docs/RECRUITMENT_RULES.md
-- docs/DATA_COLLECTION_PLAN.md
-- docs/CLASSIFICATION_DICTIONARY.md
-- TASKS.md
-- CHANGELOG.md
+The production workflow:
+1. validates the WorkBuddy deployment handoff;
+2. validates release/deployment gates;
+3. waits for required CI;
+4. merges the PR;
+5. deploys main to the persistent server;
+6. checks health at 0m, 1m, 5m and 15m;
+7. rolls back to the previous server SHA on failure;
+8. marks the task deployed/done on success.
 
-Next owner: WorkBuddy.
+`AUTO_PRODUCTION_ENABLED=true` is required. `EMERGENCY_STOP=true` stops the
+chain before merge/deploy.
 
-### WorkBuddy prototype validation
-
-Inputs:
-- Codex planning documents;
-- planning PR;
-- prior handoff.
-
-Outputs:
-- reports/prototype_review.md
-- reports/data_analysis.md
-- reports/classification_validation.md
-- reports/uiux_prototype.md
-
-Next owner: ChatGPT only when successful.
-
-### ChatGPT implementation
-
-Inputs:
-- Codex planning documents;
-- WorkBuddy prototype reports;
-- prior handoffs.
-
-Outputs:
-- application code;
-- tests;
-- migrations/data services as needed;
-- implementation handoff containing changed files and commit SHA.
-
-Next owner: WorkBuddy.
-
-### WorkBuddy QA acceptance
-
-Inputs:
-- ChatGPT implementation;
-- product specification;
-- prototype reports;
-- deterministic test evidence;
-- prior handoffs.
-
-Outputs:
-- reports/test_report.md
-- reports/uiux_acceptance.md
-- reports/classification_validation.md
-- reports/qa_summary.json
-
-Next owner: Codex only when successful.
-
-### Codex release review
-
-Inputs:
-- product documents;
-- implementation handoff;
-- WorkBuddy QA reports;
-- PR diff / CI status.
-
-Outputs:
-- CHANGELOG.md
-- docs/RELEASE_NOTES.md
-- reports/release_gate.json
-
-Next owner: Human when ready; otherwise blocked.
-
-### Human approval
-
-Only the human owner may:
-- merge main;
-- approve production deployment;
-- authorize real candidate data or payment connections.
-
-### WorkBuddy deployment
-
-Inputs:
-- approved main SHA;
-- release notes;
-- deployment target;
-- rollback SHA;
-- health endpoint.
-
-Execution:
-- GitHub Actions performs SSH/Docker commands;
-- WorkBuddy owns deployment review, health verification and rollback decision.
+Synthetic `[E2E]` tasks run through the deployment gate but intentionally
+skip real merge/server deployment.
 
 ## Monitoring
 
-Primary handoff is event-driven and real-time. GitHub labels are state markers, while `repository_dispatch` is the authoritative cross-workflow trigger. WorkBuddy dispatches are relayed to the persistent Orchestrator.
+Primary routing is real time through `repository_dispatch`.
 
-Agents do **not** individually poll GitHub on timers.
+A central watchdog runs every 10 minutes:
+- queued handoff >10 minutes -> one warning;
+- Codex running >55 minutes -> blocked;
+- WorkBuddy running >30 minutes -> blocked;
+- ChatGPT running >75 minutes -> blocked.
 
-A central watchdog runs every 10 minutes only as a recovery layer.
-
-Queue policy:
-- any `status:todo + agent:*` handoff older than 10 minutes -> one warning for that agent/phase;
-- the watchdog does not skip the phase or start another agent.
-
-Running-time policy:
-- Codex > 55 minutes -> `status:blocked`;
-- WorkBuddy > 30 minutes -> `status:blocked`;
-- ChatGPT > 75 minutes -> `status:blocked`.
-
-The timeout values reflect the expected workload of each work body. This avoids three independent polling loops, duplicate model calls and overlapping writes while still detecting lost events and hung jobs. Automatic handoffs do not depend on label-generated workflow recursion.
+Failures remain blocked rather than being blindly advanced.
