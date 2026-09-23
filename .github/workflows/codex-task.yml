@@ -204,9 +204,23 @@ jobs:
           Path(os.environ["RUNNER_TEMP"],"handoff.md").write_text(body)
           PY
 
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/handoff.md"
+          retry() {
+            local attempts=0
+            local max=5
+            local delay=3
+            until "$@"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge "$max" ]; then
+                return 1
+              fi
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
 
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:prototype"             --add-label "status:todo"             --add-label "agent:workbuddy"
+          retry gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/handoff.md"
+
+          retry gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:prototype"             --add-label "status:todo"             --add-label "agent:workbuddy"
 
           gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "phase:product-plan"             --remove-label "status:running"             --add-label "status:review" || true
 
@@ -219,7 +233,18 @@ jobs:
                 source_sha:$source_sha,
                 phase:"prototype"
               }
-            }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+            }' > "$RUNNER_TEMP/workbuddy-dispatch.json"
+
+          for attempt in 1 2 3 4 5; do
+            if gh api --method POST "repos/${{ github.repository }}/dispatches"               --input "$RUNNER_TEMP/workbuddy-dispatch.json"
+            then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+
+          echo "Failed to dispatch WorkBuddy after 5 attempts."
+          exit 1
 
       - name: Block failed product planning
         if: steps.codex.outcome != 'success' || steps.changed.outputs.value != 'true'
