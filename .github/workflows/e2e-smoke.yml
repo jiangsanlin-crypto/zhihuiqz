@@ -23,15 +23,17 @@ jobs:
         env:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
         run: |
           test -n "$ORCHESTRATOR_URL"
           test -n "$OPENAI_API_KEY"
+          test -n "$AGENT_GITHUB_TOKEN"
           curl --fail-with-body -sS "$ORCHESTRATOR_URL/readyz"
 
       - name: Create synthetic issue
         id: issue
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
         run: |
           ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "[E2E] three-agent chain ${{ github.run_id }}"             --body "Synthetic test. ChatGPT acceptance requirement: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK. No production data or deployment.")"
 
@@ -44,7 +46,7 @@ jobs:
       - name: Wait for planning PR
         id: pr
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           TASK_ID: ${{ steps.issue.outputs.task_id }}
         run: |
           for attempt in $(seq 1 80); do
@@ -60,7 +62,7 @@ jobs:
 
       - name: Wait for final human review state
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           for attempt in $(seq 1 160); do
@@ -81,7 +83,7 @@ jobs:
 
       - name: Verify handoff chain
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate --jq '.[].body' > "$RUNNER_TEMP/comments.txt"
@@ -92,7 +94,7 @@ jobs:
 
       - name: Verify ChatGPT implementation marker
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           HEAD_SHA="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}"             --json headRefOid --jq '.headRefOid')"
@@ -103,7 +105,7 @@ jobs:
 
       - name: Record result
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
