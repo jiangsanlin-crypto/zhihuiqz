@@ -36,6 +36,8 @@ See `docs/DEPLOYMENT_HANDOFF.md`.
 
 Secrets are configured through GitHub Settings, never through repository files.
 
+For agent chaining also configure `AGENT_GITHUB_TOKEN` as a fine-grained token scoped only to this repository with Contents, Issues and Pull requests read/write. Do not grant branch-protection bypass.
+
 ## WorkBuddy model lock
 
 The dedicated WorkBuddy app must expose only GLM-5.3-Flash before
