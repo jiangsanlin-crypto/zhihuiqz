@@ -1,134 +1,111 @@
-# Multi-Agent Activation Runbook
+# Three-Agent Activation Runbook
 
-This runbook takes the system from a passing code review to the first real end-to-end agent chain.
+## 1. Review PR #1
 
-## 1. Before merge
+Require:
+- CI success;
+- mergeable PR;
+- no committed secrets;
+- model-policy check success;
+- human review of role/permission boundaries.
 
-PR #1 must have:
-- CI passing;
-- mergeable state;
-- human review of the orchestrator permission model;
-- no production credentials committed.
+Do not enable auto-merge.
 
-Do not enable automatic merge.
+## 2. Confirm WorkBuddy model lock
 
-## 2. Merge and protect main
+In the dedicated WorkBuddy/Buddy App:
+1. expose only GLM-5.3-Flash;
+2. set it as default;
+3. verify no Auto/other model can be selected for this integration;
+4. set `WORKBUDDY_MODEL_LOCK_CONFIRMED=true` only after verification.
 
-After human approval, merge PR #1 manually.
+## 3. Prepare persistent Linux server
 
-Immediately protect main:
-- require pull requests;
-- require CI/status checks;
-- block force pushes;
-- do not allow agent bypass.
+Required:
+- Git
+- Docker Engine
+- Docker Compose plugin
+- outbound HTTPS access
+- SSH access from GitHub Actions
 
-## 3. Persistent server
+Create the GitHub environment:
+`orchestrator-production`
 
-On the server:
+Require human approval.
 
-```bash
-git clone https://github.com/jiangsanlin-crypto/zhihuiqz.git
-cd zhihuiqz
-cp .env.example .env
-```
+Configure the ORCH_SERVER_* secrets and ORCH_ENV_B64.
 
-Fill `.env` locally. Do not commit it.
+## 4. Human merge
 
-Generate independent random bearer tokens for:
-- ORCHESTRATOR_TOKEN
-- WORKBUDDY_TOKEN
-- SANDBOX_TOKEN
+Merge PR #1 to main only after the above review.
 
-Set the WorkBuddy API/OAuth credentials and the Orchestrator GitHub write credential.
+Immediately protect main.
 
-## 4. Static preflight
-
-```bash
-python scripts/preflight.py --env-file .env
-```
-
-Every item must report PASS.
-
-## 5. Start services
-
-```bash
-docker compose up -d --build
-docker compose ps
-curl http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/readyz
-```
-
-`/readyz` must return HTTP 200 and `"ok": true`.
-
-If it returns 503, do not start an agent task. Fix the failed check first.
-
-## 6. GitHub Actions secrets
-
-Configure:
-- ORCHESTRATOR_URL
-- ORCHESTRATOR_TOKEN
-- OPENAI_API_KEY
-
-ORCHESTRATOR_URL must be the HTTPS public address of the persistent Orchestrator.
-
-## 7. Bootstrap labels
-
-Run the `Bootstrap Agent Labels` workflow once.
-
-## 8. Manual synthetic E2E smoke
+## 5. Deploy Orchestrator
 
 Run:
 
-`Actions -> Multi-Agent E2E Smoke -> Run workflow`
+`Actions -> WorkBuddy Deploy Orchestrator`
 
-Enter:
+Input:
 
-`RUN-E2E`
+`DEPLOY-ORCHESTRATOR`
 
-The workflow deliberately creates a synthetic Issue and PR and validates:
+The workflow verifies `/readyz` and rolls back on failure.
 
-1. WorkBuddy specification handoff;
-2. Sandbox specification QA;
-3. Codex implementation;
-4. Sandbox final QA;
-5. WorkBuddy final product review;
-6. final state is human review;
-7. Codex created the harmless smoke marker.
+## 6. Configure normal runtime secrets
 
-The smoke PR is intentionally left open and unmerged for inspection.
+GitHub Actions:
+- OPENAI_API_KEY
+- ORCHESTRATOR_URL
+- ORCHESTRATOR_TOKEN
 
-## 9. Expected final state
+Server `.env`:
+- Orchestrator GitHub token/repository
+- WorkBuddy OAuth
+- WorkBuddy model lock
+- Orchestrator/WorkBuddy bearer tokens
 
-The synthetic PR should contain handoff comments for:
-- specification
-- spec_qa
-- implementation
-- final_qa
-- product_review
+## 7. Bootstrap labels
 
-It should end at `status:review` with no active `agent:*` label.
+Run `Bootstrap Agent Labels` once.
 
-## 10. Failure handling
+## 8. Run synthetic E2E
 
-If any stage reaches `status:blocked`:
-- do not manually jump to the next agent;
-- inspect the latest `agent-handoff:v1` blocker;
-- fix the reported problem;
-- reapply the appropriate agent label to retry that same phase.
+Run `Multi-Agent E2E Smoke` with `RUN-E2E`.
 
-If the Orchestrator is unavailable:
-- GitHub remains the durable task record;
-- no agent should be advanced manually until the Orchestrator is healthy.
+Expected chain:
+1. Codex product_planning
+2. WorkBuddy prototype_validation
+3. ChatGPT implementation
+4. WorkBuddy qa_acceptance
+5. Codex release_review
+6. human review state
 
-## 11. Rollback
+The E2E PR must stay unmerged.
 
-No workflow automatically deploys production.
+## 9. Release workflow
 
-If the orchestration release itself must be rolled back:
-1. stop creating new agent Issues;
-2. stop the Orchestrator containers;
-3. revert the orchestration commit through a normal PR;
-4. preserve existing Issue/PR handoff history;
-5. restart only after CI and preflight pass.
+After a real PR passes Codex release review:
+- human reviews and merges main;
+- optionally run `Codex Create Draft Release`;
+- human approves production;
+- WorkBuddy owns the approved deployment run and health checks.
 
-Never solve an orchestration incident by bypassing main protection or handing broad GitHub credentials to WorkBuddy/Sandbox.
+## 10. Monitoring
+
+Normal operation is real time.
+
+Do not create three independent polling loops.
+
+The central watchdog runs every 15 minutes:
+- running >45 minutes -> block and inspect;
+- queued agent handoff >30 minutes -> warning.
+
+Deployment health is checked more aggressively during the first 15 minutes.
+
+## 11. Failure rule
+
+Never skip to the next agent when a phase is blocked.
+
+Fix the blocker and reapply the same agent label for the same phase.
