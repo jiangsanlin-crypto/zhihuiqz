@@ -81,8 +81,13 @@ jobs:
                   "WORKBUDDY_REFRESH_TOKEN",
               )
           )
+          mode="full" if oauth_ok else "degraded"
+          print(f"WorkBuddy mode: {mode}")
           if not oauth_ok:
-              raise SystemExit("WorkBuddy OAuth/access token is incomplete")
+              print(
+                  "OAuth is optional for bootstrap; real WorkBuddy cloud "
+                  "dispatch remains disabled in degraded mode."
+              )
 
           print("server runtime bundle validated")
           PY
