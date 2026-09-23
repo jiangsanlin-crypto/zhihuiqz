@@ -12,6 +12,7 @@ jobs:
   probe:
     if: startsWith(github.event.issue.title, '[ACTIVATION PROBE]')
     runs-on: ubuntu-latest
+    environment: orchestrator-production
     timeout-minutes: 10
 
     steps:
