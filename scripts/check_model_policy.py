@@ -13,7 +13,7 @@ def require(path: str, fragments: list[str]) -> None:
 require(
     ".github/workflows/chatgpt-dev.yml",
     [
-        "model: gpt-6-sol",
+        "model: gpt-5.6-sol",
         "effort: high",
     ],
 )
@@ -21,7 +21,7 @@ require(
 require(
     ".github/workflows/codex-task.yml",
     [
-        "model: gpt-6-luna",
+        "model: gpt-5.6-luna",
         "effort: max",
     ],
 )

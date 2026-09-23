@@ -222,6 +222,27 @@ async def process(event: dict) -> None:
             ),
         )
 
+        if result.status == "success":
+            if req.phase == "phase:prototype":
+                event_type = "agent_chatgpt_implementation"
+            elif req.phase == "phase:qa":
+                event_type = "agent_codex_release"
+            else:
+                raise RuntimeError(
+                    f"no dispatch mapping for WorkBuddy phase {req.phase}"
+                )
+
+            await github.repository_dispatch(
+                req.repository,
+                event_type,
+                {
+                    "pr_number": req.source_number,
+                    "task_id": handoff.task_id,
+                    "head_ref": handoff.source_ref or req.source_ref,
+                    "source_sha": handoff.source_sha or req.source_sha,
+                },
+            )
+
     if result.status == "failed":
         raise RuntimeError(result.summary)
 
@@ -261,7 +282,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="GitHub Multi-Agent Orchestrator",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 

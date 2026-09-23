@@ -19,6 +19,7 @@ jobs:
       - run: python -m compileall -q orchestrator scripts tests
       - run: PYTHONPATH=. pytest -q
       - run: python scripts/check_model_policy.py
+      - run: python scripts/check_dispatch_policy.py
       - name: Validate workflow YAML
         run: |
           python - <<'PY'

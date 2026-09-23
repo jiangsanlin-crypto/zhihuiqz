@@ -57,6 +57,7 @@ The workflow verifies `/readyz` and rolls back on failure.
 
 GitHub Actions:
 - OPENAI_API_KEY
+- AGENT_GITHUB_TOKEN
 - ORCHESTRATOR_URL
 - ORCHESTRATOR_TOKEN
 
@@ -69,6 +70,10 @@ Server `.env`:
 ## 7. Bootstrap labels
 
 Run `Bootstrap Agent Labels` once.
+
+## 7.5 Configure automation identity
+
+Create `AGENT_GITHUB_TOKEN` as a fine-grained token scoped only to this repository with Contents, Issues and Pull requests read/write. It must not bypass protected `main`. This token is used for agent branch pushes, PR comments/labels and `repository_dispatch`, so cross-workflow handoffs are not suppressed by GitHub's `GITHUB_TOKEN` recursion protection.
 
 ## 8. Run synthetic E2E
 
@@ -98,9 +103,11 @@ Normal operation is real time.
 
 Do not create three independent polling loops.
 
-The central watchdog runs every 15 minutes:
-- running >45 minutes -> block and inspect;
-- queued agent handoff >30 minutes -> warning.
+The central watchdog runs every 10 minutes:
+- queued handoff >10 minutes -> one warning;
+- Codex running >55 minutes -> blocked;
+- WorkBuddy running >30 minutes -> blocked;
+- ChatGPT running >75 minutes -> blocked.
 
 Deployment health is checked more aggressively during the first 15 minutes.
 
@@ -108,4 +115,4 @@ Deployment health is checked more aggressively during the first 15 minutes.
 
 Never skip to the next agent when a phase is blocked.
 
-Fix the blocker and reapply the same agent label for the same phase.
+Fix the blocker and retry the same phase using the relevant manual `workflow_dispatch` entry point. Labels alone are state markers and are not relied upon to chain workflows.

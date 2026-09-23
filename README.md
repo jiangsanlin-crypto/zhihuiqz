@@ -18,16 +18,15 @@ artifacts, checks, blockers, source SHA and acceptance criteria.
 
 ## Strict models
 
-- ChatGPT development: `gpt-6-sol`, effort `high`
-- Codex product/release: `gpt-6-luna`, effort `max`
+- ChatGPT development: `gpt-5.6-sol`, effort `high`
+- Codex product/release: `gpt-5.6-luna`, effort `max`
 - WorkBuddy: `GLM-5.3-Flash`, locked in the dedicated WorkBuddy app
 
 See `docs/MODEL_POLICY.md`.
 
 ## Monitoring
 
-Primary handoff is real-time/event-driven through GitHub Actions and the
-Orchestrator webhook. Agents do not individually poll GitHub.
+Primary handoff is real-time/event-driven. Every successful phase emits a `repository_dispatch` event to the exact next work body, while GitHub labels remain visible state only. Agents do not individually poll GitHub.
 
 A central watchdog runs every 10 minutes only to detect lost/stuck handoffs, with separate running limits for Codex (55m), WorkBuddy (30m), and ChatGPT (75m).
 
