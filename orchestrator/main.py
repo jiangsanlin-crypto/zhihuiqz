@@ -40,6 +40,8 @@ def ensure_handoff(req, result: AgentRunResult) -> Handoff:
         if req.phase == "phase:prototype"
         else "codex"
         if req.phase == "phase:qa"
+        else "workbuddy"
+        if req.phase == "phase:deploy"
         else "human"
     )
     phase_name = (
@@ -47,6 +49,8 @@ def ensure_handoff(req, result: AgentRunResult) -> Handoff:
         if req.phase == "phase:prototype"
         else "qa_acceptance"
         if req.phase == "phase:qa"
+        else "deployment_plan"
+        if req.phase == "phase:deploy"
         else "workbuddy"
     )
 
@@ -101,6 +105,12 @@ def required_handoff(req):
             "from_agent": "chatgpt",
             "to_agent": "workbuddy",
             "phase": "implementation",
+        }
+    if req.phase == "phase:deploy":
+        return {
+            "from_agent": "codex",
+            "to_agent": "workbuddy",
+            "phase": "release_review",
         }
     raise ValueError(f"unsupported WorkBuddy phase: {req.phase}")
 
@@ -227,6 +237,8 @@ async def process(event: dict) -> None:
                 event_type = "agent_chatgpt_implementation"
             elif req.phase == "phase:qa":
                 event_type = "agent_codex_release"
+            elif req.phase == "phase:deploy":
+                event_type = "agent_execute_deployment"
             else:
                 raise RuntimeError(
                     f"no dispatch mapping for WorkBuddy phase {req.phase}"
@@ -282,7 +294,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="GitHub Multi-Agent Orchestrator",
-    version="2.1.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
