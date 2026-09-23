@@ -34,7 +34,7 @@ jobs:
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER_EVENT: ${{ steps.source.outputs.number }}
+          ISSUE_NUMBER_EVENT: ${{ github.event.issue.number }}
           ISSUE_NUMBER_DISPATCH: ${{ github.event.client_payload.issue_number }}
         run: |
           ISSUE_NUMBER="${ISSUE_NUMBER_EVENT:-$ISSUE_NUMBER_DISPATCH}"
@@ -54,6 +54,11 @@ jobs:
           OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
+      - name: Verify resolved OpenAI API key
+        env:
+          OPENAI_API_KEY_RUNTIME: ${{ steps.openai_key.outputs.openai_api_key }}
+        run: test -n "$OPENAI_API_KEY_RUNTIME"
 
       - name: Require GitHub automation token
         env:
@@ -281,6 +286,11 @@ jobs:
           OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
+      - name: Verify resolved OpenAI API key
+        env:
+          OPENAI_API_KEY_RUNTIME: ${{ steps.openai_key.outputs.openai_api_key }}
+        run: test -n "$OPENAI_API_KEY_RUNTIME"
 
       - name: Collect and validate WorkBuddy QA handoff
         id: handoff_gate
