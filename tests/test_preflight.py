@@ -35,3 +35,17 @@ def test_preflight_rejects_unconfirmed_model_lock():
     }
     result = as_map(static_checks(env))
     assert result["WORKBUDDY_MODEL_LOCK"] is False
+
+
+def test_preflight_allows_degraded_without_oauth():
+    env = {
+        "GITHUB_REPOSITORY": "a/b",
+        "GITHUB_TOKEN": "x",
+        "ORCHESTRATOR_TOKEN": "x",
+        "WORKBUDDY_URL": "http://workbuddy",
+        "WORKBUDDY_MODEL": "GLM-5.3-Flash",
+        "WORKBUDDY_MODEL_LOCK_CONFIRMED": "true",
+    }
+    result = as_map(static_checks(env))
+    assert result["WORKBUDDY_MODE"] is True
+    assert result["WORKBUDDY_MODEL_LOCK"] is True
