@@ -88,12 +88,14 @@ jobs:
             done < "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
           done
 
-      - name: Block ChatGPT running longer than 75 minutes
+      - name: Block ChatGPT running longer than 120 minutes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           AGENT="chatgpt"
-          LIMIT="75"
+          # 120 minutes > the 110-minute job timeout in chatgpt-dev.yml, so the
+          # watchdog only fires after GitHub itself has had the chance to fail.
+          LIMIT="120"
           THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
           QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
 
@@ -103,5 +105,5 @@ jobs:
             [ -n "$NUMBER" ] || continue
             gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 75-minute running limit. The task was blocked instead of advancing. Inspect the development workflow/test logs and retry the same implementation phase after resolving the cause."
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 120-minute running limit. The task was blocked instead of advancing. Inspect the development workflow/test logs and retry the same implementation phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
