@@ -29,7 +29,7 @@ See `docs/MODEL_POLICY.md`.
 Primary handoff is real-time/event-driven through GitHub Actions and the
 Orchestrator webhook. Agents do not individually poll GitHub.
 
-A central watchdog runs every 15 minutes only to detect lost/stuck handoffs.
+A central watchdog runs every 10 minutes only to detect lost/stuck handoffs, with separate running limits for Codex (55m), WorkBuddy (30m), and ChatGPT (75m).
 
 ## Persistent Orchestrator
 
