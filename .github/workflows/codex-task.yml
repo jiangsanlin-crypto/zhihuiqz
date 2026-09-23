@@ -27,6 +27,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Mark product planning running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --remove-label "status:todo" --add-label "status:running" || true
+
       - name: Build product prompt
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -168,7 +175,8 @@ jobs:
 
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/handoff.md"
 
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:prototype"             --add-label "status:todo"             --add-label "agent:workbuddy"
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "phase:prototype" --add-label "status:todo" --add-label "agent:workbuddy"
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --remove-label "agent:codex" --remove-label "phase:product-plan" --remove-label "status:running" --add-label "status:review" || true
 
   release-review:
     if: >
@@ -185,6 +193,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Mark release review running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --remove-label "status:todo" --add-label "status:running" || true
 
       - name: Collect handoffs
         env:
@@ -266,6 +281,15 @@ jobs:
           PY
           )"
           SHA="$(git rev-parse HEAD)"
+          TASK_ID="$(python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          body=event["pull_request"].get("body") or ""
+          m=re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
+          print(m.group(1) if m else f"GH-PULL_REQUEST-{event['pull_request']['number']}")
+          PY
+          )"
 
           if [ "$STATUS" != "ready" ]; then
             gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked" || true
@@ -280,7 +304,7 @@ jobs:
           ```json
           {
             "version": "1.0",
-            "task_id": "GH-PULL_REQUEST-$PR_NUMBER",
+            "task_id": "$TASK_ID",
             "from_agent": "codex",
             "to_agent": "human",
             "phase": "release_review",
