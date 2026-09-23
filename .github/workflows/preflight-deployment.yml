@@ -54,8 +54,8 @@ jobs:
             "docs/HANDOFF_PROTOCOL.md"
             "docs/ROLE_MATRIX.md"
           )
-          for path in "\${required[@]}"; do
-            test -f "\$path" || { echo "Missing required file: \$path"; exit 1; }
+          for path in "${required[@]}"; do
+            test -f "$path" || { echo "Missing required file: $path"; exit 1; }
           done
           python scripts/check_model_policy.py
 
@@ -64,12 +64,12 @@ jobs:
           GH_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "\$GH_TOKEN" || {
+          test -n "$GH_TOKEN" || {
             echo "REPO_ADMIN_TOKEN is missing from the repository-administration environment."
             exit 1
           }
 
-          protection="\$(gh api "repos/${{ github.repository }}/branches/main/protection")"
+          protection="$(gh api "repos/${{ github.repository }}/branches/main/protection")"
           export protection
           python - <<'PY'
           import json
@@ -89,7 +89,7 @@ jobs:
           print("main branch protection matches the release policy")
           PY
 
-          environment="\$(gh api "repos/${{ github.repository }}/environments/orchestrator-production")"
+          environment="$(gh api "repos/${{ github.repository }}/environments/orchestrator-production")"
           export environment
           python - <<'PY'
           import json
@@ -106,7 +106,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          existing="\$(gh label list --repo "${{ github.repository }}" --limit 200 --json name --jq '.[].name')"
+          existing="$(gh label list --repo "${{ github.repository }}" --limit 200 --json name --jq '.[].name')"
           required=(
             "agent:codex"
             "agent:chatgpt"
@@ -122,9 +122,9 @@ jobs:
             "status:blocked"
             "status:done"
           )
-          for label in "\${required[@]}"; do
-            grep -Fxq "\$label" <<< "\$existing" || {
-              echo "Missing GitHub label: \$label"
+          for label in "${required[@]}"; do
+            grep -Fxq "$label" <<< "$existing" || {
+              echo "Missing GitHub label: $label"
               exit 1
             }
           done
@@ -137,16 +137,16 @@ jobs:
           ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "\$ORCHESTRATOR_URL" || { echo "ORCHESTRATOR_URL is missing"; exit 1; }
-          test -n "\$ORCHESTRATOR_TOKEN" || { echo "ORCHESTRATOR_TOKEN is missing"; exit 1; }
-          url="\${ORCHESTRATOR_URL%/}/readyz"
-          status="\$(curl --silent --show-error --location \
-            --header "Authorization: Bearer \$ORCHESTRATOR_TOKEN" \
-            --output "\$RUNNER_TEMP/readyz.json" \
-            --write-out '%{http_code}' "\$url")"
-          cat "\$RUNNER_TEMP/readyz.json"
-          test "\$status" = "200" || {
-            echo "orchestrator readiness returned HTTP \$status"
+          test -n "$ORCHESTRATOR_URL" || { echo "ORCHESTRATOR_URL is missing"; exit 1; }
+          test -n "$ORCHESTRATOR_TOKEN" || { echo "ORCHESTRATOR_TOKEN is missing"; exit 1; }
+          url="${ORCHESTRATOR_URL%/}/readyz"
+          status="$(curl --silent --show-error --location \
+            --header "Authorization: Bearer $ORCHESTRATOR_TOKEN" \
+            --output "$RUNNER_TEMP/readyz.json" \
+            --write-out '%{http_code}' "$url")"
+          cat "$RUNNER_TEMP/readyz.json"
+          test "$status" = "200" || {
+            echo "orchestrator readiness returned HTTP $status"
             exit 1
           }
           echo "live orchestrator is ready"
@@ -166,4 +166,4 @@ jobs:
             else
               echo "- Live /readyz: skipped (run again with check_server=true after deployment)"
             fi
-          } >> "\$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
