@@ -1,0 +1,11 @@
+# Repository owner is the mandatory human reviewer when branch protection enables CODEOWNERS review.
+* @jiangsanlin-crypto
+
+# Extra-sensitive orchestration, deployment and model-policy paths.
+.github/workflows/ @jiangsanlin-crypto
+.agent/ @jiangsanlin-crypto
+agents/ @jiangsanlin-crypto
+orchestrator/ @jiangsanlin-crypto
+docs/MODEL_POLICY.md @jiangsanlin-crypto
+docs/DEPLOYMENT.md @jiangsanlin-crypto
+docs/DEPLOYMENT_HANDOFF.md @jiangsanlin-crypto
