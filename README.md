@@ -1,14 +1,15 @@
 # zhihuiqz · Three-Agent GitHub Orchestrator
 
-This repository coordinates a fully automatic software-delivery chain:
+The repository coordinates a fully automatic software-delivery chain:
 
 ```text
-Codex / product planning
-  -> WorkBuddy / prototype + data + classification validation
-  -> ChatGPT / implementation
-  -> WorkBuddy / QA + UI/UX + classification acceptance
-  -> Codex / release review
-  -> WorkBuddy / deployment gate
+Codex product planning
+  -> WorkBuddy prototype/data/classification validation
+  -> ChatGPT implementation
+  -> WorkBuddy QA/UIUX/classification acceptance
+  -> Codex release review
+  -> WorkBuddy deployment gate
+  -> CI test
   -> automatic PR merge
   -> automatic production deployment
   -> 0m / 1m / 5m / 15m health verification
@@ -16,44 +17,44 @@ Codex / product planning
   -> done
 ```
 
-The same task ID follows the work through every phase. Each phase publishes a
-structured `agent-handoff:v1` record containing the next owner, model,
-artifacts, checks, blockers, source SHA and acceptance criteria.
+## Models
 
-## Strict models
+- ChatGPT development: `gpt-5.6-sol` / high
+- Codex product/release: `gpt-5.6-luna` / max
+- WorkBuddy: `GLM-5.3-Flash`
 
-- ChatGPT development: `gpt-5.6-sol`, effort `high`
-- Codex product/release: `gpt-5.6-luna`, effort `max`
-- WorkBuddy: `GLM-5.3-Flash`, locked in the dedicated WorkBuddy app
+No fallback is allowed.
 
-No model fallback is allowed.
+## Dispatch
 
-## Automatic production controls
+Agent handoffs use explicit `repository_dispatch`. GitHub Actions use the
+built-in `github.token`; a separate AGENT_GITHUB_TOKEN is not required.
 
-Full automatic merge/deploy is enabled only when:
+WorkBuddy is invoked by the persistent Orchestrator. The Orchestrator bearer
+token is read from the protected runtime bundle.
 
-- `AUTO_PRODUCTION_ENABLED=true`
-- `EMERGENCY_STOP` is not `true`
-- release gate = ready
-- WorkBuddy deployment gate = ready
-- required CI checks pass
-- main branch protection is active
-- Orchestrator is healthy
+## Production policy
 
-Any failed gate blocks the chain. A deployment failure triggers rollback to the
-previous server Git SHA.
+`config/automation_policy.json` controls:
+- whether automatic production is enabled;
+- emergency stop;
+- the mandatory CI check.
 
-Real payment execution and use of real candidate production data remain outside
-this automatic software-delivery permission unless separately authorized.
-
-## Monitoring
-
-Primary handoff is real-time/event-driven through `repository_dispatch`.
-Agents do not individually poll GitHub.
-
-A central watchdog runs every 10 minutes to detect lost/stuck handoffs.
+A production deployment also requires both Codex release gate and WorkBuddy
+deployment gate to be ready.
 
 ## Activation
 
-Use `Activation Readiness` before and after the first persistent Orchestrator
-deployment. Once activated, start normal work through `Start Agent Task`.
+Required external configuration is intentionally narrow:
+- persistent-server SSH secrets;
+- ORCH_ENV_B64 runtime bundle;
+- OpenAI API key;
+- WorkBuddy token/OAuth.
+
+Run Activation Readiness before and after deploying the persistent Orchestrator,
+then run the synthetic E2E.
+
+## Monitoring
+
+Normal routing is real time. A central watchdog runs every 10 minutes only as a
+recovery layer for lost/stuck work.

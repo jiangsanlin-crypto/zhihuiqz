@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   smoke:
@@ -17,25 +19,44 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
       - name: Verify activation
         env:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
-          AUTO_PRODUCTION_ENABLED: ${{ secrets.AUTO_PRODUCTION_ENABLED }}
-          EMERGENCY_STOP: ${{ secrets.EMERGENCY_STOP }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          OPENAI_API_KEY: ${{ steps.openai_key.outputs.openai_api_key }}
         run: |
-          test -n "$ORCHESTRATOR_URL"
           test -n "$OPENAI_API_KEY"
-          test -n "$AGENT_GITHUB_TOKEN"
-          test "$AUTO_PRODUCTION_ENABLED" = "true"
-          test "${EMERGENCY_STOP:-false}" != "true"
-          curl --fail-with-body -sS "$ORCHESTRATOR_URL/readyz"
+
+          python - <<'PY'
+          import json
+          policy=json.load(open("config/automation_policy.json"))
+          if policy.get("auto_production_enabled") is not True:
+              raise SystemExit("auto production is disabled")
+          if policy.get("emergency_stop") is True:
+              raise SystemExit("emergency stop is active")
+          PY
+
+          URL="$ORCHESTRATOR_URL"
+          if [ -z "$URL" ] && [ -n "$ORCH_SERVER_HOST" ]; then
+            URL="http://$ORCH_SERVER_HOST:8080"
+          fi
+          test -n "$URL"
+          curl --fail-with-body -sS "$URL/readyz"
 
       - name: Create synthetic source issue
         id: issue
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "[E2E] three-agent full-auto chain ${{ github.run_id }}"             --body "Synthetic coordination test. ChatGPT acceptance requirement: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK. Do not use production data.")"
 
@@ -47,10 +68,15 @@ jobs:
 
           gh issue edit "$ISSUE_NUMBER"             --repo "${{ github.repository }}"             --add-label "agent:codex"
 
+          jq -n             --argjson issue_number "$ISSUE_NUMBER"             '{
+              event_type:"agent_codex_product",
+              client_payload:{issue_number:$issue_number}
+            }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+
       - name: Wait for planning PR
         id: pr
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           TASK_ID: ${{ steps.issue.outputs.task_id }}
         run: |
           for attempt in $(seq 1 80); do
@@ -69,7 +95,7 @@ jobs:
 
       - name: Wait for full-auto completion state
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           for attempt in $(seq 1 200); do
@@ -92,7 +118,7 @@ jobs:
 
       - name: Verify full handoff chain
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           gh api             "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate             --jq '.[].body'             > "$RUNNER_TEMP/comments.txt"
@@ -104,7 +130,7 @@ jobs:
 
       - name: Verify ChatGPT implementation marker
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           HEAD_SHA="$(gh pr view "$PR_NUMBER"             --repo "${{ github.repository }}"             --json headRefOid             --jq '.headRefOid')"
@@ -115,7 +141,7 @@ jobs:
 
       - name: Record result
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |

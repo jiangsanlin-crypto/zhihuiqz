@@ -23,7 +23,7 @@ jobs:
       - name: Require automation token and resolve PR context
         id: context
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER_AUTO: ${{ github.event.client_payload.pr_number }}
           PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
           TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
@@ -68,11 +68,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
       - name: Collect and validate WorkBuddy handoff
         id: handoff_gate
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
           TASK_ID: ${{ steps.context.outputs.task_id }}
@@ -86,7 +94,7 @@ jobs:
       - name: Block invalid ChatGPT handoff gate
         if: steps.handoff_gate.outcome != 'success'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:blocked" || true
@@ -95,7 +103,7 @@ jobs:
 
       - name: Mark ChatGPT running
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
@@ -121,7 +129,7 @@ jobs:
         continue-on-error: true
         uses: openai/codex-action@v1
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
           model: gpt-5.6-sol
           effort: high
           permission-profile: ":workspace"
@@ -160,7 +168,7 @@ jobs:
       - name: Commit and push implementation
         if: steps.chatgpt.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
@@ -174,7 +182,7 @@ jobs:
       - name: Publish handoff comment and dispatch WorkBuddy QA
         if: steps.chatgpt.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
           TASK_ID: ${{ steps.context.outputs.task_id }}
@@ -237,7 +245,7 @@ jobs:
       - name: Block failed implementation
         if: steps.chatgpt.outcome != 'success' || steps.changed.outputs.value != 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true

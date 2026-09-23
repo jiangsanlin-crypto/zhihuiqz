@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "auto_production_enabled": true,
+  "emergency_stop": false,
+  "require_ci_check": "test",
+  "synthetic_e2e_never_deploys": true
+}

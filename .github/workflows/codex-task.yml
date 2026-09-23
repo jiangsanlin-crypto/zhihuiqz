@@ -4,7 +4,7 @@ on:
   issues:
     types: [labeled]
   repository_dispatch:
-    types: [agent_codex_release]
+    types: [agent_codex_product, agent_codex_release]
 
 permissions:
   contents: write
@@ -14,10 +14,12 @@ permissions:
 jobs:
   product-plan:
     if: >
-      github.event_name == 'issues' &&
-      github.event.label.name == 'agent:codex' &&
-      contains(github.event.issue.labels.*.name, 'phase:product-plan') &&
-      contains(github.event.issue.labels.*.name, 'status:todo')
+      (github.event_name == 'issues' &&
+       github.event.label.name == 'agent:codex' &&
+       contains(github.event.issue.labels.*.name, 'phase:product-plan') &&
+       contains(github.event.issue.labels.*.name, 'status:todo')) ||
+      (github.event_name == 'repository_dispatch' &&
+       github.event.action == 'agent_codex_product')
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -28,23 +30,47 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require automation token
+      - name: Resolve product source issue
+        id: source
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER_EVENT: ${{ steps.source.outputs.number }}
+          ISSUE_NUMBER_DISPATCH: ${{ github.event.client_payload.issue_number }}
+        run: |
+          ISSUE_NUMBER="${ISSUE_NUMBER_EVENT:-$ISSUE_NUMBER_DISPATCH}"
+          test -n "$ISSUE_NUMBER"
+          gh issue view "$ISSUE_NUMBER"             --repo "${{ github.repository }}"             --json title,body > "$RUNNER_TEMP/source-issue.json"
+          echo "number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+          {
+            echo "title<<__TITLE__"
+            jq -r '.title' "$RUNNER_TEMP/source-issue.json"
+            echo "__TITLE__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
+      - name: Require GitHub automation token
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: test -n "$GH_TOKEN"
 
       - name: Mark product planning running
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.source.outputs.number }}
         run: |
           gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
 
       - name: Build product prompt
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ steps.source.outputs.number }}
+          ISSUE_TITLE: ${{ steps.source.outputs.title }}
         run: |
           {
             cat agents/codex_prompt.md
@@ -53,13 +79,13 @@ jobs:
             echo "Task ID: GH-ISSUE-$ISSUE_NUMBER"
             echo "Issue: $ISSUE_TITLE"
             echo
-            printf '%s\n' "$ISSUE_BODY"
+            jq -r '.body // ""' "$RUNNER_TEMP/source-issue.json"
           } > "$RUNNER_TEMP/codex-product.md"
 
       - name: Create task branch
         id: branch
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ steps.source.outputs.number }}
         run: |
           BRANCH="agent/codex/issue-$ISSUE_NUMBER-${{ github.run_id }}"
           git switch -c "$BRANCH"
@@ -70,7 +96,7 @@ jobs:
         continue-on-error: true
         uses: openai/codex-action@v1
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
           model: gpt-5.6-luna
           effort: max
           permission-profile: ":workspace"
@@ -99,7 +125,7 @@ jobs:
       - name: Commit and push product plan
         if: steps.codex.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.branch.outputs.name }}
         run: |
           gh auth setup-git
@@ -112,10 +138,10 @@ jobs:
       - name: Create specification PR, handoff and dispatch WorkBuddy
         if: steps.codex.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.branch.outputs.name }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ steps.source.outputs.number }}
+          ISSUE_TITLE: ${{ steps.source.outputs.title }}
         run: |
           TASK_ID="GH-ISSUE-$ISSUE_NUMBER"
 
@@ -193,8 +219,8 @@ jobs:
       - name: Block failed product planning
         if: steps.codex.outcome != 'success' || steps.changed.outputs.value != 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.source.outputs.number }}
         run: |
           gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
           gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --body "Codex product-planning failed or produced invalid output. No WorkBuddy handoff was dispatched."
@@ -209,7 +235,7 @@ jobs:
       - name: Require automation token and resolve PR context
         id: context
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.client_payload.pr_number }}
           TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
           SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
@@ -248,11 +274,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
       - name: Collect and validate WorkBuddy QA handoff
         id: handoff_gate
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
           TASK_ID: ${{ steps.context.outputs.task_id }}
@@ -266,7 +300,7 @@ jobs:
       - name: Block invalid release handoff gate
         if: steps.handoff_gate.outcome != 'success'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:blocked" || true
@@ -275,7 +309,7 @@ jobs:
 
       - name: Mark release review running
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
@@ -301,7 +335,7 @@ jobs:
         continue-on-error: true
         uses: openai/codex-action@v1
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
           model: gpt-5.6-luna
           effort: max
           permission-profile: ":workspace"
@@ -330,7 +364,7 @@ jobs:
       - name: Commit release documents
         if: steps.codex.outcome == 'success' && steps.release_files.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
         run: |
           gh auth setup-git
@@ -343,7 +377,7 @@ jobs:
       - name: Apply release gate and dispatch WorkBuddy deployment
         if: steps.codex.outcome == 'success' && steps.release_files.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
           TASK_ID: ${{ steps.context.outputs.task_id }}
@@ -412,7 +446,7 @@ jobs:
       - name: Block failed release review
         if: steps.codex.outcome != 'success' || steps.release_files.outputs.value != 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true

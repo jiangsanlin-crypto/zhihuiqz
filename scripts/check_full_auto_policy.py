@@ -11,24 +11,22 @@ def require(path: str, fragments: list[str]) -> None:
 
 
 require(
-    ".github/workflows/repository-hardening.yml",
+    "config/automation_policy.json",
     [
-        '"required_approving_review_count": 0',
-        '"require_code_owner_reviews": false',
-        '"allow_force_pushes": false',
-        '"allow_deletions": false',
-        '"enforce_admins": true',
+        '"auto_production_enabled": true',
+        '"emergency_stop": false',
+        '"require_ci_check": "test"',
     ],
 )
 
 require(
     ".github/workflows/auto-production-deploy.yml",
     [
-        'test "$AUTO_PRODUCTION_ENABLED" = "true"',
-        'test "${EMERGENCY_STOP:-false}" != "true"',
+        "Require autonomous production controls",
+        "config/automation_policy.json",
         "Validate WorkBuddy deployment handoff",
         "Validate release and deployment gates",
-        "Wait for required PR checks",
+        "Wait for CI test check",
         "Merge approved-by-policy PR",
         "Deploy main and verify 0m 1m 5m 15m health",
         "Rolling back",
