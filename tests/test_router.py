@@ -108,3 +108,31 @@ def test_workbuddy_requires_status_todo():
         {"name": "status:running"},
     ]
     assert build("pull_request", payload, "a/b") is None
+
+
+def test_deploy_routes_to_workbuddy():
+    req, _ = build(
+        "pull_request",
+        pr_payload("phase:deploy"),
+        "a/b",
+    )
+    assert req.agent == "workbuddy"
+    assert req.phase == "phase:deploy"
+
+
+def test_deploy_success_hands_to_execution_state():
+    labels = next_labels(
+        "workbuddy",
+        "pull_request",
+        [
+            "agent:workbuddy",
+            "phase:deploy",
+            "status:running",
+        ],
+        "success",
+        [],
+        phase="phase:deploy",
+    )
+    assert "agent:workbuddy" in labels
+    assert "phase:deploy" in labels
+    assert "status:running" in labels
