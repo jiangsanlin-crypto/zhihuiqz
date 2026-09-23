@@ -26,10 +26,20 @@ require(
     ],
 )
 
-env_text = Path(".env.example").read_text()
-if "WORKBUDDY_MODEL=GLM-5.3-Flash" not in env_text:
-    raise SystemExit("WorkBuddy model pin is missing")
-if "WORKBUDDY_MODEL_LOCK_CONFIRMED=false" not in env_text:
-    raise SystemExit("WorkBuddy model-lock confirmation guard is missing")
+require(
+    ".github/workflows/openai-validator.yml",
+    [
+        "model: gpt-5.6-luna",
+        "effort: high",
+    ],
+)
 
-print("strict model policy validated")
+require(
+    "agents/workbuddy_prompt.md",
+    [
+        "No WorkBuddy OAuth or WorkBuddy Cloud dependency",
+        "Runtime model: `gpt-5.6-luna`",
+    ],
+)
+
+print("strict OpenAI-only model policy validated")

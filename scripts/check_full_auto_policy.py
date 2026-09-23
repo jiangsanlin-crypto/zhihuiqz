@@ -20,27 +20,25 @@ require(
 )
 
 require(
-    ".github/workflows/auto-production-deploy.yml",
+    ".github/workflows/openai-validator.yml",
     [
-        "Require autonomous production controls",
-        "config/automation_policy.json",
-        "Validate WorkBuddy deployment handoff",
-        "Validate release and deployment gates",
-        "Wait for CI test check",
-        "Merge approved-by-policy PR",
-        "Deploy main and verify 0m 1m 5m 15m health",
-        "Rolling back",
+        "reports/prototype_gate.json",
+        "reports/qa_summary.json",
+        "reports/deployment_gate.json",
+        "Run deterministic QA tests",
     ],
 )
 
 require(
-    "orchestrator/workbuddy_runner.py",
+    ".github/workflows/auto-production-deploy.yml",
     [
-        "DEPLOY_FILES",
-        "deployment_plan.md",
-        "deployment_gate.json",
-        'req.phase == "phase:deploy"',
-        'phase="deployment_plan"',
+        "Require autonomous production controls",
+        "Validate OpenAI validator deployment handoff",
+        "Validate release and deployment gates",
+        "Run final repository tests before merge",
+        "Merge approved-by-policy PR",
+        "Deploy main and verify 0m 1m 5m 15m health",
+        "Rolling back",
     ],
 )
 

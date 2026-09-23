@@ -1,0 +1,482 @@
+name: OpenAI Validation Agent
+
+on:
+  repository_dispatch:
+    types:
+      - agent_workbuddy_prototype
+      - agent_workbuddy_qa
+      - agent_workbuddy_deploy
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to retry
+        required: true
+      phase:
+        description: Validation phase
+        required: true
+        type: choice
+        options:
+          - prototype
+          - qa
+          - deploy
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Resolve PR context
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER_AUTO: ${{ github.event.client_payload.pr_number }}
+          PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
+          TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
+          SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
+          PHASE_AUTO: ${{ github.event.client_payload.phase }}
+          PHASE_MANUAL: ${{ inputs.phase }}
+        run: |
+          set -euo pipefail
+
+          PR_NUMBER="${PR_NUMBER_AUTO:-$PR_NUMBER_MANUAL}"
+          PHASE="${PHASE_AUTO:-$PHASE_MANUAL}"
+          test -n "$PR_NUMBER"
+
+          case "$PHASE" in
+            prototype)
+              EXPECTED_PHASE="phase:prototype"
+              PREV_FROM="codex"
+              PREV_TO="workbuddy"
+              PREV_HANDOFF_PHASE="product_planning"
+              NEXT_AGENT="chatgpt"
+              NEXT_PHASE="phase:implementation"
+              NEXT_EVENT="agent_chatgpt_implementation"
+              HANDOFF_PHASE="prototype_validation"
+              ;;
+            qa)
+              EXPECTED_PHASE="phase:qa"
+              PREV_FROM="chatgpt"
+              PREV_TO="workbuddy"
+              PREV_HANDOFF_PHASE="implementation"
+              NEXT_AGENT="codex"
+              NEXT_PHASE="phase:release"
+              NEXT_EVENT="agent_codex_release"
+              HANDOFF_PHASE="qa_acceptance"
+              ;;
+            deploy)
+              EXPECTED_PHASE="phase:deploy"
+              PREV_FROM="codex"
+              PREV_TO="workbuddy"
+              PREV_HANDOFF_PHASE="release_review"
+              NEXT_AGENT="workbuddy"
+              NEXT_PHASE="phase:deploy"
+              NEXT_EVENT="agent_execute_deployment"
+              HANDOFF_PHASE="deployment_plan"
+              ;;
+            *)
+              echo "Unsupported validation phase: $PHASE"
+              exit 1
+              ;;
+          esac
+
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+
+          HEAD_REF="$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")"
+          SOURCE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
+          BODY="$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")"
+          LABELS="$(jq -r '.labels[].name' "$RUNNER_TEMP/pr.json")"
+          TASK_ID="$(printf '%s' "$BODY" |
+            sed -n 's/.*<!-- agent-task-id:\([A-Za-z0-9._:-]*\) -->.*/\1/p' |
+            head -n1)"
+
+          test -n "$TASK_ID"
+          echo "$LABELS" | grep -qx "agent:workbuddy"
+          echo "$LABELS" | grep -qx "$EXPECTED_PHASE"
+          echo "$LABELS" | grep -qx "status:todo"
+
+          if [ -n "$TASK_ID_HINT" ] && [ "$TASK_ID_HINT" != "$TASK_ID" ]; then
+            echo "task_id mismatch"
+            exit 1
+          fi
+          if [ -n "$SOURCE_SHA_HINT" ] && [ "$SOURCE_SHA_HINT" != "$SOURCE_SHA" ]; then
+            echo "source_sha mismatch"
+            exit 1
+          fi
+
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "phase=$PHASE"
+            echo "expected_phase=$EXPECTED_PHASE"
+            echo "head_ref=$HEAD_REF"
+            echo "source_sha=$SOURCE_SHA"
+            echo "task_id=$TASK_ID"
+            echo "prev_from=$PREV_FROM"
+            echo "prev_to=$PREV_TO"
+            echo "prev_handoff_phase=$PREV_HANDOFF_PHASE"
+            echo "next_agent=$NEXT_AGENT"
+            echo "next_phase=$NEXT_PHASE"
+            echo "next_event=$NEXT_EVENT"
+            echo "handoff_phase=$HANDOFF_PHASE"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.context.outputs.head_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
+      - name: Validate previous handoff
+        id: handoff_gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+          PREV_FROM: ${{ steps.context.outputs.prev_from }}
+          PREV_TO: ${{ steps.context.outputs.prev_to }}
+          PREV_PHASE: ${{ steps.context.outputs.prev_handoff_phase }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
+
+          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent "$PREV_FROM"             --to-agent "$PREV_TO"             --phase "$PREV_PHASE"             --source-sha "$SOURCE_SHA"
+
+          jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
+
+      - name: Mark validation running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
+
+      - name: Run deterministic QA tests
+        if: steps.context.outputs.phase == 'qa'
+        id: qa_tests
+        continue-on-error: true
+        run: |
+          set +e
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt > "$RUNNER_TEMP/pip-install.txt" 2>&1
+            PIP_RC=$?
+            if [ "$PIP_RC" -ne 0 ]; then
+              cat "$RUNNER_TEMP/pip-install.txt"
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          if [ -d tests ]; then
+            PYTHONPATH=. pytest -q > "$RUNNER_TEMP/qa-tests.txt" 2>&1
+            RC=$?
+          else
+            echo "No tests directory." > "$RUNNER_TEMP/qa-tests.txt"
+            RC=0
+          fi
+
+          cat "$RUNNER_TEMP/qa-tests.txt"
+          if [ "$RC" -eq 0 ]; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          exit "$RC"
+
+      - name: Build validation prompt
+        env:
+          PHASE: ${{ steps.context.outputs.phase }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          QA_TEST_STATUS: ${{ steps.qa_tests.outputs.status }}
+        run: |
+          {
+            cat agents/workbuddy_prompt.md
+            echo
+            echo "## Runtime phase"
+            echo "Task ID: $TASK_ID"
+            echo "PR #$PR_NUMBER"
+            echo "Phase: $PHASE"
+            echo
+            echo "## Prior handoffs"
+            cat "$RUNNER_TEMP/handoffs.md"
+            echo
+            echo "## Machine-output contract"
+
+            if [ "$PHASE" = "prototype" ]; then
+              cat <<'EOF'
+          Modify ONLY:
+          - reports/prototype_review.md
+          - reports/data_analysis.md
+          - reports/classification_validation.md
+          - reports/uiux_prototype.md
+          - reports/prototype_gate.json
+
+          reports/prototype_gate.json must be valid JSON:
+          {"status":"ready","summary":"..."}
+          or
+          {"status":"blocked","summary":"...","blockers":["..."]}
+
+          Use ready only if the product specification is implementable and the
+          taxonomy/data/UI assumptions are acceptable.
+          EOF
+            elif [ "$PHASE" = "qa" ]; then
+              echo "Deterministic QA status: ${QA_TEST_STATUS:-unknown}"
+              if [ -f "$RUNNER_TEMP/qa-tests.txt" ]; then
+                echo
+                echo "### Deterministic test output"
+                tail -c 10000 "$RUNNER_TEMP/qa-tests.txt"
+              fi
+              cat <<'EOF'
+
+          Modify ONLY:
+          - reports/test_report.md
+          - reports/uiux_acceptance.md
+          - reports/classification_validation.md
+          - reports/qa_summary.json
+
+          reports/qa_summary.json must be valid JSON:
+          {"status":"ready","summary":"..."}
+          or
+          {"status":"blocked","summary":"...","blockers":["..."]}
+
+          If deterministic tests failed, status MUST be blocked.
+          EOF
+            else
+              cat <<'EOF'
+          Modify ONLY:
+          - reports/deployment_plan.md
+          - reports/deployment_gate.json
+
+          reports/deployment_gate.json must be valid JSON:
+          {"status":"ready","summary":"..."}
+          or
+          {"status":"blocked","summary":"...","blockers":["..."]}
+
+          Use ready only if reports/release_gate.json is ready, prior QA is
+          successful, rollback is defined, and no unresolved blocker remains.
+          Do not execute SSH or deployment commands yourself.
+          EOF
+            fi
+          } > "$RUNNER_TEMP/validator-prompt.md"
+
+      - name: Run OpenAI validation agent
+        id: validator
+        continue-on-error: true
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
+          model: gpt-5.6-luna
+          effort: high
+          permission-profile: ":workspace"
+          prompt-file: ${{ runner.temp }}/validator-prompt.md
+          output-file: ${{ runner.temp }}/validator-output.md
+
+      - name: Validate phase artifacts and gate
+        if: steps.validator.outcome == 'success'
+        id: gate
+        continue-on-error: true
+        env:
+          PHASE: ${{ steps.context.outputs.phase }}
+          QA_TEST_STATUS: ${{ steps.qa_tests.outputs.status }}
+        run: |
+          set -euo pipefail
+
+          case "$PHASE" in
+            prototype)
+              REQUIRED=(
+                reports/prototype_review.md
+                reports/data_analysis.md
+                reports/classification_validation.md
+                reports/uiux_prototype.md
+                reports/prototype_gate.json
+              )
+              ALLOWED='^(reports/prototype_review\.md|reports/data_analysis\.md|reports/classification_validation\.md|reports/uiux_prototype\.md|reports/prototype_gate\.json)$'
+              GATE="reports/prototype_gate.json"
+              ;;
+            qa)
+              REQUIRED=(
+                reports/test_report.md
+                reports/uiux_acceptance.md
+                reports/classification_validation.md
+                reports/qa_summary.json
+              )
+              ALLOWED='^(reports/test_report\.md|reports/uiux_acceptance\.md|reports/classification_validation\.md|reports/qa_summary\.json)$'
+              GATE="reports/qa_summary.json"
+              if [ "${QA_TEST_STATUS:-failed}" != "passed" ]; then
+                echo "Deterministic QA did not pass."
+                exit 1
+              fi
+              ;;
+            deploy)
+              REQUIRED=(
+                reports/deployment_plan.md
+                reports/deployment_gate.json
+              )
+              ALLOWED='^(reports/deployment_plan\.md|reports/deployment_gate\.json)$'
+              GATE="reports/deployment_gate.json"
+              ;;
+          esac
+
+          for path in "${REQUIRED[@]}"; do
+            test -f "$path"
+          done
+
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | sed '/^$/d' | sort -u > "$RUNNER_TEMP/validator-changed.txt"
+
+          test -s "$RUNNER_TEMP/validator-changed.txt"
+          if grep -Ev "$ALLOWED" "$RUNNER_TEMP/validator-changed.txt"; then
+            echo "Validation agent changed files outside the phase allowlist."
+            exit 1
+          fi
+
+          python -m json.tool "$GATE" >/dev/null
+          STATUS="$(python - <<PY
+          import json
+          print(json.load(open("$GATE")).get("status",""))
+          PY
+          )"
+
+          if [ "$STATUS" != "ready" ]; then
+            echo "Validation gate is not ready."
+            exit 1
+          fi
+
+          echo "status=ready" >> "$GITHUB_OUTPUT"
+
+      - name: Commit validation artifacts
+        if: steps.validator.outcome == 'success' && steps.gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          PHASE: ${{ steps.context.outputs.phase }}
+        run: |
+          gh auth setup-git
+          git config user.name "openai-validation-agent"
+          git config user.email "openai-validation-agent@users.noreply.github.com"
+          git add reports
+          git commit -m "docs: OpenAI validation $PHASE"
+          git push origin "HEAD:$HEAD_REF"
+
+      - name: Publish successful handoff and dispatch next phase
+        if: steps.validator.outcome == 'success' && steps.gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+          PHASE: ${{ steps.context.outputs.phase }}
+          HANDOFF_PHASE: ${{ steps.context.outputs.handoff_phase }}
+          NEXT_AGENT: ${{ steps.context.outputs.next_agent }}
+          NEXT_PHASE: ${{ steps.context.outputs.next_phase }}
+          NEXT_EVENT: ${{ steps.context.outputs.next_event }}
+        run: |
+          set -euo pipefail
+
+          SHA="$(git rev-parse HEAD)"
+          SUMMARY="$(tail -c 3000 "$RUNNER_TEMP/validator-output.md" 2>/dev/null || true)"
+          FILES="$(python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ["RUNNER_TEMP"])/"validator-changed.txt"
+          print(json.dumps([x.strip() for x in p.read_text().splitlines() if x.strip()]))
+          PY
+          )"
+
+          export SHA SUMMARY FILES
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          payload={
+              "version":"1.0",
+              "task_id":os.environ["TASK_ID"],
+              "from_agent":"workbuddy",
+              "to_agent":os.environ["NEXT_AGENT"],
+              "phase":os.environ["HANDOFF_PHASE"],
+              "status":"success",
+              "summary":os.environ.get("SUMMARY","")[-3000:],
+              "model":"gpt-5.6-luna",
+              "effort":"high",
+              "required_inputs":["prior successful handoff","current PR head","phase artifacts"],
+              "expected_outputs":[],
+              "acceptance":["next phase may start only if task ID and source SHA match"],
+              "artifacts":json.loads(os.environ["FILES"]),
+              "checks":[{"name":"validator_gate","status":"passed","detail":"machine-readable validation gate is ready"}],
+              "blockers":[],
+              "source_ref":os.environ["HEAD_REF"],
+              "source_sha":os.environ["SHA"],
+              "pr_number":int(os.environ["PR_NUMBER"]),
+          }
+          body=(
+              "<!-- agent-handoff:v1 -->\n"
+              "### Agent handoff: OpenAI validation agent → "
+              + os.environ["NEXT_AGENT"]
+              + "\n\n```json\n"
+              + json.dumps(payload,ensure_ascii=False,indent=2)
+              + "\n```\n"
+          )
+          Path(os.environ["RUNNER_TEMP"],"validator-handoff.md").write_text(body)
+          PY
+
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/validator-handoff.md"
+
+          if [ "$PHASE" = "prototype" ]; then
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "agent:workbuddy"               --remove-label "phase:prototype"               --remove-label "status:running"               --add-label "agent:chatgpt"               --add-label "phase:implementation"               --add-label "status:todo"
+          elif [ "$PHASE" = "qa" ]; then
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "agent:workbuddy"               --remove-label "phase:qa"               --remove-label "status:running"               --add-label "agent:codex"               --add-label "phase:release"               --add-label "status:todo"
+          else
+            # Deployment executor validates the final compatibility handoff.
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "status:todo"               --add-label "status:running"
+          fi
+
+          jq -n             --argjson pr_number "$PR_NUMBER"             --arg task_id "$TASK_ID"             --arg head_ref "$HEAD_REF"             --arg source_sha "$SHA"             --arg phase "$PHASE"             '{
+              event_type:env.NEXT_EVENT,
+              client_payload:{
+                pr_number:$pr_number,
+                task_id:$task_id,
+                head_ref:$head_ref,
+                source_sha:$source_sha,
+                phase:$phase
+              }
+            }' NEXT_EVENT="$NEXT_EVENT" > "$RUNNER_TEMP/next-dispatch.json"
+
+          for attempt in 1 2 3 4 5; do
+            if gh api --method POST "repos/${{ github.repository }}/dispatches"               --input "$RUNNER_TEMP/next-dispatch.json"
+            then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+
+          echo "Failed to dispatch next phase."
+          exit 1
+
+      - name: Block failed validation
+        if: steps.validator.outcome != 'success' || steps.gate.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PHASE: ${{ steps.context.outputs.phase }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
+
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "❌ OpenAI validation agent blocked phase `$PHASE`. No later phase was dispatched."
+
+          exit 1

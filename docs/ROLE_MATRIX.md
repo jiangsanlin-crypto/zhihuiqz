@@ -2,38 +2,34 @@
 
 ## Codex
 
-Owns product management, Cambodia recruitment rules, taxonomy, collection
-planning, task acceptance criteria, release review and release notes.
+Owns product management, recruitment rules, taxonomy, collection planning,
+acceptance criteria, release review and release notes.
 
-It does not implement primary application code or execute server commands.
+Runtime: `gpt-5.6-luna` / max.
 
 ## ChatGPT
 
-Owns frontend/backend implementation, classification engineering, data/API/
-database changes, migrations and tests.
+Owns frontend/backend implementation, classification engineering, APIs/data,
+migrations and tests.
 
-It does not self-approve product rules or execute production deployment.
+Runtime: `gpt-5.6-sol` / high.
 
-## WorkBuddy
+## OpenAI Validation Agent
 
-Owns prototype validation, data analysis, classification validation, QA,
-multilingual/UI/UX acceptance, deployment planning, production readiness,
-post-deployment health interpretation and rollback policy.
+Owns independent prototype validation, data-assumption review, classification
+validation, deterministic QA review, multilingual UI/UX acceptance and
+deployment-readiness review.
 
-Actual SSH/Docker execution is performed by GitHub Actions.
+Runtime: `gpt-5.6-luna` / high.
+
+Compatibility agent ID: `workbuddy`.
+
+It does not use WorkBuddy Cloud or WorkBuddy OAuth.
 
 ## Automation control plane
 
-GitHub Actions + Orchestrator perform deterministic routing, merge, deployment,
-health checks and rollback.
+GitHub Actions performs routing, handoff validation, test gates, merge,
+deployment, health checks and rollback.
 
-Normal product software delivery is fully automatic once
-`AUTO_PRODUCTION_ENABLED=true`.
-
-## Human owner
-
-The human owner configures account-level credentials, may activate
-`EMERGENCY_STOP`, and can intervene on blocked incidents.
-
-Separate explicit authorization is still required before agents may perform
-real payment transactions or use real candidate production data.
+The human owner can intervene on blocked incidents and control the repository
+emergency-stop policy.

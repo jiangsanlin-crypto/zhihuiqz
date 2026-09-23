@@ -1,60 +1,38 @@
-# WorkBuddy Integration
+# Validation Agent Migration
 
-WorkBuddy is the independent validation and deployment work body.
+WorkBuddy Cloud is no longer part of the active automation path.
 
-## GitHub access
+The previous WorkBuddy responsibilities are now executed by an independent
+OpenAI Validation Agent in GitHub Actions using the existing
+`OPENAI_API_KEY`.
 
-WorkBuddy reads the public repository and PRs directly and receives no GitHub
-write credential. Report write-back/dispatch is performed by the Orchestrator
-after path and handoff validation.
+## Compatibility
 
-## API authentication
+To avoid breaking existing handoff validation, labels and historical PRs, the
+internal agent ID remains:
 
-The persistent WorkBuddy runner uses WorkBuddy OAuth/access-token credentials.
+`workbuddy`
 
-## Model lock
+This is only a compatibility identifier. It no longer means an external
+WorkBuddy Cloud task.
 
-Required model: `GLM-5.3-Flash`.
+## Runtime
 
-The dedicated WorkBuddy/Buddy App must expose only that model. The Orchestrator
-remains not-ready until `WORKBUDDY_MODEL_LOCK_CONFIRMED=true`.
+- Model: `gpt-5.6-luna`
+- Effort: `high`
+- Transport: GitHub `repository_dispatch`
+- Credentials: OpenAI API key only
+- WorkBuddy OAuth: not required
 
-## Prototype phase
+## Phases
 
-Outputs:
-- reports/prototype_review.md
-- reports/data_analysis.md
-- reports/classification_validation.md
-- reports/uiux_prototype.md
+Prototype validation produces prototype/data/classification/UI reports plus
+`reports/prototype_gate.json`.
 
-Successful handoff -> ChatGPT.
+QA produces test/UI/classification reports plus
+`reports/qa_summary.json`.
 
-## QA phase
+Deployment review produces `reports/deployment_plan.md` and
+`reports/deployment_gate.json`.
 
-Outputs:
-- reports/test_report.md
-- reports/uiux_acceptance.md
-- reports/classification_validation.md
-- reports/qa_summary.json
-
-Successful handoff -> Codex release review.
-
-## Deployment phase
-
-After Codex marks the release ready, WorkBuddy performs an independent
-production-readiness review.
-
-Outputs:
-- reports/deployment_plan.md
-- reports/deployment_gate.json
-
-A ready deployment gate automatically dispatches GitHub Actions to:
-- wait required CI;
-- merge the PR;
-- deploy main;
-- check health at 0/1/5/15 minutes;
-- roll back on failure;
-- mark the task done on success.
-
-No per-release human approval is required when full-auto mode is enabled.
-`EMERGENCY_STOP=true` stops the production stage before merge/deploy.
+Only a ready machine-readable gate advances the workflow.

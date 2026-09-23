@@ -1,4 +1,4 @@
-name: WorkBuddy Auto Production Deploy
+name: OpenAI Validator Auto Production Deploy
 
 on:
   repository_dispatch:
@@ -99,7 +99,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate WorkBuddy deployment handoff
+      - name: Validate OpenAI validator deployment handoff
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -139,45 +139,20 @@ jobs:
 
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:workbuddy"             --remove-label "phase:deploy"             --remove-label "status:running"             --add-label "status:done"
 
-      - name: Wait for CI test check
+      - name: Run final repository tests before merge
         if: steps.context.outputs.dry_run != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
           set -euo pipefail
 
-          for attempt in $(seq 1 90); do
-            gh api               -H "Accept: application/vnd.github+json"               "repos/${{ github.repository }}/commits/$SOURCE_SHA/check-runs?per_page=100"               > "$RUNNER_TEMP/check-runs.json"
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
 
-            STATUS="$(jq -r '
-              [.check_runs[] | select(.name=="test")] |
-              sort_by(.started_at // "") |
-              last |
-              if . == null then "missing"
-              elif .status != "completed" then .status
-              else (.conclusion // "unknown")
-              end
-            ' "$RUNNER_TEMP/check-runs.json")"
-
-            case "$STATUS" in
-              success)
-                echo "CI test check passed."
-                exit 0
-                ;;
-              failure|cancelled|timed_out|action_required|stale)
-                echo "CI test check failed with conclusion: $STATUS"
-                exit 1
-                ;;
-              *)
-                echo "Waiting for CI test check: $STATUS"
-                sleep 10
-                ;;
-            esac
-          done
-
-          echo "Timed out waiting for CI test check."
-          exit 1
+          if [ -d tests ]; then
+            PYTHONPATH=. pytest -q
+          else
+            echo "No tests directory; nothing to run."
+          fi
 
       - name: Merge approved-by-policy PR
         if: steps.context.outputs.dry_run != 'true'

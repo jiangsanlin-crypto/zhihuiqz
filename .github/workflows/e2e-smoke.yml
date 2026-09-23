@@ -31,11 +31,13 @@ jobs:
 
       - name: Verify activation
         env:
-          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
-          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
           OPENAI_API_KEY: ${{ steps.openai_key.outputs.openai_api_key }}
         run: |
           test -n "$OPENAI_API_KEY"
+
+          python scripts/check_model_policy.py
+          python scripts/check_dispatch_policy.py
+          python scripts/check_full_auto_policy.py
 
           python - <<'PY'
           import json
@@ -45,13 +47,6 @@ jobs:
           if policy.get("emergency_stop") is True:
               raise SystemExit("emergency stop is active")
           PY
-
-          URL="$ORCHESTRATOR_URL"
-          if [ -z "$URL" ] && [ -n "$ORCH_SERVER_HOST" ]; then
-            URL="http://$ORCH_SERVER_HOST:8080"
-          fi
-          test -n "$URL"
-          curl --fail-with-body -sS "$URL/readyz"
 
       - name: Create synthetic source issue
         id: issue
@@ -145,6 +140,6 @@ jobs:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          gh issue comment "$ISSUE_NUMBER"             --repo "${{ github.repository }}"             --body "✅ E2E passed through Codex -> WorkBuddy -> ChatGPT -> WorkBuddy -> Codex -> WorkBuddy deployment gate -> automatic completion. Synthetic E2E intentionally skipped real merge/server deployment."
+          gh issue comment "$ISSUE_NUMBER"             --repo "${{ github.repository }}"             --body "✅ E2E passed through Codex -> OpenAI Validator -> ChatGPT -> OpenAI Validator -> Codex -> OpenAI Validator deployment gate -> automatic completion. Synthetic E2E intentionally skipped real merge/server deployment."
 
           gh pr comment "$PR_NUMBER"             --repo "${{ github.repository }}"             --body "✅ Full-auto E2E passed. This synthetic PR remains unmerged by design."

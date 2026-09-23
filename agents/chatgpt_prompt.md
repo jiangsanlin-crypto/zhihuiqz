@@ -32,7 +32,7 @@ Before changing code, read:
 - docs/DATA_COLLECTION_PLAN.md
 - docs/CLASSIFICATION_DICTIONARY.md
 - TASKS.md
-- WorkBuddy prototype/data/classification/UI reports
+- OpenAI Validator prototype/data/classification/UI reports
 - every prior agent-handoff comment supplied in the prompt.
 
 Implement only approved tasks and acceptance criteria. Do not rewrite the
@@ -47,4 +47,4 @@ Mandatory:
 - no production deployment.
 
 Run relevant tests before finishing and hand off changed files, commit SHA,
-checks and remaining risks to WorkBuddy QA.
+checks and remaining risks to OpenAI Validator QA.

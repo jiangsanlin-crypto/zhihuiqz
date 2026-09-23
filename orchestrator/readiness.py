@@ -19,30 +19,11 @@ def static_checks(settings: Settings) -> dict[str, dict[str, Any]]:
             "ok": bool(settings.orchestrator_token),
             "detail": "configured" if settings.orchestrator_token else "missing",
         },
-        "workbuddy_runner": {
-            "ok": bool(settings.workbuddy_url and settings.workbuddy_token),
-            "detail": (
-                "configured"
-                if settings.workbuddy_url and settings.workbuddy_token
-                else "missing URL or runner token"
-            ),
-        },
-        "workbuddy_model": {
-            "ok": (
-                settings.workbuddy_model == "GLM-5.3-Flash"
-                and settings.workbuddy_model_lock_confirmed
-            ),
-            "detail": {
-                "expected": "GLM-5.3-Flash",
-                "configured": settings.workbuddy_model,
-                "lock_confirmed": settings.workbuddy_model_lock_confirmed,
-            },
-        },
         "openai_agent_execution": {
             "ok": True,
             "detail": (
-                "Codex and ChatGPT run in GitHub Actions with hard-pinned "
-                "model/effort values; OPENAI_API_KEY is validated by those workflows"
+                "Codex, ChatGPT and the validation agent execute in GitHub "
+                "Actions using OPENAI_API_KEY; WorkBuddy Cloud is not required"
             ),
         },
     }
