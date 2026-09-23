@@ -1,0 +1,184 @@
+name: Preflight Deployment Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type PREFLIGHT-DEPLOYMENT to run protected preflight checks
+        required: true
+        type: string
+      check_server:
+        description: Also probe the live orchestrator /readyz endpoint
+        required: true
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+
+permissions:
+  contents: read
+  issues: read
+  actions: read
+
+jobs:
+  reject-invalid-confirmation:
+    if: ${{ inputs.confirm != 'PREFLIGHT-DEPLOYMENT' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop because confirmation text is incorrect
+        run: |
+          echo "Expected confirmation: PREFLIGHT-DEPLOYMENT"
+          exit 1
+
+  preflight:
+    if: ${{ inputs.confirm == 'PREFLIGHT-DEPLOYMENT' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: repository-administration
+    steps:
+      - name: Check out the reviewed repository
+        uses: actions/checkout@v4
+
+      - name: Validate release-critical files and model policy
+        run: |
+          set -euo pipefail
+          required=(
+            ".env.example"
+            "docker-compose.yml"
+            "orchestrator/readiness.py"
+            "scripts/check_model_policy.py"
+            ".github/workflows/bootstrap-orchestrator.yml"
+            ".github/workflows/agent-watchdog.yml"
+            ".github/workflows/e2e-smoke.yml"
+            "docs/HANDOFF_PROTOCOL.md"
+            "docs/ROLE_MATRIX.md"
+          )
+          for path in "${required[@]}"; do
+            test -f "$path" || { echo "Missing required file: $path"; exit 1; }
+          done
+          python scripts/check_model_policy.py
+
+      - name: Verify protected main and production approval gate
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || {
+            echo "REPO_ADMIN_TOKEN is missing from the repository-administration environment."
+            exit 1
+          }
+
+          protection="$(gh api "repos/${{ github.repository }}/branches/main/protection")"
+          export protection
+          python - <<'PY'
+          import json
+          import os
+
+          data = json.loads(os.environ["protection"])
+          checks = data["required_status_checks"]["contexts"]
+          reviews = data["required_pull_request_reviews"]
+          assert data["enforce_admins"]["enabled"] is True
+          assert "test" in checks
+          assert reviews["required_approving_review_count"] >= 1
+          assert reviews["require_code_owner_reviews"] is True
+          assert reviews["require_last_push_approval"] is True
+          assert data["allow_force_pushes"] is False
+          assert data["allow_deletions"] is False
+          assert data["required_conversation_resolution"]["enabled"] is True
+          print("main branch protection matches the release policy")
+          PY
+
+          environment="$(gh api "repos/${{ github.repository }}/environments/orchestrator-production")"
+          export environment
+          python - <<'PY'
+          import json
+          import os
+
+          data = json.loads(os.environ["environment"])
+          rules = data.get("protection_rules") or []
+          assert rules, "orchestrator-production must have at least one approval rule"
+          print("orchestrator-production has a human approval rule")
+          PY
+
+      - name: Verify agent labels exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh label list --repo "${{ github.repository }}" --limit 200 --json name --jq '.[].name')"
+          required=(
+            "agent:codex"
+            "agent:chatgpt"
+            "agent:workbuddy"
+            "phase:product_planning"
+            "phase:prototype_validation"
+            "phase:implementation"
+            "phase:qa_acceptance"
+            "phase:release_review"
+            "phase:deploy"
+            "status:todo"
+            "status:running"
+            "status:blocked"
+            "status:done"
+          )
+          for label in "${required[@]}"; do
+            grep -Fxq "$label" <<< "$existing" || {
+              echo "Missing GitHub label: $label"
+              exit 1
+            }
+          done
+          echo "agent labels are ready"
+
+      - name: Publish preflight result
+        run: |
+          {
+            echo "## Preflight result"
+            echo
+            echo "- Repository files: passed"
+            echo "- Model policy: passed"
+            echo "- main protection: passed"
+            echo "- production approval gate: passed"
+            echo "- Agent labels: passed"
+            if [ "${{ inputs.check_server }}" = "true" ]; then
+              echo "- Live /readyz: passed"
+            else
+              echo "- Live /readyz: skipped (run again with check_server=true after deployment)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  live-readiness:
+    if: ${{ inputs.confirm == 'PREFLIGHT-DEPLOYMENT' && inputs.check_server == 'true' }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: orchestrator-production
+    steps:
+      - name: Probe live orchestrator readiness
+        env:
+          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$ORCHESTRATOR_URL" || { echo "ORCHESTRATOR_URL is missing"; exit 1; }
+          test -n "$ORCHESTRATOR_TOKEN" || { echo "ORCHESTRATOR_TOKEN is missing"; exit 1; }
+          url="${ORCHESTRATOR_URL%/}/readyz"
+          status="$(curl --silent --show-error --location \
+            --header "Authorization: Bearer $ORCHESTRATOR_TOKEN" \
+            --output "$RUNNER_TEMP/readyz.json" \
+            --write-out '%{http_code}' "$url")"
+          cat "$RUNNER_TEMP/readyz.json"
+          test "$status" = "200" || {
+            echo "orchestrator readiness returned HTTP $status"
+            exit 1
+          }
+          echo "live orchestrator is ready"
+
+      - name: Publish live readiness result
+        run: |
+          {
+            echo "## Live readiness result"
+            echo
+            echo "- Orchestrator environment: approved"
+            echo "- Live /readyz: passed"
+          } >> "$GITHUB_STEP_SUMMARY"

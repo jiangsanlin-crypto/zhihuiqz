@@ -1,111 +1,82 @@
 # Three-Agent Activation Runbook
 
-## 1. Review PR #1
+## 0. Current state
 
-Require:
-- CI success;
-- mergeable PR;
-- no committed secrets;
-- model-policy check success;
-- human review of role/permission boundaries.
+PR #1 has already been merged. Review the current pre-launch PR and its CI result before changing production settings. The repository is not production-ready merely because the code is merged: branch protection, WorkBuddy's model lock, server secrets, readiness, and synthetic E2E still require verification.
 
-Do not enable auto-merge.
+## 1. Establish the administrative gate
 
-## 2. Confirm WorkBuddy model lock
+Create the repository-administration GitHub environment and require human approval. Add REPO_ADMIN_TOKEN there. Do not put the token in the repository or share it with any agent.
+
+Run Configure Main Protection with:
+
+PROTECT-MAIN
+
+Review and merge PR #14 only after its CI passes and main protection is active. Do not enable auto-merge.
+
+After the merge, run Preflight Deployment Gates with:
+
+PREFLIGHT-DEPLOYMENT
+
+and check_server=false.
+
+The preflight must verify required status checks, one approving review, code-owner review, conversation resolution, no force-push/deletion, the production approval environment, and the agent labels.
+
+## 2. Confirm WorkBuddy's model lock
 
 In the dedicated WorkBuddy/Buddy App:
+
 1. expose only GLM-5.3-Flash;
-2. set it as default;
-3. verify no Auto/other model can be selected for this integration;
-4. set `WORKBUDDY_MODEL_LOCK_CONFIRMED=true` only after verification.
+2. set it as the default;
+3. verify that Auto and other models cannot be selected for this integration;
+4. set WORKBUDDY_MODEL_LOCK_CONFIRMED=true only after verification.
 
-## 3. Prepare persistent Linux server
+## 3. Prepare the persistent Linux server
 
-Required:
-- Git
-- Docker Engine
-- Docker Compose plugin
-- outbound HTTPS access
-- SSH access from GitHub Actions
+The server needs Git, Docker Engine, the Docker Compose plugin, outbound HTTPS, and SSH access from GitHub Actions.
 
-Create the GitHub environment:
-`orchestrator-production`
+Create the GitHub environment orchestrator-production and require human approval. Configure:
 
-Require human approval.
+- ORCH_SERVER_HOST
+- ORCH_SERVER_USER
+- ORCH_SERVER_PORT
+- ORCH_SERVER_SSH_KEY
+- ORCH_SERVER_KNOWN_HOSTS
+- ORCH_SERVER_PATH
+- ORCH_ENV_B64
 
-Configure the ORCH_SERVER_* secrets and ORCH_ENV_B64.
+The protected server .env must contain the orchestrator and WorkBuddy runtime credentials, repository identity, bearer tokens, and the confirmed WorkBuddy model lock.
 
-## 4. Human merge
+## 4. Deploy the Orchestrator
 
-Merge PR #1 to main only after the above review.
+Run Actions -> WorkBuddy Deploy Orchestrator with:
 
-Immediately protect main.
+DEPLOY-ORCHESTRATOR
 
-## 5. Deploy Orchestrator
+The workflow performs SSH, protected .env transfer, public main checkout, Docker Compose build/up, /readyz verification, and automatic rollback to the previous SHA on a failed deployment.
 
-Run:
+Do not report deployment success until /readyz is HTTP 200.
 
-`Actions -> WorkBuddy Deploy Orchestrator`
+## 5. Configure runtime and run checks
 
-Input:
+Configure these GitHub Actions secrets:
 
-`DEPLOY-ORCHESTRATOR`
-
-The workflow verifies `/readyz` and rolls back on failure.
-
-## 6. Configure normal runtime secrets
-
-GitHub Actions:
 - OPENAI_API_KEY
 - ORCHESTRATOR_URL
 - ORCHESTRATOR_TOKEN
 
-Server `.env`:
-- Orchestrator GitHub token/repository
-- WorkBuddy OAuth
-- WorkBuddy model lock
-- Orchestrator/WorkBuddy bearer tokens
+Run Bootstrap Agent Labels once. Then run Preflight Deployment Gates with PREFLIGHT-DEPLOYMENT and check_server=true.
 
-## 7. Bootstrap labels
+Finally run Multi-Agent E2E Smoke with RUN-E2E. It must use synthetic data and must leave its PR unmerged.
 
-Run `Bootstrap Agent Labels` once.
+## 6. Release and monitoring rules
 
-## 8. Run synthetic E2E
+After a real task passes the Codex release review:
 
-Run `Multi-Agent E2E Smoke` with `RUN-E2E`.
+- a human reviews and merges the application PR;
+- production deployment remains behind the protected environment approval;
+- WorkBuddy owns deployment health checks and controlled rollback;
+- the central watchdog runs every 15 minutes as a safety net;
+- a blocked phase is repaired and rerun; it is never silently skipped.
 
-Expected chain:
-1. Codex product_planning
-2. WorkBuddy prototype_validation
-3. ChatGPT implementation
-4. WorkBuddy qa_acceptance
-5. Codex release_review
-6. human review state
-
-The E2E PR must stay unmerged.
-
-## 9. Release workflow
-
-After a real PR passes Codex release review:
-- human reviews and merges main;
-- optionally run `Codex Create Draft Release`;
-- human approves production;
-- WorkBuddy owns the approved deployment run and health checks.
-
-## 10. Monitoring
-
-Normal operation is real time.
-
-Do not create three independent polling loops.
-
-The central watchdog runs every 15 minutes:
-- running >45 minutes -> block and inspect;
-- queued agent handoff >30 minutes -> warning.
-
-Deployment health is checked more aggressively during the first 15 minutes.
-
-## 11. Failure rule
-
-Never skip to the next agent when a phase is blocked.
-
-Fix the blocker and reapply the same agent label for the same phase.
+The temporary sandbox is not the long-lived production service.

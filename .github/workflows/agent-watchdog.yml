@@ -12,35 +12,55 @@ permissions:
 jobs:
   watchdog:
     runs-on: ubuntu-latest
+
     steps:
       - name: Mark stale running work as blocked
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           THRESHOLD="$(date -u -d '45 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
           QUERY="repo:${{ github.repository }} is:open label:status:running updated:<$THRESHOLD"
 
-          gh api search/issues             -f q="$QUERY"             --jq '.items[].number' > "$RUNNER_TEMP/stale-running.txt"
+          # Search API requires GET when query parameters are supplied.
+          gh api --method GET search/issues \
+            -f q="$QUERY" \
+            --jq '.items[].number' > "$RUNNER_TEMP/stale-running.txt"
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
-            gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked" || true
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "⏱ Central watchdog: this task remained status:running for more than 45 minutes. It was blocked instead of silently advancing. Inspect the latest agent handoff and rerun the same phase."
+
+            gh issue edit "$NUMBER" \
+              --repo "${{ github.repository }}" \
+              --remove-label "status:running" \
+              --add-label "status:blocked"
+
+            gh issue comment "$NUMBER" \
+              --repo "${{ github.repository }}" \
+              --body "⏱ Central watchdog: this task remained status:running for more than 45 minutes. It was blocked instead of silently advancing. Inspect the latest agent handoff and rerun the same phase."
           done < "$RUNNER_TEMP/stale-running.txt"
 
       - name: Flag stale queued handoffs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           THRESHOLD="$(date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
 
           for AGENT in codex chatgpt workbuddy; do
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
 
-            gh api search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/stale-$AGENT.txt"
+            gh api --method GET search/issues \
+              -f q="$QUERY" \
+              --jq '.items[].number' > "$RUNNER_TEMP/stale-$AGENT.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
-              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "⚠️ Central watchdog: queued handoff to $AGENT has not started for more than 30 minutes. Check the corresponding GitHub Action/Orchestrator event. No next phase was started automatically."
+
+              gh issue comment "$NUMBER" \
+                --repo "${{ github.repository }}" \
+                --body "⚠️ Central watchdog: queued handoff to $AGENT has not started for more than 30 minutes. Check the corresponding GitHub Action/Orchestrator event. No next phase was started automatically."
             done < "$RUNNER_TEMP/stale-$AGENT.txt"
           done
