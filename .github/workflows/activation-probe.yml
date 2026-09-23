@@ -161,7 +161,24 @@ jobs:
           )
           repo_ok=values.get("GITHUB_REPOSITORY") == "jiangsanlin-crypto/zhihuiqz"
 
-          print("| protected server env required keys | " + ("✅ complete |" if not missing else "❌ incomplete |"))
+          if missing:
+              print("| protected server env required keys | ❌ missing: " + ", ".join(missing) + " |")
+          else:
+              print("| protected server env required keys | ✅ complete |")
+
+          optional_presence=[
+              "OPENAI_API_KEY",
+              "AGENT_GITHUB_TOKEN",
+              "REPO_ADMIN_TOKEN",
+              "AUTO_PRODUCTION_ENABLED",
+              "EMERGENCY_STOP",
+          ]
+          present_optional=[k for k in optional_presence if values.get(k)]
+          if present_optional:
+              print("| server env optional activation keys | ℹ️ present: " + ", ".join(present_optional) + " |")
+          else:
+              print("| server env optional activation keys | ℹ️ none present |")
+
           print("| WorkBuddy model lock | " + ("✅ confirmed |" if model_ok else "❌ not confirmed |"))
           print("| WorkBuddy OAuth/access token | " + ("✅ configured |" if oauth_ok else "❌ incomplete |"))
           print("| server repository binding | " + ("✅ correct |" if repo_ok else "❌ incorrect |"))
