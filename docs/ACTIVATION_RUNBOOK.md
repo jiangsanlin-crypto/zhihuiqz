@@ -12,7 +12,9 @@ Run Configure Main Protection with:
 
 PROTECT-MAIN
 
-Then run Preflight Deployment Gates with:
+Review and merge PR #14 only after its CI passes and main protection is active. Do not enable auto-merge.
+
+After the merge, run Preflight Deployment Gates with:
 
 PREFLIGHT-DEPLOYMENT
 
