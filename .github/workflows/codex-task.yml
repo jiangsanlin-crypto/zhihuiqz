@@ -16,7 +16,8 @@ jobs:
     if: >
       github.event_name == 'issues' &&
       github.event.label.name == 'agent:codex' &&
-      contains(github.event.issue.labels.*.name, 'phase:product-plan')
+      contains(github.event.issue.labels.*.name, 'phase:product-plan') &&
+      contains(github.event.issue.labels.*.name, 'status:todo')
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -183,6 +184,7 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.label.name == 'agent:codex' &&
       contains(github.event.pull_request.labels.*.name, 'phase:release') &&
+      contains(github.event.pull_request.labels.*.name, 'status:todo') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -194,21 +196,52 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Mark release review running
+      - name: Collect and validate WorkBuddy QA handoff
+        id: handoff_gate
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --remove-label "status:todo" --add-label "status:running" || true
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             > "$RUNNER_TEMP/comments.json"
 
-      - name: Collect handoffs
+          TASK_ID="$(python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          body=event["pull_request"].get("body") or ""
+          match=re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
+          if not match:
+              raise SystemExit("stable task id marker is missing")
+          print(match.group(1))
+          PY
+          )"
+
+          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent workbuddy             --to-agent codex             --phase qa_acceptance             --source-sha "$SOURCE_SHA"
+
+          jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
+
+      - name: Block invalid Codex release handoff gate
+        if: steps.handoff_gate.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate             --jq '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             > "$RUNNER_TEMP/handoffs.md"
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "Codex release review was not started because the required successful WorkBuddy QA handoff was missing, blocked, or pointed at a different PR head SHA."
+          exit 1
+
+      - name: Mark release review running
+        if: steps.handoff_gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running" || true
 
       - name: Build release prompt
+        if: steps.handoff_gate.outcome == 'success'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
