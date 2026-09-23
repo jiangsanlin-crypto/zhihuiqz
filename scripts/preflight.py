@@ -36,6 +36,17 @@ def load_env_file(path: str | None) -> dict[str, str]:
     return values
 
 
+def oauth_configured(env: dict[str, str]) -> bool:
+    return bool(env.get("WORKBUDDY_ACCESS_TOKEN")) or all(
+        env.get(key)
+        for key in (
+            "WORKBUDDY_CLIENT_ID",
+            "WORKBUDDY_CLIENT_SECRET",
+            "WORKBUDDY_REFRESH_TOKEN",
+        )
+    )
+
+
 def static_checks(
     env: dict[str, str],
 ) -> list[tuple[str, bool, str]]:
@@ -50,19 +61,19 @@ def static_checks(
             )
         )
 
-    oauth_ok = bool(env.get("WORKBUDDY_ACCESS_TOKEN")) or all(
-        env.get(key)
-        for key in (
-            "WORKBUDDY_CLIENT_ID",
-            "WORKBUDDY_CLIENT_SECRET",
-            "WORKBUDDY_REFRESH_TOKEN",
-        )
-    )
+    configured = oauth_configured(env)
     results.append(
         (
-            "WORKBUDDY_OAUTH",
-            oauth_ok,
-            "access token or client_id/client_secret/refresh_token",
+            "WORKBUDDY_MODE",
+            True,
+            (
+                "full: real cloud dispatch enabled"
+                if configured
+                else (
+                    "degraded: OAuth is optional for bootstrap; real cloud "
+                    "dispatch is disabled"
+                )
+            ),
         )
     )
 
