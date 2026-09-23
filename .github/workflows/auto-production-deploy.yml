@@ -10,7 +10,10 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
+  issues: write
+  pull-requests: write
+  checks: read
 
 jobs:
   deploy:
@@ -20,18 +23,27 @@ jobs:
     steps:
       - name: Require autonomous production controls
         env:
-          AUTO_PRODUCTION_ENABLED: ${{ secrets.AUTO_PRODUCTION_ENABLED }}
-          EMERGENCY_STOP: ${{ secrets.EMERGENCY_STOP }}
-          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test "$AUTO_PRODUCTION_ENABLED" = "true"
-          test "${EMERGENCY_STOP:-false}" != "true"
-          test -n "$AGENT_GITHUB_TOKEN"
+          gh api             -H "Accept: application/vnd.github.raw+json"             "repos/${{ github.repository }}/contents/config/automation_policy.json?ref=main"             > "$RUNNER_TEMP/automation_policy.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          policy=json.loads(Path(os.environ["RUNNER_TEMP"],"automation_policy.json").read_text())
+          if policy.get("auto_production_enabled") is not True:
+              raise SystemExit("auto production is disabled by repository policy")
+          if policy.get("emergency_stop") is True:
+              raise SystemExit("emergency stop is active")
+          if policy.get("require_ci_check") != "test":
+              raise SystemExit("required CI policy is not 'test'")
+          print("full-auto repository policy validated")
+          PY
 
       - name: Resolve deployment context
         id: context
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER_AUTO: ${{ github.event.client_payload.pr_number }}
           PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
           TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
@@ -89,7 +101,7 @@ jobs:
 
       - name: Validate WorkBuddy deployment handoff
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
           TASK_ID: ${{ steps.context.outputs.task_id }}
@@ -120,25 +132,57 @@ jobs:
       - name: E2E dry-run completion
         if: steps.context.outputs.dry_run == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "✅ E2E full-auto chain reached the deployment execution gate. Merge/server deployment were intentionally skipped for the synthetic E2E task."
 
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:workbuddy"             --remove-label "phase:deploy"             --remove-label "status:running"             --add-label "status:done"
 
-      - name: Wait for required PR checks
+      - name: Wait for CI test check
         if: steps.context.outputs.dry_run != 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
-          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
-          gh pr checks "$PR_NUMBER"             --repo "${{ github.repository }}"             --required             --watch             --interval 10
+          set -euo pipefail
+
+          for attempt in $(seq 1 90); do
+            gh api               -H "Accept: application/vnd.github+json"               "repos/${{ github.repository }}/commits/$SOURCE_SHA/check-runs?per_page=100"               > "$RUNNER_TEMP/check-runs.json"
+
+            STATUS="$(jq -r '
+              [.check_runs[] | select(.name=="test")] |
+              sort_by(.started_at // "") |
+              last |
+              if . == null then "missing"
+              elif .status != "completed" then .status
+              else (.conclusion // "unknown")
+              end
+            ' "$RUNNER_TEMP/check-runs.json")"
+
+            case "$STATUS" in
+              success)
+                echo "CI test check passed."
+                exit 0
+                ;;
+              failure|cancelled|timed_out|action_required|stale)
+                echo "CI test check failed with conclusion: $STATUS"
+                exit 1
+                ;;
+              *)
+                echo "Waiting for CI test check: $STATUS"
+                sleep 10
+                ;;
+            esac
+          done
+
+          echo "Timed out waiting for CI test check."
+          exit 1
 
       - name: Merge approved-by-policy PR
         if: steps.context.outputs.dry_run != 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr merge "$PR_NUMBER"             --repo "${{ github.repository }}"             --squash             --delete-branch
@@ -147,7 +191,7 @@ jobs:
         if: steps.context.outputs.dry_run != 'true'
         id: merged
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           SHA="$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -236,7 +280,7 @@ jobs:
       - name: Mark deployment complete
         if: success() && steps.context.outputs.dry_run != 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
           DEPLOYED_SHA: ${{ steps.merged.outputs.sha }}
@@ -253,7 +297,7 @@ jobs:
       - name: Mark deployment blocked after failure
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           if [ -n "$PR_NUMBER" ]; then
