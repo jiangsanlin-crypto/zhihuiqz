@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   reject-invalid-confirmation:
-    if: \${{ inputs.confirm != 'PREFLIGHT-DEPLOYMENT' }}
+    if: ${{ inputs.confirm != 'PREFLIGHT-DEPLOYMENT' }}
     runs-on: ubuntu-latest
     steps:
       - name: Stop because confirmation text is incorrect
@@ -32,7 +32,7 @@ jobs:
           exit 1
 
   preflight:
-    if: \${{ inputs.confirm == 'PREFLIGHT-DEPLOYMENT' }}
+    if: ${{ inputs.confirm == 'PREFLIGHT-DEPLOYMENT' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: repository-administration
@@ -61,7 +61,7 @@ jobs:
 
       - name: Verify protected main and production approval gate
         env:
-          GH_TOKEN: \${{ secrets.REPO_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
         run: |
           set -euo pipefail
           test -n "\$GH_TOKEN" || {
@@ -69,7 +69,7 @@ jobs:
             exit 1
           }
 
-          protection="\$(gh api "repos/\${{ github.repository }}/branches/main/protection")"
+          protection="\$(gh api "repos/${{ github.repository }}/branches/main/protection")"
           export protection
           python - <<'PY'
           import json
@@ -89,7 +89,7 @@ jobs:
           print("main branch protection matches the release policy")
           PY
 
-          environment="\$(gh api "repos/\${{ github.repository }}/environments/orchestrator-production")"
+          environment="\$(gh api "repos/${{ github.repository }}/environments/orchestrator-production")"
           export environment
           python - <<'PY'
           import json
@@ -103,10 +103,10 @@ jobs:
 
       - name: Verify agent labels exist
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          existing="\$(gh label list --repo "\${{ github.repository }}" --limit 200 --json name --jq '.[].name')"
+          existing="\$(gh label list --repo "${{ github.repository }}" --limit 200 --json name --jq '.[].name')"
           required=(
             "agent:codex"
             "agent:chatgpt"
@@ -131,10 +131,10 @@ jobs:
           echo "agent labels are ready"
 
       - name: Probe live orchestrator readiness
-        if: \${{ inputs.check_server == 'true' }}
+        if: ${{ inputs.check_server == 'true' }}
         env:
-          ORCHESTRATOR_URL: \${{ secrets.ORCHESTRATOR_URL }}
-          ORCHESTRATOR_TOKEN: \${{ secrets.ORCHESTRATOR_TOKEN }}
+          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
         run: |
           set -euo pipefail
           test -n "\$ORCHESTRATOR_URL" || { echo "ORCHESTRATOR_URL is missing"; exit 1; }
@@ -161,7 +161,7 @@ jobs:
             echo "- main protection: passed"
             echo "- production approval gate: passed"
             echo "- Agent labels: passed"
-            if [ "\${{ inputs.check_server }}" = "true" ]; then
+            if [ "${{ inputs.check_server }}" = "true" ]; then
               echo "- Live /readyz: passed"
             else
               echo "- Live /readyz: skipped (run again with check_server=true after deployment)"
