@@ -123,7 +123,14 @@ jobs:
                   "WORKBUDDY_REFRESH_TOKEN",
               )
           )
-          print("| WorkBuddy OAuth/access token | " + ("✅ configured |" if oauth_ok else "❌ incomplete |"))
+          print(
+              "| WorkBuddy mode | "
+              + (
+                  "✅ full / real dispatch enabled |"
+                  if oauth_ok
+                  else "⚠️ degraded / OAuth optional; dispatch disabled |"
+              )
+          )
 
           openai_ok=bool(os.environ.get("OPENAI_API_KEY_REPO")) or bool(values.get("OPENAI_API_KEY"))
           print("| OpenAI API key | " + ("✅ configured |" if openai_ok else "❌ missing |"))
@@ -135,7 +142,7 @@ jobs:
           else
             echo "| protected runtime bundle | ❌ ORCH_ENV_B64 missing |" >> "$REPORT"
             echo "| WorkBuddy model lock | ❌ not testable |" >> "$REPORT"
-            echo "| WorkBuddy OAuth/access token | ❌ not testable |" >> "$REPORT"
+            echo "| WorkBuddy mode | ⚠️ degraded / OAuth optional; dispatch disabled |" >> "$REPORT"
             echo "| OpenAI API key | $([ -n "$OPENAI_API_KEY_REPO" ] && echo '✅ configured as repository secret' || echo '❌ missing') |" >> "$REPORT"
           fi
 
