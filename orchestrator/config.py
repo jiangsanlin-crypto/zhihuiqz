@@ -22,7 +22,7 @@ class Settings:
     orchestrator_token: str = os.getenv("ORCHESTRATOR_TOKEN", "")
 
     workbuddy_url: str = os.getenv("WORKBUDDY_URL", "")
-    workbuddy_token: str = os.getenv("WORKBUDDY_TOKEN", "")
+    workbuddy_token: str = os.getenv("WORKBUDDY_TOKEN") or os.getenv("ORCHESTRATOR_TOKEN", "")
     workbuddy_model: str = os.getenv("WORKBUDDY_MODEL", "GLM-5.3-Flash")
     workbuddy_model_lock_confirmed: bool = env_bool(
         "WORKBUDDY_MODEL_LOCK_CONFIRMED",
