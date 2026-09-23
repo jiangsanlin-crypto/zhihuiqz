@@ -294,7 +294,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="GitHub Multi-Agent Orchestrator",
-    version="3.0.0",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -306,29 +306,13 @@ async def healthz():
         "repository": settings.github_repository,
         "github_writeback_configured": github.configured,
         "handoff_protocol": "1.0",
-        "agents": ["codex", "chatgpt", "workbuddy"],
+        "agents": ["codex", "chatgpt", "openai-validator"],
     }
 
 
 @app.get("/readyz")
 async def readyz():
     checks = static_checks(settings)
-    workbuddy_health = await workbuddy.health()
-
-    checks["workbuddy_live"] = {
-        "ok": (
-            bool(workbuddy_health.get("ok"))
-            and bool(workbuddy_health.get("oauth_configured"))
-            and bool(workbuddy_health.get("model_lock_confirmed"))
-            and workbuddy_health.get("expected_model") == "GLM-5.3-Flash"
-        ),
-        "detail": {
-            key: value
-            for key, value in workbuddy_health.items()
-            if key not in {"token", "access_token", "refresh_token"}
-        },
-    }
-
     ready = all_ok(checks)
     payload = {
         "ok": ready,
