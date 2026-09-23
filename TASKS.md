@@ -1,5 +1,33 @@
 # TASKS
 
+## GH-ISSUE-42 — OpenAI billing activation smoke
+
+Owner sequence:
+
+```text
+Codex / synthetic product-plan evidence
+  -> WorkBuddy / scope and handoff validation
+```
+
+Status: planning evidence pending remote Action result
+
+Goal:
+- verify that the Codex product-planning GitHub Action reaches OpenAI after
+  billing activation;
+- confirm the planning step completes without billing, account,
+  authentication or quota errors;
+- keep the check synthetic and deployment-free.
+
+Acceptance:
+- the key is resolved without exposing its value;
+- `gpt-5.6-luna` with `max` effort is used with no fallback;
+- product-only file validation passes;
+- task ID and source SHA are preserved in the handoff;
+- no real payment, candidate data, merge or production deployment occurs.
+
+The repository documents are a test plan, not proof of a successful remote
+Action. The success claim requires the corresponding GitHub Action evidence.
+
 ## JOB-001 — Multilingual recruitment matching
 
 Owner sequence:
