@@ -1,121 +1,167 @@
 # Agent Handoff Protocol v1
 
-The purpose of this protocol is to prevent one agent from finishing a task while the next agent lacks the context required to continue it.
+The same stable task ID follows the work from the source Issue through every
+phase.
 
-## Stable task identity
+## Canonical sequence
 
-The source Issue creates a task ID:
+```text
+Codex / product_planning
+  -> WorkBuddy / prototype_validation
+  -> ChatGPT / implementation
+  -> WorkBuddy / qa_acceptance
+  -> Codex / release_review
+  -> Human / merge + production approval
+  -> WorkBuddy / deployment
+```
+
+No AI work body may skip a blocked phase.
+
+## Stable task ID
+
+The source Issue uses:
 
 `GH-ISSUE-<number>`
 
-When WorkBuddy creates the specification PR, the orchestrator writes this marker into the PR body:
+The planning PR body contains:
 
 `<!-- agent-task-id:GH-ISSUE-<number> -->`
 
-Every later agent reuses that same task ID.
-
-## Required sequence
-
-```text
-WorkBuddy/specification
-  -> Sandbox/spec_qa
-  -> Codex/implementation
-  -> Sandbox/final_qa
-  -> WorkBuddy/product_review
-  -> Human/merge
-```
-
-No agent may skip a gate.
+Every later handoff reuses the same ID.
 
 ## Handoff record
 
-Every phase emits a GitHub comment starting with:
+Every phase publishes a PR/Issue comment starting with:
 
 `<!-- agent-handoff:v1 -->`
 
 The JSON payload records:
-- task_id
-- from_agent
-- to_agent
-- phase
-- status
-- summary
-- artifacts
-- checks
-- blockers
-- source_ref
-- source_sha
-- pr_number
+- task_id;
+- from_agent / to_agent;
+- phase / status;
+- exact model and effort;
+- required_inputs;
+- expected_outputs;
+- acceptance criteria;
+- artifacts;
+- checks;
+- blockers;
+- source_ref / source_sha;
+- pr_number.
 
-## Inputs expected by each agent
+The next agent must read the latest successful handoff and all referenced
+artifacts before working.
 
-### WorkBuddy specification
-Input:
-- source Issue
-- public repository URL
-- README / AGENTS / existing docs available publicly
+## Phase contracts
 
-Output:
+### Codex product planning
+
+Inputs:
+- source Issue;
+- public repository;
+- current product documents.
+
+Outputs:
 - docs/PRD.md
-- docs/MATCHING_SPEC.md
-- docs/I18N.md
-- docs/MONETIZATION.md
+- docs/RECRUITMENT_RULES.md
+- docs/DATA_COLLECTION_PLAN.md
+- docs/CLASSIFICATION_DICTIONARY.md
 - TASKS.md
-- handoff to Sandbox
+- CHANGELOG.md
 
-WorkBuddy does not need GitHub OAuth for the public repository.
+Next owner: WorkBuddy.
 
-### Sandbox specification QA
-Input:
-- specification PR at a fixed head SHA
-- all five required specification artifacts
+### WorkBuddy prototype validation
 
-Output:
-- check results
-- handoff to Codex when passed
-- blocked state when failed
+Inputs:
+- Codex planning documents;
+- planning PR;
+- prior handoff.
 
-### Codex implementation
-Input:
-- specification files
-- prior handoff comments
-- current PR branch
+Outputs:
+- reports/prototype_review.md
+- reports/data_analysis.md
+- reports/classification_validation.md
+- reports/uiux_prototype.md
 
-Output:
-- implementation commit(s)
-- changed-file list
-- implementation summary
-- handoff to final Sandbox QA
+Next owner: ChatGPT only when successful.
 
-Codex may write only to the current PR branch.
+### ChatGPT implementation
 
-### Sandbox final QA
-Input:
-- implementation at a fixed PR head SHA
-- specification files
+Inputs:
+- Codex planning documents;
+- WorkBuddy prototype reports;
+- prior handoffs.
 
-Output:
-- test/check results
-- handoff to WorkBuddy when passed
+Outputs:
+- application code;
+- tests;
+- migrations/data services as needed;
+- implementation handoff containing changed files and commit SHA.
 
-### WorkBuddy final review
-Input:
-- public PR
-- PR diff
-- handoff comments
-- specification files
-- current implementation
+Next owner: WorkBuddy.
 
-Output:
-- success -> handoff to Human
-- blocked -> exact product/business blockers
+### WorkBuddy QA acceptance
 
-### Human
-Input:
-- final PR and complete handoff chain
+Inputs:
+- ChatGPT implementation;
+- product specification;
+- prototype reports;
+- deterministic test evidence;
+- prior handoffs.
 
-Only the human approves merge to main or any production deployment.
+Outputs:
+- reports/test_report.md
+- reports/uiux_acceptance.md
+- reports/classification_validation.md
+- reports/qa_summary.json
 
-## Failure behavior
+Next owner: Codex only when successful.
 
-A blocked or failed phase never advances to the next agent. It keeps a structured blocker record on the Issue/PR. Retrying requires an explicit agent-label action after the blocker is addressed.
+### Codex release review
+
+Inputs:
+- product documents;
+- implementation handoff;
+- WorkBuddy QA reports;
+- PR diff / CI status.
+
+Outputs:
+- CHANGELOG.md
+- docs/RELEASE_NOTES.md
+- reports/release_gate.json
+
+Next owner: Human when ready; otherwise blocked.
+
+### Human approval
+
+Only the human owner may:
+- merge main;
+- approve production deployment;
+- authorize real candidate data or payment connections.
+
+### WorkBuddy deployment
+
+Inputs:
+- approved main SHA;
+- release notes;
+- deployment target;
+- rollback SHA;
+- health endpoint.
+
+Execution:
+- GitHub Actions performs SSH/Docker commands;
+- WorkBuddy owns deployment review, health verification and rollback decision.
+
+## Monitoring
+
+Primary handoff is event-driven and real-time through GitHub labels/actions and
+the Orchestrator webhook.
+
+Agents do **not** individually poll GitHub on timers.
+
+A central watchdog runs every 15 minutes only as a recovery layer:
+- status:running older than 45 minutes -> block for inspection;
+- queued agent handoff older than 30 minutes -> warning.
+
+This avoids duplicate agent runs while still detecting lost events.
