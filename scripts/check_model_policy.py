@@ -31,7 +31,14 @@ require(
     [
         "model: gpt-5.6-luna",
         "effort: high",
+    ],
+)
+
+require(
+    "agents/workbuddy_prompt.md",
+    [
         "No WorkBuddy OAuth or WorkBuddy Cloud dependency",
+        "Runtime model: `gpt-5.6-luna`",
     ],
 )
 
