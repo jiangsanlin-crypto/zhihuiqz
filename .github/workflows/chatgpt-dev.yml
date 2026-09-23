@@ -1,28 +1,68 @@
 name: ChatGPT Implementation
 
 on:
-  pull_request:
-    types: [labeled]
+  repository_dispatch:
+    types: [agent_chatgpt_implementation]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to retry
+        required: true
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 jobs:
   implement:
-    if: >
-      github.event.label.name == 'agent:chatgpt' &&
-      contains(github.event.pull_request.labels.*.name, 'phase:implementation') &&
-      contains(github.event.pull_request.labels.*.name, 'status:todo') &&
-      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     steps:
+      - name: Require automation token and resolve PR context
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER_AUTO: ${{ github.event.client_payload.pr_number }}
+          PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
+          TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
+          SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
+        run: |
+          test -n "$GH_TOKEN"
+          PR_NUMBER="${PR_NUMBER_AUTO:-$PR_NUMBER_MANUAL}"
+          test -n "$PR_NUMBER"
+
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+
+          HEAD_REF="$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")"
+          SOURCE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
+          BODY="$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")"
+          LABELS="$(jq -r '.labels[].name' "$RUNNER_TEMP/pr.json")"
+
+          TASK_ID="$(printf '%s' "$BODY" | sed -n 's/.*<!-- agent-task-id:\([A-Za-z0-9._:-]*\) -->.*/\1/p' | head -n1)"
+          test -n "$TASK_ID"
+
+          echo "$LABELS" | grep -qx "agent:chatgpt"
+          echo "$LABELS" | grep -qx "phase:implementation"
+          echo "$LABELS" | grep -qx "status:todo"
+
+          if [ -n "$TASK_ID_HINT" ] && [ "$TASK_ID_HINT" != "$TASK_ID" ]; then
+            echo "task_id mismatch: payload=$TASK_ID_HINT pr=$TASK_ID"
+            exit 1
+          fi
+
+          if [ -n "$SOURCE_SHA_HINT" ] && [ "$SOURCE_SHA_HINT" != "$SOURCE_SHA" ]; then
+            echo "source_sha mismatch: payload=$SOURCE_SHA_HINT pr=$SOURCE_SHA"
+            exit 1
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ steps.context.outputs.head_ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -30,23 +70,12 @@ jobs:
         id: handoff_gate
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             > "$RUNNER_TEMP/comments.json"
-
-          TASK_ID="$(python - <<'PY'
-          import json, os, re
-          from pathlib import Path
-          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          body=event["pull_request"].get("body") or ""
-          match=re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
-          if not match:
-              raise SystemExit("stable task id marker is missing")
-          print(match.group(1))
-          PY
-          )"
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
 
           PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent workbuddy             --to-agent chatgpt             --phase prototype_validation             --source-sha "$SOURCE_SHA"
 
@@ -55,30 +84,30 @@ jobs:
       - name: Block invalid ChatGPT handoff gate
         if: steps.handoff_gate.outcome != 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:blocked" || true
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "ChatGPT was not started because the required successful WorkBuddy prototype handoff was missing, blocked, or pointed at a different PR head SHA."
           exit 1
 
       - name: Mark ChatGPT running
-        if: steps.handoff_gate.outcome == 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running" || true
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
 
       - name: Build ChatGPT engineering prompt
-        if: steps.handoff_gate.outcome == 'success'
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
         run: |
           {
             cat agents/chatgpt_prompt.md
             echo
-            echo "## Current PR"
+            echo "## Current task"
+            echo "Task ID: $TASK_ID"
             echo "PR #$PR_NUMBER"
             echo
             echo "## Prior handoffs"
@@ -91,7 +120,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          model: gpt-6-sol
+          model: gpt-5.6-sol
           effort: high
           permission-profile: ":workspace"
           prompt-file: ${{ runner.temp }}/chatgpt-dev.md
@@ -108,23 +137,13 @@ jobs:
 
           test -s "$RUNNER_TEMP/changed.txt"
 
-          PROTECTED='^(.github/|.agent/|agents/|AGENTS.md$|docs/MODEL_POLICY.md$|docs/PRD.md$|docs/RECRUITMENT_RULES.md$|docs/DATA_COLLECTION_PLAN.md$|docs/CLASSIFICATION_DICTIONARY.md$)'
+          PROTECTED='^(\.github/|\.agent/|agents/|AGENTS\.md$|docs/MODEL_POLICY\.md$|docs/PRD\.md$|docs/RECRUITMENT_RULES\.md$|docs/DATA_COLLECTION_PLAN\.md$|docs/CLASSIFICATION_DICTIONARY\.md$)'
           if grep -E "$PROTECTED" "$RUNNER_TEMP/changed.txt"; then
             echo "ChatGPT attempted to modify protected orchestration/product-policy files."
             exit 1
           fi
 
           echo "value=true" >> "$GITHUB_OUTPUT"
-
-      - name: Block failed implementation
-        if: steps.chatgpt.outcome != 'success' || steps.changed.outputs.value != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "ChatGPT implementation failed or violated protected-path rules. WorkBuddy QA was not started."
-          exit 1
 
       - name: Run repository tests before commit
         if: steps.chatgpt.outcome == 'success' && steps.changed.outputs.value == 'true'
@@ -139,9 +158,9 @@ jobs:
       - name: Commit and push implementation
         if: steps.chatgpt.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh auth setup-git
           git config user.name "chatgpt-dev-agent"
@@ -153,20 +172,12 @@ jobs:
       - name: Publish ChatGPT handoff
         if: steps.chatgpt.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
         run: |
           SHA="$(git rev-parse HEAD)"
-          TASK_ID="$(python - <<'PY'
-          import json, os, re
-          from pathlib import Path
-          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          body=event["pull_request"].get("body") or ""
-          m=re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
-          print(m.group(1) if m else f"GH-PULL_REQUEST-{event['pull_request']['number']}")
-          PY
-          )"
           SUMMARY="$(tail -c 3500 "$RUNNER_TEMP/chatgpt-output.md" 2>/dev/null || true)"
           FILES="$(python - <<'PY'
           import json, os
@@ -176,40 +187,112 @@ jobs:
           PY
           )"
 
-          cat > "$RUNNER_TEMP/handoff.md" <<EOF
-          <!-- agent-handoff:v1 -->
-          ### Agent handoff: chatgpt → workbuddy
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
 
-          ```json
-          {
-            "version": "1.0",
-            "task_id": "$TASK_ID",
-            "from_agent": "chatgpt",
-            "to_agent": "workbuddy",
-            "phase": "implementation",
-            "status": "success",
-            "summary": $(python -c 'import json,sys; print(json.dumps(sys.stdin.read()))' <<<"$SUMMARY"),
-            "model": "gpt-6-sol",
-            "effort": "high",
-            "required_inputs": ["Codex specification", "WorkBuddy prototype reports", "prior handoffs"],
-            "expected_outputs": ["WorkBuddy test report", "UI/UX acceptance", "classification validation"],
-            "acceptance": ["WorkBuddy QA must pass before Codex release review"],
-            "artifacts": $FILES,
-            "checks": [{"name":"repository_tests","status":"passed","detail":"workflow tests completed before commit"}],
-            "blockers": [],
-            "source_ref": "$HEAD_REF",
-            "source_sha": "$SHA",
-            "pr_number": $PR_NUMBER
+          summary=os.environ.get("SUMMARY","")
+          payload={
+              "version":"1.0",
+              "task_id":os.environ["TASK_ID"],
+              "from_agent":"chatgpt",
+              "to_agent":"workbuddy",
+              "phase":"implementation",
+              "status":"success",
+              "summary":summary,
+              "model":"gpt-5.6-sol",
+              "effort":"high",
+              "required_inputs":["Codex specification","WorkBuddy prototype reports","prior handoffs"],
+              "expected_outputs":["WorkBuddy test report","UI/UX acceptance","classification validation"],
+              "acceptance":["WorkBuddy QA must pass before Codex release review"],
+              "artifacts":json.loads(os.environ["FILES"]),
+              "checks":[{"name":"repository_tests","status":"passed","detail":"workflow tests completed before commit"}],
+              "blockers":[],
+              "source_ref":os.environ["HEAD_REF"],
+              "source_sha":os.environ["SHA"],
+              "pr_number":int(os.environ["PR_NUMBER"]),
           }
-          ```
-          EOF
+          body="<!-- agent-handoff:v1 -->\n### Agent handoff: chatgpt → workbuddy\n\n```json\n"+json.dumps(payload,ensure_ascii=False,indent=2)+"\n```\n"
+          Path(os.environ["RUNNER_TEMP"],"handoff.md").write_text(body)
+          PY
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+          SHA: ${{ github.sha }}
+          SUMMARY: ""
+          FILES: "[]"
+
+      - name: Publish handoff comment and dispatch WorkBuddy QA
+        if: steps.chatgpt.outcome == 'success' && steps.changed.outputs.value == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+        run: |
+          SHA="$(git rev-parse HEAD)"
+
+          # Rebuild the handoff with shell-generated summary/files to avoid stale GitHub context.
+          SUMMARY="$(tail -c 3500 "$RUNNER_TEMP/chatgpt-output.md" 2>/dev/null || true)"
+          FILES="$(python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ["RUNNER_TEMP"])/"changed.txt"
+          print(json.dumps([x.strip() for x in p.read_text().splitlines() if x.strip()]))
+          PY
+          )"
+
+          export SUMMARY FILES SHA
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload={
+              "version":"1.0",
+              "task_id":os.environ["TASK_ID"],
+              "from_agent":"chatgpt",
+              "to_agent":"workbuddy",
+              "phase":"implementation",
+              "status":"success",
+              "summary":os.environ.get("SUMMARY","")[-3500:],
+              "model":"gpt-5.6-sol",
+              "effort":"high",
+              "required_inputs":["Codex specification","WorkBuddy prototype reports","prior handoffs"],
+              "expected_outputs":["WorkBuddy test report","UI/UX acceptance","classification validation"],
+              "acceptance":["WorkBuddy QA must pass before Codex release review"],
+              "artifacts":json.loads(os.environ["FILES"]),
+              "checks":[{"name":"repository_tests","status":"passed","detail":"workflow tests completed before commit"}],
+              "blockers":[],
+              "source_ref":os.environ["HEAD_REF"],
+              "source_sha":os.environ["SHA"],
+              "pr_number":int(os.environ["PR_NUMBER"]),
+          }
+          body="<!-- agent-handoff:v1 -->\n### Agent handoff: chatgpt → workbuddy\n\n```json\n"+json.dumps(payload,ensure_ascii=False,indent=2)+"\n```\n"
+          Path(os.environ["RUNNER_TEMP"],"handoff.md").write_text(body)
+          PY
 
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/handoff.md"
 
-      - name: Hand off to WorkBuddy QA
-        if: steps.chatgpt.outcome == 'success' && steps.changed.outputs.value == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:chatgpt"             --remove-label "phase:implementation"             --remove-label "status:running"             --add-label "phase:qa"             --add-label "status:todo"             --add-label "agent:workbuddy"
+
+          jq -n             --argjson pr_number "$PR_NUMBER"             --arg task_id "$TASK_ID"             --arg head_ref "$HEAD_REF"             --arg source_sha "$SHA"             '{
+              event_type:"agent_workbuddy_qa",
+              client_payload:{
+                pr_number:$pr_number,
+                task_id:$task_id,
+                head_ref:$head_ref,
+                source_sha:$source_sha
+              }
+            }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+
+      - name: Block failed implementation
+        if: steps.chatgpt.outcome != 'success' || steps.changed.outputs.value != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "ChatGPT implementation failed or violated protected-path rules. WorkBuddy QA was not started."
+          exit 1

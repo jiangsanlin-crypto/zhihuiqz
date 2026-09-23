@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from typing import Iterable
+from typing import Any, Iterable
 
 import httpx
 
@@ -65,6 +65,21 @@ class GitHubClient:
             if len(batch) < 100:
                 return comments
             page += 1
+
+    async def repository_dispatch(
+        self,
+        repo: str,
+        event_type: str,
+        client_payload: dict[str, Any],
+    ) -> None:
+        await self._request(
+            "POST",
+            f"{self.base}/repos/{repo}/dispatches",
+            json={
+                "event_type": event_type,
+                "client_payload": client_payload,
+            },
+        )
 
     async def get_pr_head_branch(self, repo: str, number: int) -> str:
         response = await self._request(
