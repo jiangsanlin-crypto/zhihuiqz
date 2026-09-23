@@ -16,11 +16,16 @@
   "properties": {
     "version": {"const": "1.0"},
     "task_id": {"type": "string", "minLength": 1},
-    "from_agent": {"enum": ["workbuddy", "sandbox", "codex"]},
-    "to_agent": {"enum": ["workbuddy", "sandbox", "codex", "human", null]},
+    "from_agent": {"enum": ["codex", "chatgpt", "workbuddy"]},
+    "to_agent": {"enum": ["codex", "chatgpt", "workbuddy", "human", null]},
     "phase": {"type": "string", "minLength": 1},
     "status": {"enum": ["success", "blocked", "failed"]},
     "summary": {"type": "string"},
+    "model": {"type": ["string", "null"]},
+    "effort": {"type": ["string", "null"]},
+    "required_inputs": {"type": "array", "items": {"type": "string"}},
+    "expected_outputs": {"type": "array", "items": {"type": "string"}},
+    "acceptance": {"type": "array", "items": {"type": "string"}},
     "artifacts": {"type": "array", "items": {"type": "string"}},
     "checks": {
       "type": "array",
