@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from .adapters import HttpAgentAdapter
 from .config import settings
 from .github_client import GitHubClient
+from .handoff_gate import HandoffGateError, validate_handoff
 from .models import AgentRunResult, Handoff
 from .readiness import all_ok, static_checks
 from .security import verify_bearer, verify_github_signature
@@ -88,6 +89,22 @@ def handoff_comment(handoff: Handoff) -> str:
     )
 
 
+def required_handoff(req):
+    if req.phase == "phase:prototype":
+        return {
+            "from_agent": "codex",
+            "to_agent": "workbuddy",
+            "phase": "product_planning",
+        }
+    if req.phase == "phase:qa":
+        return {
+            "from_agent": "chatgpt",
+            "to_agent": "workbuddy",
+            "phase": "implementation",
+        }
+    raise ValueError(f"unsupported WorkBuddy phase: {req.phase}")
+
+
 async def process(event: dict) -> None:
     routed = build(
         event["event_name"],
@@ -99,6 +116,51 @@ async def process(event: dict) -> None:
         return
 
     req, current_labels = routed
+
+    if not github.configured:
+        raise RuntimeError("GitHub write-back is required for handoff validation")
+
+    expected = required_handoff(req)
+    comments = await github.list_comments(
+        req.repository,
+        req.source_number,
+    )
+
+    try:
+        validate_handoff(
+            comments,
+            task_id=req.task_id,
+            from_agent=expected["from_agent"],
+            to_agent=expected["to_agent"],
+            phase=expected["phase"],
+            source_sha=req.source_sha,
+        )
+    except HandoffGateError as exc:
+        await github.comment(
+            req.repository,
+            req.source_number,
+            (
+                "<!-- agent-handoff-gate:v1 -->\n"
+                "### WorkBuddy start gate blocked\n\n"
+                f"{exc}\n\n"
+                "The WorkBuddy runner was **not started**. "
+                "Fix the previous handoff and retry the same phase."
+            ),
+        )
+        await github.set_labels(
+            req.repository,
+            req.source_number,
+            next_labels(
+                req.agent,
+                req.source_kind,
+                current_labels,
+                "blocked",
+                [],
+                phase=req.phase,
+            ),
+        )
+        store.finish(event["delivery_id"], "done")
+        return
 
     if github.configured:
         running_labels = [
