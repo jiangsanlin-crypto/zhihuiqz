@@ -49,7 +49,7 @@ Required external configuration is intentionally narrow:
 - persistent-server SSH secrets;
 - ORCH_ENV_B64 runtime bundle;
 - OpenAI API key;
-- WorkBuddy token/OAuth.
+- WorkBuddy runner token; optional WorkBuddy OAuth for full cloud dispatch.
 
 Run Activation Readiness before and after deploying the persistent Orchestrator,
 then run the synthetic E2E.
