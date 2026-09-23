@@ -105,6 +105,7 @@ def next_labels(
     keep = [label for label in current if label not in WORKFLOW_LABELS]
 
     if status != "success":
+        # Includes degraded dispatches: keep the same phase blocked and never promote.
         retry = ["agent:workbuddy", "status:blocked"]
         if phase:
             retry.append(phase)
