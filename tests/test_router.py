@@ -98,3 +98,13 @@ def test_blocked_workbuddy_preserves_phase():
     assert "agent:workbuddy" in labels
     assert "phase:qa" in labels
     assert "status:blocked" in labels
+
+
+def test_workbuddy_requires_status_todo():
+    payload = pr_payload("phase:prototype")
+    payload["pull_request"]["labels"] = [
+        {"name": "agent:workbuddy"},
+        {"name": "phase:prototype"},
+        {"name": "status:running"},
+    ]
+    assert build("pull_request", payload, "a/b") is None
