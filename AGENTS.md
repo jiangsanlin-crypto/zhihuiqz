@@ -66,16 +66,15 @@ A handoff carries:
 - blockers;
 - source branch/SHA/PR.
 
-The next agent must consume the latest successful handoff plus all referenced
-artifacts. It may not skip a blocked phase.
+The next agent must consume the latest successful handoff plus all referenced artifacts. It may not skip a blocked phase. Cross-workflow execution is triggered explicitly with repository_dispatch; labels are state markers, not the sole transport.
 
 ## Model policy
 
 See `docs/MODEL_POLICY.md`.
 
 Runtime pins:
-- ChatGPT: gpt-6-sol / high
-- Codex: gpt-6-luna / max
+- ChatGPT: gpt-5.6-sol / high
+- Codex: gpt-5.6-luna / max
 - WorkBuddy: GLM-5.3-Flash
 
 No fallback is allowed.
