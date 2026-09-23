@@ -5,6 +5,7 @@ on:
     types:
       - agent_workbuddy_prototype
       - agent_workbuddy_qa
+      - agent_workbuddy_deploy
   workflow_dispatch:
     inputs:
       pr_number:
@@ -17,6 +18,7 @@ on:
         options:
           - prototype
           - qa
+          - deploy
 
 permissions:
   contents: read
@@ -44,10 +46,14 @@ jobs:
             EXPECTED_PHASE="phase:prototype"
           elif [ "$PHASE_AUTO" = "qa" ]; then
             EXPECTED_PHASE="phase:qa"
+          elif [ "$PHASE_AUTO" = "deploy" ]; then
+            EXPECTED_PHASE="phase:deploy"
           elif [ "$PHASE_MANUAL" = "prototype" ]; then
             EXPECTED_PHASE="phase:prototype"
           elif [ "$PHASE_MANUAL" = "qa" ]; then
             EXPECTED_PHASE="phase:qa"
+          elif [ "$PHASE_MANUAL" = "deploy" ]; then
+            EXPECTED_PHASE="phase:deploy"
           else
             echo "Unable to resolve WorkBuddy phase."
             exit 1
