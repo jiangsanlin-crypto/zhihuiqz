@@ -1,68 +1,68 @@
 # Architecture
 
 ```text
-Issue + agent:workbuddy
-        |
-        v
-   Orchestrator
-        |
-        v
-  WorkBuddy Runner
-        |
-  WorkBuddy Cloud Task
-  reads PUBLIC repo directly
-        |
-  validated file payload
-        |
-        v
-   Orchestrator writes
-   spec branch + PR
-        |
- structured handoff
-        |
-        v
- isolated Sandbox QA
- public read, no GitHub token
-        |
-        v
-     agent:codex
-        |
-        v
- openai/codex-action@v1
- edits current PR branch
-        |
- structured handoff
-        |
-        v
- needs:qa + Sandbox
-        |
-        v
- WorkBuddy final review
- reads public PR directly
-        |
-        v
-   status:review
-        |
-        v
- HUMAN MERGE ONLY
+GitHub Issue
+  |
+  | agent:codex + phase:product-plan
+  v
+Codex GitHub Action
+gpt-6-luna / max
+  |
+  | product documents + handoff
+  v
+WorkBuddy via persistent Orchestrator
+GLM-5.3-Flash
+prototype/data/classification validation
+  |
+  | validated reports + handoff
+  v
+ChatGPT development sandbox
+gpt-6-sol / high
+  |
+  | code/tests + handoff
+  v
+WorkBuddy via persistent Orchestrator
+QA/UIUX/classification acceptance
+  |
+  | QA reports + handoff
+  v
+Codex GitHub Action
+release review + release notes
+  |
+  v
+Human merge + production approval
+  |
+  v
+WorkBuddy deployment ownership
+GitHub Actions executes SSH/Docker
 ```
 
 ## Trust boundaries
 
-- WorkBuddy: public repository/PR read only; no GitHub credential.
-- Sandbox: public repository/PR read only; no GitHub credential.
-- Orchestrator: GitHub routing, comments, labels, specification branch/PR write-back.
-- Codex: GitHub Actions write permission limited by the workflow to the current PR branch.
-- Human: only actor allowed to approve main merge and production release.
+- Codex and ChatGPT use the OpenAI GitHub Action with hard-pinned model/effort.
+- ChatGPT may edit the current task PR branch but cannot modify protected
+  orchestration/product-policy paths.
+- Codex planning/release jobs use explicit file allowlists.
+- WorkBuddy receives no GitHub write credential and reads the public
+  repository/PR directly.
+- WorkBuddy report files are validated and written by the Orchestrator.
+- Orchestrator holds the GitHub token for WorkBuddy report write-back only.
+- Human approval remains mandatory for main merge and production deployment.
 
-The Docker Compose configuration deliberately does not pass GITHUB_TOKEN into the WorkBuddy or Sandbox containers.
+## Real-time routing
 
-## Continuity
+Codex and ChatGPT are triggered directly by GitHub label events.
 
-A stable task ID starts at the Issue and is embedded in the PR body. Every stage emits an `agent-handoff:v1` comment that records the source SHA, artifacts, checks, blockers, and next owner.
+WorkBuddy label events are relayed in real time to the persistent Orchestrator.
 
-See docs/HANDOFF_PROTOCOL.md.
+The central 15-minute watchdog is recovery-only; it is not the normal task
+transport.
 
-## Idempotency
+## Persistent services
 
-GitHub delivery IDs are persisted in SQLite. Only explicit agent-label events start an agent. Status-label events cannot recursively restart work.
+The server runs:
+- Orchestrator on port 8080;
+- WorkBuddy runner on Docker-internal port 8091.
+
+Codex and ChatGPT execute in GitHub Actions, so they do not require a permanent
+runner service on the Orchestrator host.
