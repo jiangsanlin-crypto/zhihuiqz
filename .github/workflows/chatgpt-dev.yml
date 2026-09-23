@@ -26,14 +26,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Mark ChatGPT running
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running" || true
-
       - name: Collect and validate WorkBuddy handoff
+        id: handoff_gate
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -57,7 +52,26 @@ jobs:
 
           jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
 
+      - name: Block invalid ChatGPT handoff gate
+        if: steps.handoff_gate.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "ChatGPT was not started because the required successful WorkBuddy prototype handoff was missing, blocked, or pointed at a different PR head SHA."
+          exit 1
+
+      - name: Mark ChatGPT running
+        if: steps.handoff_gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running" || true
+
       - name: Build ChatGPT engineering prompt
+        if: steps.handoff_gate.outcome == 'success'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
