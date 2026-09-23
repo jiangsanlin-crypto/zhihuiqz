@@ -62,7 +62,7 @@ jobs:
           done
           exit 1
 
-      - name: Wait for final human review state
+      - name: Wait for full-auto completion state
         env:
           GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -75,7 +75,41 @@ jobs:
               exit 1
             fi
 
-            if echo "$LABELS" | grep -qx "status:review"               && echo "$LABELS" | grep -qx "approval:production-required"               && ! echo "$LABELS" | grep -Eq '^agent:(codex|chatgpt|workbuddy)$'; then
+            if echo "$LABELS" | grep -qx "status:done"               && ! echo "$LABELS" | grep -Eq '^agent:(codex|chatgpt|workbuddy)
+            sleep 30
+          done
+          exit 1
+
+      - name: Verify handoff chain
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate --jq '.[].body' > "$RUNNER_TEMP/comments.txt"
+
+          for phase in product_planning prototype_validation implementation qa_acceptance release_review deployment_plan; do
+            grep -q "\"phase\": \"$phase\"" "$RUNNER_TEMP/comments.txt"
+          done
+
+      - name: Verify ChatGPT implementation marker
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          HEAD_SHA="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}"             --json headRefOid --jq '.headRefOid')"
+
+          VALUE="$(gh api             -H "Accept: application/vnd.github.raw+json"             "repos/${{ github.repository }}/contents/tests/agent_e2e_marker.txt?ref=$HEAD_SHA")"
+
+          test "$VALUE" = "AGENT_E2E_OK"
+
+      - name: Record result
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --body "E2E passed: Codex -> WorkBuddy -> ChatGPT -> WorkBuddy -> Codex -> WorkBuddy deployment gate -> automatic completion. The synthetic E2E PR was intentionally not merged/deployed."
+; then
               exit 0
             fi
 
