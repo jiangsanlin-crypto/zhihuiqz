@@ -49,6 +49,23 @@ class GitHubClient:
             json={"labels": labels},
         )
 
+    async def list_comments(self, repo: str, number: int) -> list[dict]:
+        comments: list[dict] = []
+        page = 1
+        while True:
+            response = await self._request(
+                "GET",
+                f"{self.base}/repos/{repo}/issues/{number}/comments",
+                params={"per_page": 100, "page": page},
+            )
+            batch = response.json()
+            if not isinstance(batch, list):
+                raise ValueError("GitHub comments response is not a list")
+            comments.extend(batch)
+            if len(batch) < 100:
+                return comments
+            page += 1
+
     async def get_pr_head_branch(self, repo: str, number: int) -> str:
         response = await self._request(
             "GET",
