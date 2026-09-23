@@ -18,6 +18,46 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Validate activation guards
+        env:
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          REPO_ADMIN_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
+        run: |
+          test -n "$AGENT_GITHUB_TOKEN"
+          test -n "$REPO_ADMIN_TOKEN"
+          test -n "$OPENAI_API_KEY"
+          test -n "$ORCHESTRATOR_TOKEN"
+
+          if [ "$AGENT_GITHUB_TOKEN" = "$REPO_ADMIN_TOKEN" ]; then
+            echo "Automation and administration identities must be separate."
+            exit 1
+          fi
+
+      - name: Verify main protection before deployment
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/branches/main/protection"             > "$RUNNER_TEMP/protection.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data=json.loads(Path(os.environ["RUNNER_TEMP"],"protection.json").read_text())
+          contexts=(data.get("required_status_checks") or {}).get("contexts") or []
+          reviews=data.get("required_pull_request_reviews") or {}
+
+          assert "test" in contexts, "required CI context test is missing"
+          assert int(reviews.get("required_approving_review_count") or 0) >= 1
+          assert reviews.get("require_code_owner_reviews") is True
+          assert (data.get("enforce_admins") or {}).get("enabled") is True
+          assert (data.get("allow_force_pushes") or {}).get("enabled") is False
+          assert (data.get("allow_deletions") or {}).get("enabled") is False
+          print("main protection verified")
+          PY
+
       - name: Validate deployment secrets
         env:
           HOST: ${{ secrets.ORCH_SERVER_HOST }}
