@@ -60,7 +60,11 @@ def build(event, payload, repo):
         return None
 
     labels = label_names(obj.get("labels"))
-    if "status:done" in labels or "agent:workbuddy" not in labels:
+    if (
+        "status:done" in labels
+        or "status:todo" not in labels
+        or "agent:workbuddy" not in labels
+    ):
         return None
 
     added = (payload.get("label") or {}).get("name")

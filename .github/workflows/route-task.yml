@@ -11,6 +11,7 @@ jobs:
   route:
     if: >
       github.event.label.name == 'agent:workbuddy' &&
+      contains(github.event.pull_request.labels.*.name, 'status:todo') &&
       (contains(github.event.pull_request.labels.*.name, 'phase:prototype') ||
        contains(github.event.pull_request.labels.*.name, 'phase:qa'))
     runs-on: ubuntu-latest

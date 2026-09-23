@@ -14,6 +14,7 @@ jobs:
     if: >
       github.event.label.name == 'agent:chatgpt' &&
       contains(github.event.pull_request.labels.*.name, 'phase:implementation') &&
+      contains(github.event.pull_request.labels.*.name, 'status:todo') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -25,21 +26,52 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Collect and validate WorkBuddy handoff
+        id: handoff_gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             > "$RUNNER_TEMP/comments.json"
+
+          TASK_ID="$(python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          body=event["pull_request"].get("body") or ""
+          match=re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
+          if not match:
+              raise SystemExit("stable task id marker is missing")
+          print(match.group(1))
+          PY
+          )"
+
+          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent workbuddy             --to-agent chatgpt             --phase prototype_validation             --source-sha "$SOURCE_SHA"
+
+          jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
+
+      - name: Block invalid ChatGPT handoff gate
+        if: steps.handoff_gate.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "ChatGPT was not started because the required successful WorkBuddy prototype handoff was missing, blocked, or pointed at a different PR head SHA."
+          exit 1
+
       - name: Mark ChatGPT running
+        if: steps.handoff_gate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running" || true
 
-      - name: Collect prior handoffs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate             --jq '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             > "$RUNNER_TEMP/handoffs.md"
-
       - name: Build ChatGPT engineering prompt
+        if: steps.handoff_gate.outcome == 'success'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |

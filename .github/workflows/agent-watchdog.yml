@@ -2,7 +2,7 @@ name: Agent Handoff Watchdog
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -13,34 +13,91 @@ jobs:
   watchdog:
     runs-on: ubuntu-latest
     steps:
-      - name: Mark stale running work as blocked
+      - name: Ensure watchdog policy labels exist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          THRESHOLD="$(date -u -d '45 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
-          QUERY="repo:${{ github.repository }} is:open label:status:running updated:<$THRESHOLD"
+          gh label create "watchdog:timeout"             --repo "${{ github.repository }}"             --color B60205             --description "Agent exceeded its running-time policy"             --force
 
-          gh api search/issues             -f q="$QUERY"             --jq '.items[].number' > "$RUNNER_TEMP/stale-running.txt"
-
-          while read -r NUMBER; do
-            [ -n "$NUMBER" ] || continue
-            gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked" || true
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "⏱ Central watchdog: this task remained status:running for more than 45 minutes. It was blocked instead of silently advancing. Inspect the latest agent handoff and rerun the same phase."
-          done < "$RUNNER_TEMP/stale-running.txt"
-
-      - name: Flag stale queued handoffs
+      - name: Warn on queued handoffs older than 10 minutes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          THRESHOLD="$(date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          THRESHOLD="$(date -u -d '10 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
 
           for AGENT in codex chatgpt workbuddy; do
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
 
-            gh api search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/stale-$AGENT.txt"
+            gh api search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
-              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "⚠️ Central watchdog: queued handoff to $AGENT has not started for more than 30 minutes. Check the corresponding GitHub Action/Orchestrator event. No next phase was started automatically."
-            done < "$RUNNER_TEMP/stale-$AGENT.txt"
+
+              LABELS="$(gh issue view "$NUMBER"                 --repo "${{ github.repository }}"                 --json labels                 --jq '.labels[].name')"
+
+              PHASE="$(echo "$LABELS" | grep '^phase:' | head -n1 || true)"
+              MARKER="<!-- agent-watchdog:queued:$AGENT:$PHASE -->"
+
+              ALREADY="$(gh api                 "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100"                 --paginate                 --jq ".[] | select(.body | contains(\"$MARKER\")) | .id"                 | head -n1)"
+
+              if [ -n "$ALREADY" ]; then
+                continue
+              fi
+
+              gh issue comment "$NUMBER"                 --repo "${{ github.repository }}"                 --body "$MARKER ⚠️ Central watchdog: handoff to $AGENT ($PHASE) has remained queued for more than 10 minutes. Normal routing is event-driven; the watchdog will not skip the phase or start a different agent. Check the corresponding GitHub Action/Orchestrator event and retry the same phase if needed."
+            done < "$RUNNER_TEMP/queued-$AGENT.txt"
           done
+
+      - name: Block Codex running longer than 55 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          AGENT="codex"
+          LIMIT="55"
+          THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
+          QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
+
+          gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
+
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
+
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: Codex exceeded the 55-minute running limit. The task was blocked instead of advancing. Inspect the latest handoff/workflow logs and retry the same Codex phase after resolving the cause."
+          done < "$RUNNER_TEMP/running-$AGENT.txt"
+
+      - name: Block WorkBuddy running longer than 30 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          AGENT="workbuddy"
+          LIMIT="30"
+          THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
+          QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
+
+          gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
+
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
+
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: WorkBuddy exceeded the 30-minute running limit. The task was blocked instead of advancing. Inspect the WorkBuddy Cloud Task/Orchestrator logs and retry the same phase after resolving the cause."
+          done < "$RUNNER_TEMP/running-$AGENT.txt"
+
+      - name: Block ChatGPT running longer than 75 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          AGENT="chatgpt"
+          LIMIT="75"
+          THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
+          QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
+
+          gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
+
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
+
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 75-minute running limit. The task was blocked instead of advancing. Inspect the development workflow/test logs and retry the same implementation phase after resolving the cause."
+          done < "$RUNNER_TEMP/running-$AGENT.txt"

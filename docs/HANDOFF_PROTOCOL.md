@@ -160,8 +160,17 @@ the Orchestrator webhook.
 
 Agents do **not** individually poll GitHub on timers.
 
-A central watchdog runs every 15 minutes only as a recovery layer:
-- status:running older than 45 minutes -> block for inspection;
-- queued agent handoff older than 30 minutes -> warning.
+A central watchdog runs every 10 minutes only as a recovery layer.
 
-This avoids duplicate agent runs while still detecting lost events.
+Queue policy:
+- any `status:todo + agent:*` handoff older than 10 minutes -> one warning for that agent/phase;
+- the watchdog does not skip the phase or start another agent.
+
+Running-time policy:
+- Codex > 55 minutes -> `status:blocked`;
+- WorkBuddy > 30 minutes -> `status:blocked`;
+- ChatGPT > 75 minutes -> `status:blocked`.
+
+The timeout values reflect the expected workload of each work body. This avoids
+three independent polling loops, duplicate model calls and overlapping writes
+while still detecting lost events and hung jobs.
