@@ -50,7 +50,7 @@ The JSON payload records:
 - pr_number.
 
 The next agent must read the latest successful handoff and all referenced
-artifacts before working.
+artifacts before working. A phase starts only when task ID, from/to agent, expected phase, success status, empty blockers, and the current PR head SHA all match.
 
 ## Phase contracts
 
@@ -155,8 +155,7 @@ Execution:
 
 ## Monitoring
 
-Primary handoff is event-driven and real-time through GitHub labels/actions and
-the Orchestrator webhook.
+Primary handoff is event-driven and real-time. GitHub labels are state markers, while `repository_dispatch` is the authoritative cross-workflow trigger. WorkBuddy dispatches are relayed to the persistent Orchestrator.
 
 Agents do **not** individually poll GitHub on timers.
 
@@ -171,6 +170,4 @@ Running-time policy:
 - WorkBuddy > 30 minutes -> `status:blocked`;
 - ChatGPT > 75 minutes -> `status:blocked`.
 
-The timeout values reflect the expected workload of each work body. This avoids
-three independent polling loops, duplicate model calls and overlapping writes
-while still detecting lost events and hung jobs.
+The timeout values reflect the expected workload of each work body. This avoids three independent polling loops, duplicate model calls and overlapping writes while still detecting lost events and hung jobs. Automatic handoffs do not depend on label-generated workflow recursion.
