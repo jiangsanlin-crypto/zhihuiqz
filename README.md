@@ -1,44 +1,49 @@
-# zhihuiqz · GitHub Multi-Agent Orchestrator
+# zhihuiqz · Three-Agent GitHub Orchestrator
 
-GitHub is the task bus for a chained multi-agent workflow:
+This repository coordinates exactly three AI work bodies:
 
 ```text
-Issue
-  -> WorkBuddy specification
-  -> Sandbox specification QA
-  -> Codex implementation
-  -> Sandbox final QA
-  -> WorkBuddy product review
-  -> Human merge
+Codex / product planning
+  -> WorkBuddy / prototype + data + classification validation
+  -> ChatGPT / implementation
+  -> WorkBuddy / QA + UI/UX + classification acceptance
+  -> Codex / release review
+  -> Human / merge + production approval
+  -> WorkBuddy / approved deployment
 ```
 
-The same task ID follows the work through every phase. Each stage publishes a structured `agent-handoff:v1` record so the next agent receives the previous artifacts, checks, source SHA, blockers, and ownership.
+The same task ID follows the work through every phase. Each phase publishes a
+structured `agent-handoff:v1` record containing the next owner, model,
+artifacts, checks, blockers, source SHA and acceptance criteria.
 
-## Permission model
+## Strict models
 
-- WorkBuddy reads the public repository directly and receives no GitHub credential.
-- Sandbox reads public repository/PR data and receives no GitHub credential.
-- Codex may write only to the current PR branch through GitHub Actions.
-- Orchestrator owns GitHub routing/write-back for Issue/PR labels, comments, and WorkBuddy specification files.
-- Only a human approves main merge and production release.
+- ChatGPT development: `gpt-6-sol`, effort `high`
+- Codex product/release: `gpt-6-luna`, effort `max`
+- WorkBuddy: `GLM-5.3-Flash`, locked in the dedicated WorkBuddy app
 
-## Start persistent services
+See `docs/MODEL_POLICY.md`.
 
-```bash
-cp .env.example .env
-docker compose up -d --build
-curl http://localhost:8080/healthz
-```
+## Monitoring
 
-GitHub Actions Secrets:
-- ORCHESTRATOR_URL
-- ORCHESTRATOR_TOKEN
-- OPENAI_API_KEY
+Primary handoff is real-time/event-driven through GitHub Actions and the
+Orchestrator webhook. Agents do not individually poll GitHub.
 
-Server configuration requires Orchestrator GitHub write credentials and WorkBuddy's own API/OAuth credentials. WorkBuddy does not need GitHub OAuth for this public repository.
+A central watchdog runs every 15 minutes only to detect lost/stuck handoffs.
+
+## Persistent Orchestrator
+
+After human merge to main, use:
+
+`Actions -> WorkBuddy Deploy Orchestrator`
+
+This deploys the Orchestrator to the configured persistent Linux server,
+requires the protected `orchestrator-production` environment, checks
+`/readyz`, and rolls back to the previous Git SHA if readiness fails.
 
 See:
-- docs/ARCHITECTURE.md
+- docs/ROLE_MATRIX.md
 - docs/HANDOFF_PROTOCOL.md
-- docs/WORKBUDDY.md
-- docs/DEPLOYMENT.md
+- docs/MODEL_POLICY.md
+- docs/DEPLOYMENT_HANDOFF.md
+- docs/ACTIVATION_RUNBOOK.md
