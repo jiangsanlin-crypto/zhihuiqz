@@ -60,6 +60,17 @@ class HttpAgentAdapter:
                 )
                 response.raise_for_status()
                 return AgentRunResult.model_validate(response.json())
+        except httpx.HTTPStatusError as exc:
+            degraded = degraded_dispatch_result(exc.response)
+            if degraded:
+                return degraded
+            return AgentRunResult(
+                status="failed",
+                summary=(
+                    f"{self.name} runner request failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
         except Exception as exc:
             return AgentRunResult(
                 status="failed",
@@ -68,3 +79,31 @@ class HttpAgentAdapter:
                     f"{type(exc).__name__}: {exc}"
                 ),
             )
+
+
+def degraded_dispatch_result(
+    response: httpx.Response,
+) -> AgentRunResult | None:
+    if response.status_code != 503:
+        return None
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if not isinstance(detail, dict):
+        return None
+    if detail.get("code") != "WORKBUDDY_DEGRADED":
+        return None
+
+    reason = str(
+        detail.get("message")
+        or "WorkBuddy is in degraded mode; real cloud dispatch is disabled."
+    )
+    return AgentRunResult(
+        status="blocked",
+        summary=reason,
+        handoff_allowed=False,
+    )
