@@ -13,7 +13,7 @@ from .config import settings
 from .github_client import GitHubClient
 from .handoff_gate import HandoffGateError, validate_handoff
 from .models import AgentRunResult, Handoff
-from .readiness import all_ok, static_checks
+from .readiness import all_ok, static_checks, workbuddy_live_check
 from .security import verify_bearer, verify_github_signature
 from .state_store import StateStore
 from .task_router import build, next_labels
@@ -90,6 +90,16 @@ def handoff_comment(handoff: Handoff) -> str:
         "```json\n"
         f"{payload}\n"
         "```"
+    )
+
+
+def degraded_dispatch_comment(summary: str) -> str:
+    return (
+        "<!-- agent-degraded-dispatch:v1 -->\n"
+        "### WorkBuddy dispatch blocked\n\n"
+        f"{summary}\n\n"
+        "No WorkBuddy cloud task was created. Add OAuth credentials and "
+        "restart the runner before retrying this phase."
     )
 
 
@@ -186,6 +196,28 @@ async def process(event: dict) -> None:
         )
 
     result = await workbuddy.run(req)
+
+    if not result.handoff_allowed:
+        if github.configured:
+            await github.comment(
+                req.repository,
+                req.source_number,
+                degraded_dispatch_comment(result.summary),
+            )
+            await github.set_labels(
+                req.repository,
+                req.source_number,
+                next_labels(
+                    req.agent,
+                    req.source_kind,
+                    current_labels,
+                    result.status,
+                    result.next_labels,
+                    phase=req.phase,
+                ),
+            )
+        store.finish(event["delivery_id"], "done")
+        return
 
     if result.status == "success" and result.changes:
         if not github.configured:
@@ -315,17 +347,16 @@ async def readyz():
     checks = static_checks(settings)
     workbuddy_health = await workbuddy.health()
 
-    checks["workbuddy_live"] = {
-        "ok": (
-            bool(workbuddy_health.get("ok"))
-            and bool(workbuddy_health.get("oauth_configured"))
-            and bool(workbuddy_health.get("model_lock_confirmed"))
-            and workbuddy_health.get("expected_model") == "GLM-5.3-Flash"
-        ),
+    live_check, workbuddy_mode, workbuddy_configured = (
+        workbuddy_live_check(workbuddy_health)
+    )
+    checks["workbuddy_live"] = live_check
+    checks["workbuddy_mode"] = {
+        "ok": True,
         "detail": {
-            key: value
-            for key, value in workbuddy_health.items()
-            if key not in {"token", "access_token", "refresh_token"}
+            "mode": workbuddy_mode,
+            "configured": workbuddy_configured,
+            "real_dispatch_enabled": workbuddy_configured,
         },
     }
 
@@ -333,6 +364,8 @@ async def readyz():
     payload = {
         "ok": ready,
         "handoff_protocol": "1.0",
+        "workbuddy_mode": workbuddy_mode,
+        "workbuddy_configured": workbuddy_configured,
         "checks": checks,
     }
     if ready:
