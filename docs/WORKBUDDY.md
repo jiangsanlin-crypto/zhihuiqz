@@ -1,68 +1,60 @@
 # WorkBuddy Integration
 
-WorkBuddy is the independent validation/deployment work body.
+WorkBuddy is the independent validation and deployment work body.
 
 ## GitHub access
 
-The repository and task PRs are public.
+WorkBuddy reads the public repository and PRs directly and receives no GitHub
+write credential. Report write-back/dispatch is performed by the Orchestrator
+after path and handoff validation.
 
-WorkBuddy reads them directly and receives no GitHub token, GitHub OAuth grant,
-or GitHub connector authorization.
+## API authentication
 
-All report write-back is performed by the Orchestrator after strict path
-validation.
-
-## WorkBuddy API authentication
-
-The persistent WorkBuddy runner needs WorkBuddy's own OAuth credentials:
-- WORKBUDDY_CLIENT_ID
-- WORKBUDDY_CLIENT_SECRET
-- WORKBUDDY_REFRESH_TOKEN
-
-A temporary WORKBUDDY_ACCESS_TOKEN can be used during bootstrap.
+The persistent WorkBuddy runner uses WorkBuddy OAuth/access-token credentials.
 
 ## Model lock
 
 Required model: `GLM-5.3-Flash`.
 
-The Cloud Task create endpoint does not expose a per-task model parameter.
-Therefore enforcement is at the dedicated WorkBuddy/Buddy App configuration:
-
-1. expose GLM-5.3-Flash only;
-2. set it as default;
-3. verify no Auto/alternate model is selectable;
-4. set WORKBUDDY_MODEL=GLM-5.3-Flash;
-5. set WORKBUDDY_MODEL_LOCK_CONFIRMED=true only after verification.
-
-The Orchestrator remains not-ready until this is confirmed.
+The dedicated WorkBuddy/Buddy App must expose only that model. The Orchestrator
+remains not-ready until `WORKBUDDY_MODEL_LOCK_CONFIRMED=true`.
 
 ## Prototype phase
 
-WorkBuddy reads Codex planning outputs and returns only the allowed reports:
+Outputs:
 - reports/prototype_review.md
 - reports/data_analysis.md
 - reports/classification_validation.md
 - reports/uiux_prototype.md
 
-Successful handoff goes to ChatGPT.
+Successful handoff -> ChatGPT.
 
 ## QA phase
 
-The WorkBuddy runner first executes deterministic Git/Python checks in an
-isolated temporary workspace, then asks WorkBuddy to perform classification,
-multilingual UI and UI/UX acceptance.
-
-Allowed outputs:
+Outputs:
 - reports/test_report.md
 - reports/uiux_acceptance.md
 - reports/classification_validation.md
 - reports/qa_summary.json
 
-Successful handoff goes to Codex release review.
+Successful handoff -> Codex release review.
 
 ## Deployment phase
 
-WorkBuddy owns deployment review, health verification and rollback decisions.
-GitHub Actions performs the actual SSH/Docker commands after human approval.
+After Codex marks the release ready, WorkBuddy performs an independent
+production-readiness review.
 
-See docs/DEPLOYMENT_HANDOFF.md.
+Outputs:
+- reports/deployment_plan.md
+- reports/deployment_gate.json
+
+A ready deployment gate automatically dispatches GitHub Actions to:
+- wait required CI;
+- merge the PR;
+- deploy main;
+- check health at 0/1/5/15 minutes;
+- roll back on failure;
+- mark the task done on success.
+
+No per-release human approval is required when full-auto mode is enabled.
+`EMERGENCY_STOP=true` stops the production stage before merge/deploy.
