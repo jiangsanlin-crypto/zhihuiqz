@@ -1,29 +1,98 @@
 name: Route WorkBuddy Tasks
 
 on:
-  pull_request:
-    types: [labeled]
+  repository_dispatch:
+    types:
+      - agent_workbuddy_prototype
+      - agent_workbuddy_qa
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to retry
+        required: true
+      phase:
+        description: WorkBuddy phase to retry
+        required: true
+        type: choice
+        options:
+          - prototype
+          - qa
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   route:
-    if: >
-      github.event.label.name == 'agent:workbuddy' &&
-      contains(github.event.pull_request.labels.*.name, 'status:todo') &&
-      (contains(github.event.pull_request.labels.*.name, 'phase:prototype') ||
-       contains(github.event.pull_request.labels.*.name, 'phase:qa'))
     runs-on: ubuntu-latest
     steps:
-      - name: Relay WorkBuddy event to orchestrator
+      - name: Resolve PR and synthesize WorkBuddy event
+        id: event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER_AUTO: ${{ github.event.client_payload.pr_number }}
+          PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
+          TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
+          SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          PHASE_MANUAL: ${{ inputs.phase }}
+        run: |
+          PR_NUMBER="${PR_NUMBER_AUTO:-$PR_NUMBER_MANUAL}"
+          test -n "$PR_NUMBER"
+
+          if [ "$EVENT_ACTION" = "agent_workbuddy_prototype" ]; then
+            EXPECTED_PHASE="phase:prototype"
+          elif [ "$EVENT_ACTION" = "agent_workbuddy_qa" ]; then
+            EXPECTED_PHASE="phase:qa"
+          elif [ "$PHASE_MANUAL" = "prototype" ]; then
+            EXPECTED_PHASE="phase:prototype"
+          elif [ "$PHASE_MANUAL" = "qa" ]; then
+            EXPECTED_PHASE="phase:qa"
+          else
+            echo "Unable to resolve WorkBuddy phase."
+            exit 1
+          fi
+
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+
+          BODY="$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")"
+          LABELS="$(jq -r '.labels[].name' "$RUNNER_TEMP/pr.json")"
+          SOURCE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
+          TASK_ID="$(printf '%s' "$BODY" | sed -n 's/.*<!-- agent-task-id:\([A-Za-z0-9._:-]*\) -->.*/\1/p' | head -n1)"
+
+          test -n "$TASK_ID"
+          echo "$LABELS" | grep -qx "agent:workbuddy"
+          echo "$LABELS" | grep -qx "status:todo"
+          echo "$LABELS" | grep -qx "$EXPECTED_PHASE"
+
+          if [ -n "$TASK_ID_HINT" ] && [ "$TASK_ID_HINT" != "$TASK_ID" ]; then
+            echo "task_id mismatch: payload=$TASK_ID_HINT pr=$TASK_ID"
+            exit 1
+          fi
+
+          if [ -n "$SOURCE_SHA_HINT" ] && [ "$SOURCE_SHA_HINT" != "$SOURCE_SHA" ]; then
+            echo "source_sha mismatch: payload=$SOURCE_SHA_HINT pr=$SOURCE_SHA"
+            exit 1
+          fi
+
+          jq -n             --argjson pr "$(cat "$RUNNER_TEMP/pr.json")"             '{
+              action:"labeled",
+              number:$pr.number,
+              label:{name:"agent:workbuddy"},
+              pull_request:$pr
+            }' > "$RUNNER_TEMP/synthetic-pull-request-event.json"
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "phase=$EXPECTED_PHASE" >> "$GITHUB_OUTPUT"
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Relay WorkBuddy event to persistent Orchestrator
         env:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
           ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
         run: |
-          if [ -z "$ORCHESTRATOR_URL" ] || [ -z "$ORCHESTRATOR_TOKEN" ]; then
-            echo "Orchestrator secrets are not configured."
-            exit 1
-          fi
+          test -n "$ORCHESTRATOR_URL"
+          test -n "$ORCHESTRATOR_TOKEN"
 
-          curl --fail-with-body -sS -X POST "$ORCHESTRATOR_URL/github/events"             -H "Authorization: Bearer $ORCHESTRATOR_TOKEN"             -H "Content-Type: application/json"             -H "X-GitHub-Event: $GITHUB_EVENT_NAME"             -H "X-GitHub-Delivery: action-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"             --data-binary @"$GITHUB_EVENT_PATH"
+          curl --fail-with-body -sS -X POST "$ORCHESTRATOR_URL/github/events"             -H "Authorization: Bearer $ORCHESTRATOR_TOKEN"             -H "Content-Type: application/json"             -H "X-GitHub-Event: pull_request"             -H "X-GitHub-Delivery: dispatch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"             --data-binary @"$RUNNER_TEMP/synthetic-pull-request-event.json"
