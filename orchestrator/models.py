@@ -69,3 +69,5 @@ class AgentRunResult(BaseModel):
     next_labels: list[str] = Field(default_factory=list)
     pr_number: int | None = None
     handoff: Handoff | None = None
+    # Degraded WorkBuddy dispatches are blocked without publishing a handoff.
+    handoff_allowed: bool = True
