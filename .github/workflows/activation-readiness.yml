@@ -41,6 +41,8 @@ jobs:
           ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
           ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
           ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          AUTO_PRODUCTION_ENABLED: ${{ secrets.AUTO_PRODUCTION_ENABLED }}
+          EMERGENCY_STOP: ${{ secrets.EMERGENCY_STOP }}
         run: |
           set -euo pipefail
 
@@ -54,6 +56,8 @@ jobs:
             ORCH_SERVER_SSH_KEY
             ORCH_SERVER_KNOWN_HOSTS
             ORCH_ENV_B64
+            AUTO_PRODUCTION_ENABLED
+            EMERGENCY_STOP
           )
 
           if [ "$STAGE" = "postdeploy" ]; then
@@ -76,6 +80,16 @@ jobs:
 
           if [ "$AGENT_GITHUB_TOKEN" = "$REPO_ADMIN_TOKEN" ]; then
             echo "AGENT_GITHUB_TOKEN and REPO_ADMIN_TOKEN must be different identities."
+            exit 1
+          fi
+
+          if [ "$AUTO_PRODUCTION_ENABLED" != "true" ]; then
+            echo "AUTO_PRODUCTION_ENABLED must be exactly true."
+            exit 1
+          fi
+
+          if [ "$EMERGENCY_STOP" = "true" ]; then
+            echo "EMERGENCY_STOP is active."
             exit 1
           fi
 
@@ -165,10 +179,10 @@ jobs:
               raise SystemExit("main does not require CI context: test")
 
           reviews=data.get("required_pull_request_reviews") or {}
-          if int(reviews.get("required_approving_review_count") or 0) < 1:
-              raise SystemExit("main does not require an approving review")
-          if not reviews.get("require_code_owner_reviews"):
-              raise SystemExit("main does not require CODEOWNERS review")
+          if int(reviews.get("required_approving_review_count") or 0) != 0:
+              raise SystemExit("main still requires a human approving review")
+          if reviews.get("require_code_owner_reviews"):
+              raise SystemExit("main still requires CODEOWNERS review")
 
           if not (data.get("enforce_admins") or {}).get("enabled"):
               raise SystemExit("main protection is not enforced for admins")
