@@ -3,8 +3,8 @@ name: Codex Product and Release
 on:
   issues:
     types: [labeled]
-  pull_request:
-    types: [labeled]
+  repository_dispatch:
+    types: [agent_codex_release]
 
 permissions:
   contents: write
@@ -19,7 +19,7 @@ jobs:
       contains(github.event.issue.labels.*.name, 'phase:product-plan') &&
       contains(github.event.issue.labels.*.name, 'status:todo')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
 
     steps:
       - uses: actions/checkout@v4
@@ -28,12 +28,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Require automation token
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: test -n "$GH_TOKEN"
+
       - name: Mark product planning running
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --remove-label "status:todo" --add-label "status:running" || true
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
 
       - name: Build product prompt
         env:
@@ -66,7 +71,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          model: gpt-6-luna
+          model: gpt-5.6-luna
           effort: max
           permission-profile: ":workspace"
           prompt-file: ${{ runner.temp }}/codex-product.md
@@ -74,6 +79,7 @@ jobs:
 
       - name: Validate product-only changes
         if: steps.codex.outcome == 'success'
+        id: changed
         run: |
           {
             git diff --name-only
@@ -88,20 +94,12 @@ jobs:
             exit 1
           fi
 
-      - name: Block failed planning
-        if: steps.codex.outcome != 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running" --add-label "status:blocked" || true
-          gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --body "Codex product-planning run failed. No handoff was created."
-          exit 1
+          echo "value=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push product plan
-        if: steps.codex.outcome == 'success'
+        if: steps.codex.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           BRANCH: ${{ steps.branch.outputs.name }}
         run: |
           gh auth setup-git
@@ -111,15 +109,16 @@ jobs:
           git commit -m "docs: Codex product plan"
           git push origin "HEAD:$BRANCH"
 
-      - name: Create specification PR and handoff
-        if: steps.codex.outcome == 'success'
+      - name: Create specification PR, handoff and dispatch WorkBuddy
+        if: steps.codex.outcome == 'success' && steps.changed.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           BRANCH: ${{ steps.branch.outputs.name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
           TASK_ID="GH-ISSUE-$ISSUE_NUMBER"
+
           cat > "$RUNNER_TEMP/pr-body.md" <<EOF
           <!-- agent-task-id:$TASK_ID -->
 
@@ -132,67 +131,119 @@ jobs:
 
           PR_URL="$(gh pr create             --repo "${{ github.repository }}"             --base main             --head "$BRANCH"             --title "spec: $ISSUE_TITLE"             --body-file "$RUNNER_TEMP/pr-body.md")"
           PR_NUMBER="${PR_URL##*/}"
-
           SHA="$(git rev-parse HEAD)"
-          cat > "$RUNNER_TEMP/handoff.md" <<EOF
-          <!-- agent-handoff:v1 -->
-          ### Agent handoff: codex → workbuddy
 
-          ```json
-          {
-            "version": "1.0",
-            "task_id": "$TASK_ID",
-            "from_agent": "codex",
-            "to_agent": "workbuddy",
-            "phase": "product_planning",
-            "status": "success",
-            "summary": "Product and recruitment-business specification completed.",
-            "model": "gpt-6-luna",
-            "effort": "max",
-            "required_inputs": ["source issue", "public repository"],
-            "expected_outputs": [
-              "reports/prototype_review.md",
-              "reports/data_analysis.md",
-              "reports/classification_validation.md",
-              "reports/uiux_prototype.md"
-            ],
-            "acceptance": ["WorkBuddy must validate implementability before ChatGPT development"],
-            "artifacts": [
-              "docs/PRD.md",
-              "docs/RECRUITMENT_RULES.md",
-              "docs/DATA_COLLECTION_PLAN.md",
-              "docs/CLASSIFICATION_DICTIONARY.md",
-              "TASKS.md",
-              "CHANGELOG.md"
-            ],
-            "checks": [],
-            "blockers": [],
-            "source_ref": "$BRANCH",
-            "source_sha": "$SHA",
-            "pr_number": $PR_NUMBER
+          export TASK_ID PR_NUMBER BRANCH SHA
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload={
+              "version":"1.0",
+              "task_id":os.environ["TASK_ID"],
+              "from_agent":"codex",
+              "to_agent":"workbuddy",
+              "phase":"product_planning",
+              "status":"success",
+              "summary":"Product and recruitment-business specification completed.",
+              "model":"gpt-5.6-luna",
+              "effort":"max",
+              "required_inputs":["source issue","public repository"],
+              "expected_outputs":[
+                  "reports/prototype_review.md",
+                  "reports/data_analysis.md",
+                  "reports/classification_validation.md",
+                  "reports/uiux_prototype.md"
+              ],
+              "acceptance":["WorkBuddy must validate implementability before ChatGPT development"],
+              "artifacts":[
+                  "docs/PRD.md",
+                  "docs/RECRUITMENT_RULES.md",
+                  "docs/DATA_COLLECTION_PLAN.md",
+                  "docs/CLASSIFICATION_DICTIONARY.md",
+                  "TASKS.md",
+                  "CHANGELOG.md"
+              ],
+              "checks":[],
+              "blockers":[],
+              "source_ref":os.environ["BRANCH"],
+              "source_sha":os.environ["SHA"],
+              "pr_number":int(os.environ["PR_NUMBER"]),
           }
-          ```
-          EOF
+          body="<!-- agent-handoff:v1 -->\n### Agent handoff: codex → workbuddy\n\n```json\n"+json.dumps(payload,ensure_ascii=False,indent=2)+"\n```\n"
+          Path(os.environ["RUNNER_TEMP"],"handoff.md").write_text(body)
+          PY
 
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/handoff.md"
 
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "phase:prototype" --add-label "status:todo" --add-label "agent:workbuddy"
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" --remove-label "agent:codex" --remove-label "phase:product-plan" --remove-label "status:running" --add-label "status:review" || true
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:prototype"             --add-label "status:todo"             --add-label "agent:workbuddy"
+
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "phase:product-plan"             --remove-label "status:running"             --add-label "status:review" || true
+
+          jq -n             --argjson pr_number "$PR_NUMBER"             --arg task_id "$TASK_ID"             --arg head_ref "$BRANCH"             --arg source_sha "$SHA"             '{
+              event_type:"agent_workbuddy_prototype",
+              client_payload:{
+                pr_number:$pr_number,
+                task_id:$task_id,
+                head_ref:$head_ref,
+                source_sha:$source_sha
+              }
+            }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+
+      - name: Block failed product planning
+        if: steps.codex.outcome != 'success' || steps.changed.outputs.value != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
+          gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --body "Codex product-planning failed or produced invalid output. No WorkBuddy handoff was dispatched."
+          exit 1
 
   release-review:
-    if: >
-      github.event_name == 'pull_request' &&
-      github.event.label.name == 'agent:codex' &&
-      contains(github.event.pull_request.labels.*.name, 'phase:release') &&
-      contains(github.event.pull_request.labels.*.name, 'status:todo') &&
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
 
     steps:
+      - name: Require automation token and resolve PR context
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
+          SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
+        run: |
+          test -n "$GH_TOKEN"
+          test -n "$PR_NUMBER"
+
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+
+          HEAD_REF="$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")"
+          SOURCE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
+          BODY="$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")"
+          LABELS="$(jq -r '.labels[].name' "$RUNNER_TEMP/pr.json")"
+          TASK_ID="$(printf '%s' "$BODY" | sed -n 's/.*<!-- agent-task-id:\([A-Za-z0-9._:-]*\) -->.*/\1/p' | head -n1)"
+
+          test -n "$TASK_ID"
+          echo "$LABELS" | grep -qx "agent:codex"
+          echo "$LABELS" | grep -qx "phase:release"
+          echo "$LABELS" | grep -qx "status:todo"
+
+          if [ -n "$TASK_ID_HINT" ] && [ "$TASK_ID_HINT" != "$TASK_ID" ]; then
+            exit 1
+          fi
+          if [ -n "$SOURCE_SHA_HINT" ] && [ "$SOURCE_SHA_HINT" != "$SOURCE_SHA" ]; then
+            exit 1
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ steps.context.outputs.head_ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -200,55 +251,44 @@ jobs:
         id: handoff_gate
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             > "$RUNNER_TEMP/comments.json"
-
-          TASK_ID="$(python - <<'PY'
-          import json, os, re
-          from pathlib import Path
-          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          body=event["pull_request"].get("body") or ""
-          match=re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
-          if not match:
-              raise SystemExit("stable task id marker is missing")
-          print(match.group(1))
-          PY
-          )"
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
 
           PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent workbuddy             --to-agent codex             --phase qa_acceptance             --source-sha "$SOURCE_SHA"
 
           jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
 
-      - name: Block invalid Codex release handoff gate
+      - name: Block invalid release handoff gate
         if: steps.handoff_gate.outcome != 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:blocked" || true
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "Codex release review was not started because the required successful WorkBuddy QA handoff was missing, blocked, or pointed at a different PR head SHA."
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "Codex release review was not started because the required successful WorkBuddy QA handoff was invalid."
           exit 1
 
       - name: Mark release review running
-        if: steps.handoff_gate.outcome == 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running" || true
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
 
       - name: Build release prompt
-        if: steps.handoff_gate.outcome == 'success'
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
         run: |
           {
             cat agents/codex_prompt.md
             echo
             echo "## Release-review target"
+            echo "Task ID: $TASK_ID"
             echo "PR #$PR_NUMBER"
             echo
             echo "## Prior handoffs"
@@ -261,7 +301,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          model: gpt-6-luna
+          model: gpt-5.6-luna
           effort: max
           permission-profile: ":workspace"
           prompt-file: ${{ runner.temp }}/codex-release.md
@@ -269,6 +309,7 @@ jobs:
 
       - name: Validate release-only changes
         if: steps.codex.outcome == 'success'
+        id: release_files
         run: |
           {
             git diff --name-only
@@ -280,14 +321,16 @@ jobs:
             echo "Codex changed files outside the release-review allowlist."
             exit 1
           fi
+
           test -f reports/release_gate.json
           python -m json.tool reports/release_gate.json >/dev/null
+          echo "value=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit release documents
-        if: steps.codex.outcome == 'success'
+        if: steps.codex.outcome == 'success' && steps.release_files.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
         run: |
           gh auth setup-git
           git config user.name "codex-release-agent"
@@ -297,11 +340,12 @@ jobs:
           git push origin "HEAD:$HEAD_REF"
 
       - name: Apply release gate
-        if: steps.codex.outcome == 'success'
+        if: steps.codex.outcome == 'success' && steps.release_files.outputs.value == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
         run: |
           STATUS="$(python - <<'PY'
           import json
@@ -314,15 +358,6 @@ jobs:
           PY
           )"
           SHA="$(git rev-parse HEAD)"
-          TASK_ID="$(python - <<'PY'
-          import json, os, re
-          from pathlib import Path
-          event=json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          body=event["pull_request"].get("body") or ""
-          m=re.search(r"<!--\s*agent-task-id:([A-Za-z0-9._:-]+)\s*-->", body)
-          print(m.group(1) if m else f"GH-PULL_REQUEST-{event['pull_request']['number']}")
-          PY
-          )"
 
           if [ "$STATUS" != "ready" ]; then
             gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked" || true
@@ -330,44 +365,44 @@ jobs:
             exit 1
           fi
 
-          cat > "$RUNNER_TEMP/handoff.md" <<EOF
-          <!-- agent-handoff:v1 -->
-          ### Agent handoff: codex → human
-
-          ```json
-          {
-            "version": "1.0",
-            "task_id": "$TASK_ID",
-            "from_agent": "codex",
-            "to_agent": "human",
-            "phase": "release_review",
-            "status": "success",
-            "summary": "$SUMMARY",
-            "model": "gpt-6-luna",
-            "effort": "max",
-            "required_inputs": ["WorkBuddy QA reports", "ChatGPT implementation", "product specification"],
-            "expected_outputs": ["human merge approval", "production approval"],
-            "acceptance": ["human approval is mandatory before production deployment"],
-            "artifacts": ["CHANGELOG.md", "docs/RELEASE_NOTES.md", "reports/release_gate.json"],
-            "checks": [],
-            "blockers": [],
-            "source_ref": "$HEAD_REF",
-            "source_sha": "$SHA",
-            "pr_number": $PR_NUMBER
+          export STATUS SUMMARY SHA
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload={
+              "version":"1.0",
+              "task_id":os.environ["TASK_ID"],
+              "from_agent":"codex",
+              "to_agent":"human",
+              "phase":"release_review",
+              "status":"success",
+              "summary":os.environ.get("SUMMARY",""),
+              "model":"gpt-5.6-luna",
+              "effort":"max",
+              "required_inputs":["WorkBuddy QA reports","ChatGPT implementation","product specification"],
+              "expected_outputs":["human merge approval","production approval"],
+              "acceptance":["human approval is mandatory before production deployment"],
+              "artifacts":["CHANGELOG.md","docs/RELEASE_NOTES.md","reports/release_gate.json"],
+              "checks":[],
+              "blockers":[],
+              "source_ref":os.environ["HEAD_REF"],
+              "source_sha":os.environ["SHA"],
+              "pr_number":int(os.environ["PR_NUMBER"]),
           }
-          ```
-          EOF
+          body="<!-- agent-handoff:v1 -->\n### Agent handoff: codex → human\n\n```json\n"+json.dumps(payload,ensure_ascii=False,indent=2)+"\n```\n"
+          Path(os.environ["RUNNER_TEMP"],"handoff.md").write_text(body)
+          PY
 
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/handoff.md"
 
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "phase:release"             --remove-label "status:running"             --add-label "status:review"             --add-label "approval:production-required"
 
       - name: Block failed release review
-        if: steps.codex.outcome != 'success'
+        if: steps.codex.outcome != 'success' || steps.release_files.outputs.value != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --add-label "status:blocked" || true
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "Codex release-review run failed."
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "Codex release-review failed or produced invalid release artifacts."
           exit 1
