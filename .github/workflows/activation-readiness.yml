@@ -1,0 +1,208 @@
+name: Activation Readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Activation stage to validate
+        required: true
+        type: choice
+        options:
+          - predeploy
+          - postdeploy
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    environment: orchestrator-production
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate repository policy
+        run: |
+          python scripts/check_model_policy.py
+          python scripts/check_dispatch_policy.py
+
+      - name: Validate required secrets without printing them
+        env:
+          STAGE: ${{ inputs.stage }}
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
+          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+          REPO_ADMIN_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+          ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+        run: |
+          set -euo pipefail
+
+          required=(
+            AGENT_GITHUB_TOKEN
+            OPENAI_API_KEY
+            ORCHESTRATOR_TOKEN
+            REPO_ADMIN_TOKEN
+            ORCH_SERVER_HOST
+            ORCH_SERVER_USER
+            ORCH_SERVER_SSH_KEY
+            ORCH_SERVER_KNOWN_HOSTS
+            ORCH_ENV_B64
+          )
+
+          if [ "$STAGE" = "postdeploy" ]; then
+            required+=(ORCHESTRATOR_URL)
+          fi
+
+          missing=0
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "MISSING: $name"
+              missing=1
+            else
+              echo "PRESENT: $name"
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          if [ "$AGENT_GITHUB_TOKEN" = "$REPO_ADMIN_TOKEN" ]; then
+            echo "AGENT_GITHUB_TOKEN and REPO_ADMIN_TOKEN must be different identities."
+            exit 1
+          fi
+
+      - name: Validate protected server environment
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$ORCH_ENV_B64" | base64 -d > "$RUNNER_TEMP/server.env"
+
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          values = {}
+          for raw in Path(os.environ["RUNNER_TEMP"], "server.env").read_text().splitlines():
+              line = raw.strip()
+              if not line or line.startswith("#") or "=" not in line:
+                  continue
+              key, value = line.split("=", 1)
+              values[key.strip()] = value.strip()
+
+          required = [
+              "GITHUB_TOKEN",
+              "GITHUB_REPOSITORY",
+              "ORCHESTRATOR_TOKEN",
+              "WORKBUDDY_TOKEN",
+              "WORKBUDDY_MODEL",
+              "WORKBUDDY_MODEL_LOCK_CONFIRMED",
+          ]
+          missing = [key for key in required if not values.get(key)]
+          if missing:
+              raise SystemExit("server env missing keys: " + ", ".join(missing))
+
+          if values["GITHUB_REPOSITORY"] != "jiangsanlin-crypto/zhihuiqz":
+              raise SystemExit("server GITHUB_REPOSITORY is incorrect")
+
+          if values["WORKBUDDY_MODEL"] != "GLM-5.3-Flash":
+              raise SystemExit("WorkBuddy model is not GLM-5.3-Flash")
+
+          if values["WORKBUDDY_MODEL_LOCK_CONFIRMED"].lower() not in {"1","true","yes","on"}:
+              raise SystemExit("WorkBuddy model lock is not confirmed")
+
+          oauth_ok = bool(values.get("WORKBUDDY_ACCESS_TOKEN")) or all(
+              values.get(key)
+              for key in (
+                  "WORKBUDDY_CLIENT_ID",
+                  "WORKBUDDY_CLIENT_SECRET",
+                  "WORKBUDDY_REFRESH_TOKEN",
+              )
+          )
+          if not oauth_ok:
+              raise SystemExit("WorkBuddy OAuth is incomplete")
+
+          if values["ORCHESTRATOR_TOKEN"] != os.environ["ORCHESTRATOR_TOKEN"]:
+              raise SystemExit("ORCHESTRATOR_TOKEN does not match server env")
+
+          print("protected server environment validated")
+          PY
+
+      - name: Verify agent automation token can dispatch
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}" >/dev/null
+          printf '%s\n' '{"event_type":"activation_probe","client_payload":{"source":"activation-readiness"}}' |
+            gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+          echo "agent automation token repository_dispatch capability verified"
+
+      - name: Verify main branch protection
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/branches/main/protection"             > "$RUNNER_TEMP/protection.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data=json.loads(Path(os.environ["RUNNER_TEMP"],"protection.json").read_text())
+
+          required_checks=data.get("required_status_checks") or {}
+          contexts=required_checks.get("contexts") or []
+          if "test" not in contexts:
+              raise SystemExit("main does not require CI context: test")
+
+          reviews=data.get("required_pull_request_reviews") or {}
+          if int(reviews.get("required_approving_review_count") or 0) < 1:
+              raise SystemExit("main does not require an approving review")
+          if not reviews.get("require_code_owner_reviews"):
+              raise SystemExit("main does not require CODEOWNERS review")
+
+          if not (data.get("enforce_admins") or {}).get("enabled"):
+              raise SystemExit("main protection is not enforced for admins")
+          if (data.get("allow_force_pushes") or {}).get("enabled"):
+              raise SystemExit("force pushes are enabled on main")
+          if (data.get("allow_deletions") or {}).get("enabled"):
+              raise SystemExit("main deletion is enabled")
+
+          print("main branch protection validated")
+          PY
+
+      - name: Verify live Orchestrator readiness
+        if: inputs.stage == 'postdeploy'
+        env:
+          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+        run: |
+          curl --fail-with-body -sS "$ORCHESTRATOR_URL/readyz"             > "$RUNNER_TEMP/readyz.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data=json.loads(Path(os.environ["RUNNER_TEMP"],"readyz.json").read_text())
+          if data.get("ok") is not True:
+              raise SystemExit("Orchestrator is not ready")
+
+          checks=data.get("checks") or {}
+          for name, item in checks.items():
+              if not item.get("ok"):
+                  raise SystemExit(f"readiness check failed: {name}")
+
+          print("live Orchestrator readiness validated")
+          PY
+
+      - name: Activation summary
+        run: |
+          echo "Activation readiness passed for stage: ${{ inputs.stage }}" >> "$GITHUB_STEP_SUMMARY"
