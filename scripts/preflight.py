@@ -14,7 +14,6 @@ REQUIRED = {
     "GITHUB_TOKEN": "Orchestrator GitHub write token",
     "ORCHESTRATOR_TOKEN": "GitHub-to-Orchestrator bearer token",
     "WORKBUDDY_URL": "WorkBuddy runner URL",
-    "WORKBUDDY_TOKEN": "WorkBuddy runner bearer token",
 }
 
 

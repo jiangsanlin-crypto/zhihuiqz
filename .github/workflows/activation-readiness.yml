@@ -84,7 +84,6 @@ jobs:
               "GITHUB_TOKEN",
               "GITHUB_REPOSITORY",
               "ORCHESTRATOR_TOKEN",
-              "WORKBUDDY_TOKEN",
               "WORKBUDDY_MODEL",
               "WORKBUDDY_MODEL_LOCK_CONFIRMED",
           ]
