@@ -35,8 +35,7 @@ jobs:
 
               LABELS="$(gh issue view "$NUMBER"                 --repo "${{ github.repository }}"                 --json labels                 --jq '.labels[].name')"
 
-              PHASE="$(printf '%s
-' "$LABELS" | grep '^phase:' | head -n1 || true)"
+              PHASE="$(echo "$LABELS" | grep '^phase:' | head -n1 || true)"
               MARKER="<!-- agent-watchdog:queued:$AGENT:$PHASE -->"
 
               ALREADY="$(gh api                 "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100"                 --paginate                 --jq ".[] | select(.body | contains(\"$MARKER\")) | .id"                 | head -n1)"
