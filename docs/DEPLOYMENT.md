@@ -1,62 +1,65 @@
 # Deployment
 
-## 1. Persistent host
+## Persistent Orchestrator stack
 
-Deploy Orchestrator + WorkBuddy Runner + Sandbox Runner on a persistent Linux VPS/private host.
+The persistent host runs only:
+- Orchestrator;
+- WorkBuddy runner.
 
-```bash
-git clone https://github.com/jiangsanlin-crypto/zhihuiqz.git
-cd zhihuiqz
-cp .env.example .env
-# edit .env
-docker compose up -d --build
-curl http://127.0.0.1:8080/healthz
-```
+Codex and ChatGPT run in GitHub Actions.
 
-Put HTTPS in front of port 8080 with Caddy/Nginx. Runner ports 8091 and 8092 stay private inside Docker.
+## Preferred bootstrap
 
-## 2. Credential separation
+After PR approval and merge to main:
 
-Orchestrator only:
+1. create GitHub environment `orchestrator-production`;
+2. require human approval on that environment;
+3. configure the deployment secrets listed in
+   `docs/DEPLOYMENT_HANDOFF.md`;
+4. run `WorkBuddy Deploy Orchestrator`;
+5. enter `DEPLOY-ORCHESTRATOR`.
+
+The workflow uses SSH, checks out public `main`, writes the protected server
+`.env`, runs Docker Compose, verifies `/readyz`, and rolls back to the
+previous Git SHA if readiness fails.
+
+## Server-side credentials
+
+Only Orchestrator gets:
 - GITHUB_REPOSITORY
 - GITHUB_TOKEN
 - ORCHESTRATOR_TOKEN
 
-WorkBuddy runner only:
+WorkBuddy runner gets:
 - WORKBUDDY_TOKEN
-- WORKBUDDY_CLIENT_ID
-- WORKBUDDY_CLIENT_SECRET
-- WORKBUDDY_REFRESH_TOKEN
-- optional WORKBUDDY_ACCESS_TOKEN
+- WorkBuddy OAuth values
+- WORKBUDDY_MODEL=GLM-5.3-Flash
+- WORKBUDDY_MODEL_LOCK_CONFIRMED=true after the dedicated app is verified
 
-Sandbox runner only:
-- SANDBOX_TOKEN
+WorkBuddy receives no GitHub token.
 
-The Compose file does not pass GITHUB_TOKEN to WorkBuddy or Sandbox.
+## GitHub Actions secrets
 
-WorkBuddy reads the public GitHub repository without GitHub authorization.
-
-## 3. GitHub Actions Secrets
-
-Add:
+Development/release:
+- OPENAI_API_KEY
 - ORCHESTRATOR_URL
 - ORCHESTRATOR_TOKEN
-- OPENAI_API_KEY
 
-Codex uses openai/codex-action@v1. The OpenAI key is supplied to the action input and is not stored in the repository.
+Initial Orchestrator deployment:
+- ORCH_SERVER_HOST
+- ORCH_SERVER_USER
+- ORCH_SERVER_PORT
+- ORCH_SERVER_SSH_KEY
+- ORCH_SERVER_KNOWN_HOSTS
+- ORCH_SERVER_PATH
+- ORCH_ENV_B64
 
-## 4. Labels
-
-Run Bootstrap Agent Labels once after the orchestration workflows are on main.
-
-## 5. Main protection
+## Main protection
 
 Protect main:
-- require pull request before merging
-- require CI/status checks
-- disallow force pushes
-- do not allow agent bypass
+- require PR;
+- require CI;
+- block force push;
+- do not permit agent bypass.
 
-## 6. Production boundary
-
-No automated agent is authorized to merge main or deploy production. The staging image workflow is manually triggered and does not perform production deployment.
+Production approval remains human-only.
