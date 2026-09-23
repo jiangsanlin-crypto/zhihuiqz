@@ -34,15 +34,15 @@ jobs:
           PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
           TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
           SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
-          EVENT_ACTION: ${{ github.event.action }}
+          PHASE_AUTO: ${{ github.event.client_payload.phase }}
           PHASE_MANUAL: ${{ inputs.phase }}
         run: |
           PR_NUMBER="${PR_NUMBER_AUTO:-$PR_NUMBER_MANUAL}"
           test -n "$PR_NUMBER"
 
-          if [ "$EVENT_ACTION" = "agent_workbuddy_prototype" ]; then
+          if [ "$PHASE_AUTO" = "prototype" ]; then
             EXPECTED_PHASE="phase:prototype"
-          elif [ "$EVENT_ACTION" = "agent_workbuddy_qa" ]; then
+          elif [ "$PHASE_AUTO" = "qa" ]; then
             EXPECTED_PHASE="phase:qa"
           elif [ "$PHASE_MANUAL" = "prototype" ]; then
             EXPECTED_PHASE="phase:prototype"
