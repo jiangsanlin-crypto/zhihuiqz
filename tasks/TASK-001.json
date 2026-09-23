@@ -1,1 +1,25 @@
-{"task_id":"JOB-001","title":"设计职位匹配算法","owner":"workbuddy","status":"todo","acceptance":["支持高棉语、英语、中文","付费企业不能直接提高匹配分数","输出匹配理由和置信度"],"next_agent":"sandbox","approval_required":false}
+{
+  "task_id": "JOB-001",
+  "title": "Multilingual Cambodia recruitment matching",
+  "owner": "codex",
+  "phase": "product-plan",
+  "status": "todo",
+  "workflow": [
+    "codex:product_planning",
+    "workbuddy:prototype_validation",
+    "chatgpt:implementation",
+    "workbuddy:qa_acceptance",
+    "codex:release_review",
+    "human:production_approval",
+    "workbuddy:deployment"
+  ],
+  "acceptance": [
+    "Khmer primary, English secondary, Chinese tertiary",
+    "Paid employers never receive a direct relevance-score boost",
+    "Matching output includes reasons and confidence",
+    "Every AI phase emits agent-handoff:v1",
+    "Production merge/deployment requires human approval"
+  ],
+  "next_agent": "workbuddy",
+  "approval_required": true
+}
