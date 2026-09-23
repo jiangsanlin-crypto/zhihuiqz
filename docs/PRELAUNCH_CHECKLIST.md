@@ -15,10 +15,10 @@ As of 2026-09-23:
 
 | Order | Action | Owner | GitHub automation |
 |---|---|---|---|
-| 1 | Review and merge the pre-launch PR after CI passes | Repository owner | Human approval |
-| 2 | Create repository-administration environment and require approval | Repository owner | Manual GitHub settings |
-| 3 | Add REPO_ADMIN_TOKEN to that environment | Repository owner | Secret value never enters the repository |
-| 4 | Run Configure Main Protection with PROTECT-MAIN | Repository owner | .github/workflows/repository-hardening.yml |
+| 1 | Create repository-administration environment and require approval | Repository owner | Manual GitHub settings |
+| 2 | Add REPO_ADMIN_TOKEN to that environment | Repository owner | Secret value never enters the repository |
+| 3 | Run Configure Main Protection with PROTECT-MAIN before merging new work | Repository owner | .github/workflows/repository-hardening.yml |
+| 4 | Review and merge the pre-launch PR after CI passes and protection is active | Repository owner | Human approval |
 | 5 | Run Preflight Deployment Gates with PREFLIGHT-DEPLOYMENT and check_server=false | Repository owner | New preflight workflow |
 | 6 | Lock the dedicated WorkBuddy/Buddy App to GLM-5.3-Flash and confirm it | WorkBuddy operator | Manual provider configuration |
 | 7 | Create orchestrator-production environment with required approval | Repository owner | Manual GitHub settings |
@@ -26,7 +26,7 @@ As of 2026-09-23:
 | 9 | Run WorkBuddy Deploy Orchestrator with DEPLOY-ORCHESTRATOR | WorkBuddy deployment owner | SSH/Docker/readiness/rollback workflow |
 | 10 | Add ORCHESTRATOR_URL, ORCHESTRATOR_TOKEN, and OPENAI_API_KEY to the required GitHub scope | Repository owner | Secret values stay in GitHub |
 | 11 | Run Bootstrap Agent Labels once | Repository owner | GitHub Actions |
-| 12 | Run Preflight Deployment Gates with check_server=true | Repository owner | Verifies live /readyz |
+| 12 | Run Preflight Deployment Gates with check_server=true | Repository owner | Verifies live /readyz in orchestrator-production |
 | 13 | Run Multi-Agent E2E Smoke with RUN-E2E | Repository owner | Synthetic data only; the E2E PR stays unmerged |
 | 14 | Start the first real recruitment task only after the E2E evidence is reviewed | Codex + repository owner | Human release decision |
 
