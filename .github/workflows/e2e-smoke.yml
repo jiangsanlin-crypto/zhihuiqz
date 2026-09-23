@@ -41,7 +41,9 @@ jobs:
           echo "number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
           echo "task_id=GH-ISSUE-$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:product-plan"             --add-label "status:todo"             --add-label "agent:codex"
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:product-plan"             --add-label "status:todo"
+
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "agent:codex"
 
       - name: Wait for planning PR
         id: pr
