@@ -18,20 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check activation state
+      - name: Check OpenAI-only activation state
         env:
           OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
-          ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
           ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
           ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
-          ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
           ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
           ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
-          ORCH_SERVER_PATH: ${{ secrets.ORCH_SERVER_PATH }}
-          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
         run: |
-          set +e
-
           REPORT="$RUNNER_TEMP/activation-report.md"
           {
             echo "## Activation probe"
@@ -40,130 +35,42 @@ jobs:
             echo "| --- | --- |"
           } > "$REPORT"
 
-          check_present() {
-            NAME="$1"
-            VALUE="${!NAME}"
-            if [ -n "$VALUE" ]; then
-              echo "| \`$NAME\` | ✅ present |" >> "$REPORT"
-            else
-              echo "| \`$NAME\` | ❌ missing |" >> "$REPORT"
-            fi
-          }
-
-          for NAME in             ORCH_SERVER_HOST             ORCH_SERVER_USER             ORCH_SERVER_SSH_KEY             ORCH_SERVER_KNOWN_HOSTS             ORCH_ENV_B64
-          do
-            check_present "$NAME"
-          done
-
-          echo "| \`ORCH_SERVER_PORT\` | $([ -n "$ORCH_SERVER_PORT" ] && echo '✅ present' || echo 'ℹ️ optional/default 22') |" >> "$REPORT"
-          echo "| \`ORCH_SERVER_PATH\` | $([ -n "$ORCH_SERVER_PATH" ] && echo '✅ present' || echo 'ℹ️ optional/default /opt/zhihuiqz-orchestrator') |" >> "$REPORT"
-
           python - <<'PY' >> "$REPORT"
           import json
           policy=json.load(open("config/automation_policy.json"))
-          print("| repository auto-production policy | " + ("✅ enabled |" if policy.get("auto_production_enabled") is True else "❌ disabled |"))
-          print("| repository emergency stop | " + ("⛔ active |" if policy.get("emergency_stop") is True else "✅ inactive |"))
-          print("| required CI check | `" + str(policy.get("require_ci_check")) + "` |")
+          print("| auto-production policy | " + ("✅ enabled |" if policy.get("auto_production_enabled") is True else "❌ disabled |"))
+          print("| emergency stop | " + ("⛔ active |" if policy.get("emergency_stop") is True else "✅ inactive |"))
+          print("| required final test gate | `" + str(policy.get("require_ci_check")) + "` |")
           PY
+
+          if [ -n "$OPENAI_API_KEY_REPO" ]; then
+            echo "| OpenAI API key | ✅ repository secret present |" >> "$REPORT"
+          elif [ -n "$ORCH_ENV_B64" ] &&                printf '%s' "$ORCH_ENV_B64" | base64 -d 2>/dev/null | grep -q '^OPENAI_API_KEY='; then
+            echo "| OpenAI API key | ✅ present in protected bundle |" >> "$REPORT"
+          else
+            echo "| OpenAI API key | ❌ missing |" >> "$REPORT"
+          fi
 
           if printf '%s\n' '{"event_type":"activation_probe","client_payload":{"source":"activation-probe"}}' |
             GH_TOKEN="${{ github.token }}" gh api --method POST               "repos/${{ github.repository }}/dispatches" --input - >/dev/null 2>&1
           then
-            echo "| built-in GitHub repository_dispatch | ✅ works |" >> "$REPORT"
+            echo "| built-in repository_dispatch | ✅ works |" >> "$REPORT"
           else
-            echo "| built-in GitHub repository_dispatch | ❌ failed |" >> "$REPORT"
+            echo "| built-in repository_dispatch | ❌ failed |" >> "$REPORT"
           fi
 
-          if [ -n "$ORCH_ENV_B64" ]; then
-            printf '%s' "$ORCH_ENV_B64" | base64 -d > "$RUNNER_TEMP/server.env" 2>/dev/null
-            if [ "$?" -ne 0 ]; then
-              echo "| protected runtime bundle | ❌ invalid base64 |" >> "$REPORT"
+          echo "| OpenAI validation agent | ✅ GitHub Actions based |" >> "$REPORT"
+          echo "| WorkBuddy OAuth/access token | ✅ not required |" >> "$REPORT"
+          echo "| Persistent Orchestrator for agent routing | ✅ not required |" >> "$REPORT"
+
+          for NAME in ORCH_SERVER_HOST ORCH_SERVER_USER ORCH_SERVER_SSH_KEY ORCH_SERVER_KNOWN_HOSTS; do
+            VALUE="${!NAME}"
+            if [ -n "$VALUE" ]; then
+              echo "| \`$NAME\` | ✅ present |" >> "$REPORT"
             else
-              python - <<'PY' >> "$REPORT"
-          import os
-          from pathlib import Path
-
-          values={}
-          for raw in Path(os.environ["RUNNER_TEMP"],"server.env").read_text(errors="replace").splitlines():
-              line=raw.strip()
-              if not line or line.startswith("#") or "=" not in line:
-                  continue
-              key,value=line.split("=",1)
-              values[key.strip()]=value.strip()
-
-          required=[
-              "GITHUB_TOKEN",
-              "GITHUB_REPOSITORY",
-              "ORCHESTRATOR_TOKEN",
-              "WORKBUDDY_MODEL",
-              "WORKBUDDY_MODEL_LOCK_CONFIRMED",
-          ]
-          missing=[key for key in required if not values.get(key)]
-
-          if missing:
-              print("| protected runtime bundle | ❌ missing: " + ", ".join(missing) + " |")
-          else:
-              print("| protected runtime bundle | ✅ required keys complete |")
-
-          repo_ok=values.get("GITHUB_REPOSITORY") == "jiangsanlin-crypto/zhihuiqz"
-          print("| server repository binding | " + ("✅ correct |" if repo_ok else "❌ incorrect |"))
-
-          model_ok=(
-              values.get("WORKBUDDY_MODEL") == "GLM-5.3-Flash"
-              and values.get("WORKBUDDY_MODEL_LOCK_CONFIRMED","").lower()
-                  in {"1","true","yes","on"}
-          )
-          print("| WorkBuddy model lock | " + ("✅ confirmed |" if model_ok else "❌ not confirmed |"))
-
-          oauth_ok=bool(values.get("WORKBUDDY_ACCESS_TOKEN")) or all(
-              values.get(key)
-              for key in (
-                  "WORKBUDDY_CLIENT_ID",
-                  "WORKBUDDY_CLIENT_SECRET",
-                  "WORKBUDDY_REFRESH_TOKEN",
-              )
-          )
-          print("| WorkBuddy OAuth/access token | " + ("✅ configured |" if oauth_ok else "❌ incomplete |"))
-
-          openai_ok=bool(os.environ.get("OPENAI_API_KEY_REPO")) or bool(values.get("OPENAI_API_KEY"))
-          print("| OpenAI API key | " + ("✅ configured |" if openai_ok else "❌ missing |"))
-
-          orch_token_ok=bool(values.get("ORCHESTRATOR_TOKEN"))
-          print("| Orchestrator bearer token | " + ("✅ configured in bundle |" if orch_token_ok else "❌ missing |"))
-          PY
+              echo "| \`$NAME\` | ℹ️ needed only for real server deployment |" >> "$REPORT"
             fi
-          else
-            echo "| protected runtime bundle | ❌ ORCH_ENV_B64 missing |" >> "$REPORT"
-            echo "| WorkBuddy model lock | ❌ not testable |" >> "$REPORT"
-            echo "| WorkBuddy OAuth/access token | ❌ not testable |" >> "$REPORT"
-            echo "| OpenAI API key | $([ -n "$OPENAI_API_KEY_REPO" ] && echo '✅ configured as repository secret' || echo '❌ missing') |" >> "$REPORT"
-          fi
-
-          URL="$ORCHESTRATOR_URL"
-          if [ -z "$URL" ] && [ -n "$ORCH_SERVER_HOST" ]; then
-            URL="http://$ORCH_SERVER_HOST:8080"
-          fi
-
-          if [ -n "$URL" ]; then
-            if curl --max-time 15 --fail-with-body -sS "$URL/readyz"               > "$RUNNER_TEMP/readyz.json" 2>/dev/null
-            then
-              if python - <<'PY'
-          import json, os
-          from pathlib import Path
-          data=json.loads(Path(os.environ["RUNNER_TEMP"],"readyz.json").read_text())
-          raise SystemExit(0 if data.get("ok") is True else 1)
-          PY
-              then
-                echo "| live Orchestrator /readyz | ✅ ready |" >> "$REPORT"
-              else
-                echo "| live Orchestrator /readyz | ❌ response not ready |" >> "$REPORT"
-              fi
-            else
-              echo "| live Orchestrator /readyz | ❌ unreachable/not deployed |" >> "$REPORT"
-            fi
-          else
-            echo "| live Orchestrator /readyz | ❌ no URL/host available |" >> "$REPORT"
-          fi
+          done
 
           {
             echo
