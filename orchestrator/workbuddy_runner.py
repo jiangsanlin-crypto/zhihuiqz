@@ -62,6 +62,11 @@ QA_FILES = {
     "reports/qa_summary.json",
 }
 
+DEPLOY_FILES = {
+    "reports/deployment_plan.md",
+    "reports/deployment_gate.json",
+}
+
 app = FastAPI(title="WorkBuddy Runner")
 
 
@@ -595,6 +600,59 @@ Do not deploy production. Do not request secrets.
 """
 
 
+def deploy_prompt(req: AgentRunRequest) -> str:
+    repo_url = f"https://github.com/{req.repository}"
+    pr_url = f"{repo_url}/pull/{req.source_number}"
+
+    return f"""You are WorkBuddy.
+
+Role for this phase:
+- production deployment engineer
+- release deployment reviewer
+- rollback planner
+- health-check owner
+
+Expected model: {EXPECTED_MODEL}
+
+Task ID: {req.task_id}
+Repository: {repo_url}
+PR: {pr_url}
+
+Read the public PR directly and inspect:
+- all prior agent-handoff comments;
+- reports/release_gate.json;
+- docs/RELEASE_NOTES.md;
+- reports/test_report.md;
+- reports/uiux_acceptance.md;
+- reports/classification_validation.md;
+- deployment documentation and Docker configuration.
+
+This system is configured for fully automatic delivery. Do not request a human
+approval step. Instead, decide whether deployment is safe based on the
+documented gates.
+
+Return JSON ONLY:
+{{
+  "status": "success" or "blocked",
+  "summary": "deployment readiness conclusion",
+  "files": [
+    {{"path":"reports/deployment_plan.md","content":"full markdown deployment and rollback plan","purpose":"deployment plan"}},
+    {{"path":"reports/deployment_gate.json","content":"valid JSON text with status ready or blocked","purpose":"machine-readable deployment gate"}}
+  ]
+}}
+
+A successful result means:
+- release gate is ready;
+- previous QA is successful;
+- no unresolved blocker exists;
+- rollback procedure is defined;
+- deployment can proceed automatically.
+
+Do not expose secrets. Do not execute SSH yourself. GitHub Actions performs the
+actual merge/deployment commands after this gate succeeds.
+"""
+
+
 @app.get("/healthz")
 async def healthz():
     return {
@@ -739,6 +797,69 @@ async def run(
                 ),
             )
 
+        if req.phase == "phase:deploy":
+            output = await wb.run_cloud_task(
+                deploy_prompt(req),
+                f"Deployment readiness {req.task_id}",
+            )
+            obj = parse_json_object(output)
+            packed, changes = validate_files(
+                obj,
+                DEPLOY_FILES,
+            )
+            status, summary = packed.split("\n", 1)
+
+            gate_change = next(
+                change for change in changes
+                if change.path == "reports/deployment_gate.json"
+            )
+            try:
+                gate = json.loads(gate_change.content)
+            except json.JSONDecodeError as exc:
+                raise ValueError("deployment_gate.json is invalid JSON") from exc
+
+            if gate.get("status") != "ready":
+                status = "blocked"
+                summary = (
+                    "WorkBuddy deployment gate is not ready. "
+                    + summary
+                )
+
+            return AgentRunResult(
+                status=status,
+                summary=summary,
+                artifacts=[change.path for change in changes],
+                changes=changes,
+                handoff=Handoff(
+                    task_id=req.task_id,
+                    from_agent="workbuddy",
+                    to_agent="workbuddy" if status == "success" else "human",
+                    phase="deployment_plan",
+                    status=status,
+                    summary=summary,
+                    model=EXPECTED_MODEL,
+                    effort="workbuddy-configured",
+                    required_inputs=[
+                        "Codex release gate",
+                        "release notes",
+                        "WorkBuddy QA reports",
+                        "public PR",
+                        "deployment configuration",
+                    ],
+                    expected_outputs=sorted(DEPLOY_FILES),
+                    acceptance=[
+                        "deployment gate status must be ready",
+                        "rollback plan must be defined",
+                        "GitHub Actions performs merge/deployment",
+                    ],
+                    artifacts=[change.path for change in changes],
+                    blockers=[] if status == "success" else [summary],
+                    source_ref=req.source_ref,
+                    source_sha=req.source_sha,
+                    pr_number=req.source_number,
+                ),
+            )
+
         return AgentRunResult(
             status="blocked",
             summary=f"unsupported WorkBuddy phase: {req.phase}",
@@ -760,6 +881,10 @@ async def run(
                     "prototype_validation"
                     if req.phase == "phase:prototype"
                     else "qa_acceptance"
+                    if req.phase == "phase:qa"
+                    else "deployment_plan"
+                    if req.phase == "phase:deploy"
+                    else "workbuddy"
                 ),
                 status="failed",
                 summary=summary,
