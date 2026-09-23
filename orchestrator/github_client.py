@@ -49,32 +49,29 @@ class GitHubClient:
             json={"labels": labels},
         )
 
-    async def _default_branch_and_sha(self, repo: str) -> tuple[str, str]:
-        info = (await self._request("GET", f"{self.base}/repos/{repo}")).json()
-        default = info["default_branch"]
-        branch = (
-            await self._request(
-                "GET",
-                f"{self.base}/repos/{repo}/branches/{default}",
-            )
-        ).json()
-        return default, branch["commit"]["sha"]
-
-    async def _ensure_branch(self, repo: str, branch: str, base_sha: str) -> None:
-        ref_url = f"{self.base}/repos/{repo}/git/ref/heads/{branch}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            existing = await client.get(ref_url, headers=self._headers())
-        if existing.status_code == 200:
-            return
-        if existing.status_code != 404:
-            existing.raise_for_status()
-        await self._request(
-            "POST",
-            f"{self.base}/repos/{repo}/git/refs",
-            json={"ref": f"refs/heads/{branch}", "sha": base_sha},
+    async def get_pr_head_branch(self, repo: str, number: int) -> str:
+        response = await self._request(
+            "GET",
+            f"{self.base}/repos/{repo}/pulls/{number}",
         )
+        data = response.json()
+        return str(data["head"]["ref"])
 
-    async def _upsert_file(self, repo: str, branch: str, change: FileChange) -> None:
+    async def get_pr_head_sha(self, repo: str, number: int) -> str:
+        response = await self._request(
+            "GET",
+            f"{self.base}/repos/{repo}/pulls/{number}",
+        )
+        data = response.json()
+        return str(data["head"]["sha"])
+
+    async def _upsert_file(
+        self,
+        repo: str,
+        branch: str,
+        change: FileChange,
+        message_prefix: str,
+    ) -> None:
         url = f"{self.base}/repos/{repo}/contents/{change.path}"
         async with httpx.AsyncClient(timeout=30) as client:
             current = await client.get(
@@ -82,64 +79,33 @@ class GitHubClient:
                 headers=self._headers(),
                 params={"ref": branch},
             )
+
         payload = {
-            "message": f"docs: WorkBuddy update {change.path}",
+            "message": f"{message_prefix}: {change.path}",
             "content": base64.b64encode(change.content.encode()).decode(),
             "branch": branch,
         }
+
         if current.status_code == 200:
             payload["sha"] = current.json()["sha"]
         elif current.status_code != 404:
             current.raise_for_status()
+
         await self._request("PUT", url, json=payload)
 
-    async def _find_open_pr(self, repo: str, branch: str) -> int | None:
-        owner = repo.split("/", 1)[0]
-        response = await self._request(
-            "GET",
-            f"{self.base}/repos/{repo}/pulls",
-            params={
-                "state": "open",
-                "head": f"{owner}:{branch}",
-                "per_page": 10,
-            },
-        )
-        items = response.json()
-        return int(items[0]["number"]) if items else None
-
-    async def create_or_update_spec_pr(
+    async def update_pr_files(
         self,
         repo: str,
-        issue_number: int,
-        task_id: str,
-        title: str,
+        pr_number: int,
         changes: Iterable[FileChange],
-    ) -> int:
-        default, base_sha = await self._default_branch_and_sha(repo)
-        branch = f"agent/workbuddy/issue-{issue_number}"
-        await self._ensure_branch(repo, branch, base_sha)
-
+        message_prefix: str = "reports: WorkBuddy handoff",
+    ) -> str:
+        branch = await self.get_pr_head_branch(repo, pr_number)
         for change in changes:
-            await self._upsert_file(repo, branch, change)
-
-        existing = await self._find_open_pr(repo, branch)
-        if existing:
-            return existing
-
-        response = await self._request(
-            "POST",
-            f"{self.base}/repos/{repo}/pulls",
-            json={
-                "title": f"spec: {title[:180]}",
-                "head": branch,
-                "base": default,
-                "body": (
-                    f"<!-- agent-task-id:{task_id} -->\n"
-                    f"WorkBuddy specification handoff for issue #{issue_number}.\n\n"
-                    "This PR must pass Sandbox QA, Codex implementation, "
-                    "final Sandbox QA, WorkBuddy final review, and human approval.\n\n"
-                    f"Closes #{issue_number}"
-                ),
-            },
-        )
-        return int(response.json()["number"])
+            await self._upsert_file(
+                repo,
+                branch,
+                change,
+                message_prefix,
+            )
+        return await self.get_pr_head_sha(repo, pr_number)

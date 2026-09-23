@@ -6,7 +6,7 @@ from .config import Settings
 
 
 def static_checks(settings: Settings) -> dict[str, dict[str, Any]]:
-    checks = {
+    return {
         "github_repository": {
             "ok": bool(settings.github_repository),
             "detail": "configured" if settings.github_repository else "missing",
@@ -27,20 +27,25 @@ def static_checks(settings: Settings) -> dict[str, dict[str, Any]]:
                 else "missing URL or runner token"
             ),
         },
-        "sandbox_runner": {
-            "ok": bool(settings.sandbox_url and settings.sandbox_token),
+        "workbuddy_model": {
+            "ok": (
+                settings.workbuddy_model == "GLM-5.3-Flash"
+                and settings.workbuddy_model_lock_confirmed
+            ),
+            "detail": {
+                "expected": "GLM-5.3-Flash",
+                "configured": settings.workbuddy_model,
+                "lock_confirmed": settings.workbuddy_model_lock_confirmed,
+            },
+        },
+        "openai_agent_execution": {
+            "ok": True,
             "detail": (
-                "configured"
-                if settings.sandbox_url and settings.sandbox_token
-                else "missing URL or runner token"
+                "Codex and ChatGPT run in GitHub Actions with hard-pinned "
+                "model/effort values; OPENAI_API_KEY is validated by those workflows"
             ),
         },
-        "codex_execution": {
-            "ok": True,
-            "detail": "GitHub Actions mode; OPENAI_API_KEY is validated by the workflow",
-        },
     }
-    return checks
 
 
 def all_ok(checks: dict[str, dict[str, Any]]) -> bool:

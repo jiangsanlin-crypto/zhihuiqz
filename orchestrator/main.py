@@ -19,84 +19,51 @@ from .task_router import build, next_labels
 
 store = StateStore(settings.state_db)
 github = GitHubClient(settings.github_token)
-adapters = {
-    "workbuddy": HttpAgentAdapter(
-        "workbuddy",
-        settings.workbuddy_url,
-        settings.workbuddy_token,
-    ),
-    "sandbox": HttpAgentAdapter(
-        "sandbox",
-        settings.sandbox_url,
-        settings.sandbox_token,
-    ),
-    "codex": HttpAgentAdapter(
-        "codex",
-        settings.codex_url,
-        settings.codex_token,
-    ),
-}
-
-
-def default_target(req, status: str):
-    if status != "success":
-        return "human"
-    if req.agent == "workbuddy":
-        return "sandbox" if req.source_kind == "issue" else "human"
-    if req.agent == "sandbox":
-        labels = {
-            item.get("name")
-            for item in (
-                (req.payload.get("pull_request") or {}).get("labels") or []
-            )
-            if isinstance(item, dict)
-        }
-        return "workbuddy" if "needs:qa" in labels else "codex"
-    if req.agent == "codex":
-        return "sandbox"
-    return "human"
-
-
-def phase_for(req) -> str:
-    if req.agent == "workbuddy":
-        return (
-            "specification"
-            if req.source_kind == "issue"
-            else "product_review"
-        )
-    if req.agent == "sandbox":
-        labels = {
-            item.get("name")
-            for item in (
-                (req.payload.get("pull_request") or {}).get("labels") or []
-            )
-            if isinstance(item, dict)
-        }
-        return "final_qa" if "needs:qa" in labels else "spec_qa"
-    return "implementation"
+workbuddy = HttpAgentAdapter(
+    "workbuddy",
+    settings.workbuddy_url,
+    settings.workbuddy_token,
+)
 
 
 def ensure_handoff(req, result: AgentRunResult) -> Handoff:
     if result.handoff:
         handoff = result.handoff.model_copy(deep=True)
-        handoff.pr_number = handoff.pr_number or result.pr_number
+        handoff.pr_number = handoff.pr_number or req.source_number
         handoff.source_ref = handoff.source_ref or req.source_ref
         handoff.source_sha = handoff.source_sha or req.source_sha
         return handoff
 
+    next_agent = (
+        "chatgpt"
+        if req.phase == "phase:prototype"
+        else "codex"
+        if req.phase == "phase:qa"
+        else "human"
+    )
+    phase_name = (
+        "prototype_validation"
+        if req.phase == "phase:prototype"
+        else "qa_acceptance"
+        if req.phase == "phase:qa"
+        else "workbuddy"
+    )
+
     return Handoff(
         task_id=req.task_id,
-        from_agent=req.agent,
-        to_agent=default_target(req, result.status),
-        phase=phase_for(req),
+        from_agent="workbuddy",
+        to_agent=next_agent if result.status == "success" else "human",
+        phase=phase_name,
         status=result.status,
         summary=result.summary,
+        model=settings.workbuddy_model,
+        effort="workbuddy-configured",
         artifacts=result.artifacts,
         checks=result.checks,
         blockers=[] if result.status == "success" else [result.summary],
         source_ref=req.source_ref,
         source_sha=req.source_sha,
-        pr_number=result.pr_number,
+        pr_number=req.source_number,
     )
 
 
@@ -105,17 +72,14 @@ def handoff_comment(handoff: Handoff) -> str:
     for check in data.get("checks", []):
         check["detail"] = str(check.get("detail") or "")[-2000:]
 
-    payload = json.dumps(
-        data,
-        ensure_ascii=False,
-        indent=2,
-    )
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
     return (
         "<!-- agent-handoff:v1 -->\n"
         f"### Agent handoff: {handoff.from_agent} → "
         f"{handoff.to_agent or 'none'}\n\n"
         f"**Task:** `{handoff.task_id}`  \n"
         f"**Phase:** `{handoff.phase}`  \n"
+        f"**Model:** `{handoff.model or 'n/a'}`  \n"
         f"**Status:** **{handoff.status}**\n\n"
         f"{handoff.summary}\n\n"
         "```json\n"
@@ -149,46 +113,30 @@ async def process(event: dict) -> None:
             sorted(set(running_labels)),
         )
 
-    result = await adapters[req.agent].run(req)
+    result = await workbuddy.run(req)
 
-    if (
-        req.agent == "workbuddy"
-        and req.source_kind == "issue"
-        and result.status == "success"
-    ):
-        if not result.changes:
+    if result.status == "success" and result.changes:
+        if not github.configured:
             result = AgentRunResult(
                 status="blocked",
-                summary=(
-                    "WorkBuddy returned success but no specification "
-                    "file changes were provided."
-                ),
+                summary="WorkBuddy produced reports but GitHub write-back is unavailable.",
                 artifacts=result.artifacts,
-                checks=result.checks,
-            )
-        elif not github.configured:
-            result = AgentRunResult(
-                status="blocked",
-                summary=(
-                    "The orchestrator cannot create the specification PR "
-                    "because GitHub write-back is not configured."
-                ),
-                artifacts=result.artifacts,
-                checks=result.checks,
                 changes=result.changes,
+                checks=result.checks,
             )
         else:
-            issue = req.payload.get("issue") or {}
-            pr_number = await github.create_or_update_spec_pr(
+            new_sha = await github.update_pr_files(
                 req.repository,
                 req.source_number,
-                req.task_id,
-                str(issue.get("title") or req.task_id),
                 result.changes,
+                message_prefix="reports: WorkBuddy",
             )
-            result.pr_number = pr_number
+            result.artifacts = [
+                change.path for change in result.changes
+            ]
             if result.handoff:
-                result.handoff.pr_number = pr_number
+                result.handoff.source_sha = new_sha
+                result.handoff.artifacts = result.artifacts
 
     handoff = ensure_handoff(req, result)
     message = handoff_comment(handoff)
@@ -208,28 +156,9 @@ async def process(event: dict) -> None:
                 current_labels,
                 result.status,
                 result.next_labels,
+                phase=req.phase,
             ),
         )
-
-        if (
-            req.agent == "workbuddy"
-            and req.source_kind == "issue"
-            and result.status == "success"
-            and result.pr_number
-        ):
-            await github.comment(
-                req.repository,
-                result.pr_number,
-                (
-                    f"Linked source issue: #{req.source_number}\n\n"
-                    + handoff_comment(handoff)
-                ),
-            )
-            await github.set_labels(
-                req.repository,
-                result.pr_number,
-                ["agent:sandbox", "status:todo"],
-            )
 
     if result.status == "failed":
         raise RuntimeError(result.summary)
@@ -270,7 +199,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="GitHub Multi-Agent Orchestrator",
-    version="1.2.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -282,30 +211,27 @@ async def healthz():
         "repository": settings.github_repository,
         "github_writeback_configured": github.configured,
         "handoff_protocol": "1.0",
+        "agents": ["codex", "chatgpt", "workbuddy"],
     }
 
 
 @app.get("/readyz")
 async def readyz():
     checks = static_checks(settings)
-
-    workbuddy_health, sandbox_health = await asyncio.gather(
-        adapters["workbuddy"].health(),
-        adapters["sandbox"].health(),
-    )
+    workbuddy_health = await workbuddy.health()
 
     checks["workbuddy_live"] = {
-        "ok": bool(workbuddy_health.get("ok"))
-        and bool(workbuddy_health.get("oauth_configured")),
+        "ok": (
+            bool(workbuddy_health.get("ok"))
+            and bool(workbuddy_health.get("oauth_configured"))
+            and bool(workbuddy_health.get("model_lock_confirmed"))
+            and workbuddy_health.get("expected_model") == "GLM-5.3-Flash"
+        ),
         "detail": {
             key: value
             for key, value in workbuddy_health.items()
             if key not in {"token", "access_token", "refresh_token"}
         },
-    }
-    checks["sandbox_live"] = {
-        "ok": bool(sandbox_health.get("ok")),
-        "detail": sandbox_health,
     }
 
     ready = all_ok(checks)
@@ -337,18 +263,12 @@ async def events(
         )
     )
     if not trusted:
-        raise HTTPException(
-            401,
-            "invalid webhook authentication",
-        )
+        raise HTTPException(401, "invalid webhook authentication")
 
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        raise HTTPException(
-            400,
-            "invalid JSON",
-        )
+        raise HTTPException(400, "invalid JSON")
 
     delivery_id = x_github_delivery or str(uuid.uuid4())
     return {
