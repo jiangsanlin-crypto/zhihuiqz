@@ -2,26 +2,19 @@
 
 ## Persistent Orchestrator stack
 
-The persistent host runs only:
+The persistent host runs:
 - Orchestrator;
 - WorkBuddy runner.
 
 Codex and ChatGPT run in GitHub Actions.
 
-## Preferred bootstrap
+## One-time bootstrap
 
-After PR approval and merge to main:
+The initial Orchestrator bootstrap is an account/secret setup action. Configure
+the server credentials and run `WorkBuddy Deploy Orchestrator` once.
 
-1. create GitHub environment `orchestrator-production`;
-2. require human approval on that environment;
-3. configure the deployment secrets listed in
-   `docs/DEPLOYMENT_HANDOFF.md`;
-4. run `WorkBuddy Deploy Orchestrator`;
-5. enter `DEPLOY-ORCHESTRATOR`.
-
-The workflow uses SSH, checks out public `main`, writes the protected server
-`.env`, runs Docker Compose, verifies `/readyz`, and rolls back to the
-previous Git SHA if readiness fails.
+After activation, normal product releases do not require per-release human
+approval.
 
 ## Server-side credentials
 
@@ -34,19 +27,18 @@ WorkBuddy runner gets:
 - WORKBUDDY_TOKEN
 - WorkBuddy OAuth values
 - WORKBUDDY_MODEL=GLM-5.3-Flash
-- WORKBUDDY_MODEL_LOCK_CONFIRMED=true after the dedicated app is verified
+- WORKBUDDY_MODEL_LOCK_CONFIRMED=true after verification
 
-WorkBuddy receives no GitHub token. The persistent Orchestrator uses a narrowly scoped repository automation token and performs validated write-back/dispatch on WorkBuddy's behalf.
+WorkBuddy itself receives no GitHub token. The Orchestrator performs validated
+write-back/dispatch on its behalf.
 
 ## GitHub Actions secrets
 
-Development/release:
 - OPENAI_API_KEY
 - AGENT_GITHUB_TOKEN
 - ORCHESTRATOR_URL
 - ORCHESTRATOR_TOKEN
-
-Initial Orchestrator deployment:
+- REPO_ADMIN_TOKEN
 - ORCH_SERVER_HOST
 - ORCH_SERVER_USER
 - ORCH_SERVER_PORT
@@ -54,13 +46,23 @@ Initial Orchestrator deployment:
 - ORCH_SERVER_KNOWN_HOSTS
 - ORCH_SERVER_PATH
 - ORCH_ENV_B64
+- AUTO_PRODUCTION_ENABLED
+- EMERGENCY_STOP
 
 ## Main protection
 
-Protect main:
-- require PR;
-- require CI;
-- block force push;
-- do not permit agent bypass.
+Main remains protected:
+- PR required;
+- required CI `test` context;
+- admins follow protection;
+- force push disabled;
+- deletion disabled.
 
-Production approval remains human-only.
+The normal full-auto policy requires zero human approving reviews so the
+automation identity can merge only after deterministic gates/CI pass.
+
+## Runtime release deployment
+
+Codex release gate -> WorkBuddy deployment gate -> required CI -> automatic
+merge -> server deployment -> 0/1/5/15 minute readiness checks -> rollback on
+failure -> done.
