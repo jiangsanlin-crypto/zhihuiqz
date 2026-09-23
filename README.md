@@ -46,3 +46,13 @@ See:
 - docs/MODEL_POLICY.md
 - docs/DEPLOYMENT_HANDOFF.md
 - docs/ACTIVATION_RUNBOOK.md
+
+
+## Activation controls
+
+Use `Activation Readiness` before and after the first persistent deployment.
+
+Use `Start Agent Task` for normal product work after activation. The launcher
+creates the source Issue, prepares the phase/status labels, and adds
+`agent:codex` last so the full automatic chain starts only after task state is
+complete.

@@ -1,0 +1,98 @@
+name: Start Agent Task
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: Task title
+        required: true
+      objective:
+        description: Product objective and acceptance requirements
+        required: true
+      priority:
+        description: Priority
+        required: true
+        type: choice
+        options:
+          - normal
+          - high
+          - urgent
+
+permissions:
+  contents: read
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require automation identity
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: test -n "$GH_TOKEN"
+
+      - name: Create source issue
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          TITLE: ${{ inputs.title }}
+          OBJECTIVE: ${{ inputs.objective }}
+          PRIORITY: ${{ inputs.priority }}
+        run: |
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          <!-- agent-root-task:v1 -->
+
+          ## Objective
+
+          $OBJECTIVE
+
+          ## Priority
+
+          $PRIORITY
+
+          ## Mandatory workflow
+
+          Codex product planning
+          -> WorkBuddy prototype/data/classification validation
+          -> ChatGPT implementation
+          -> WorkBuddy QA/UIUX/classification acceptance
+          -> Codex release review
+          -> Human production approval.
+
+          ## Safety
+
+          - Use synthetic data unless the human owner explicitly authorizes real data.
+          - Do not merge main automatically.
+          - Do not deploy production automatically.
+          - Preserve the stable task ID and all agent-handoff records.
+          EOF
+
+          ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "$TITLE"             --body-file "$RUNNER_TEMP/body.md")"
+
+          ISSUE_NUMBER="${ISSUE_URL##*/}"
+          echo "number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "url=$ISSUE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare task state
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:product-plan"             --add-label "status:todo"
+
+      - name: Dispatch to Codex by adding owner label last
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "agent:codex"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Agent task started"
+            echo
+            echo "- Issue: #${{ steps.issue.outputs.number }}"
+            echo "- First owner: Codex"
+            echo "- First phase: product-plan"
+            echo "- Automatic chain ends at human production approval"
+          } >> "$GITHUB_STEP_SUMMARY"

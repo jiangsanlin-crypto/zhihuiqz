@@ -1,118 +1,124 @@
 # Three-Agent Activation Runbook
 
-## 1. Review PR #1
+## Current activation sequence
 
-Require:
-- CI success;
-- mergeable PR;
-- no committed secrets;
-- model-policy check success;
-- human review of role/permission boundaries.
+1. Configure `REPO_ADMIN_TOKEN`.
+2. Run `Configure Main Protection` with `PROTECT-MAIN`.
+3. Configure the protected `orchestrator-production` environment.
+4. Configure `AGENT_GITHUB_TOKEN`, `OPENAI_API_KEY`,
+   `ORCHESTRATOR_TOKEN`, deployment secrets and `ORCH_ENV_B64`.
+5. Lock the dedicated WorkBuddy app to `GLM-5.3-Flash`.
+6. Run `Activation Readiness` with stage `predeploy`.
+7. Run `WorkBuddy Deploy Orchestrator` with `DEPLOY-ORCHESTRATOR`.
+8. Run `Activation Readiness` with stage `postdeploy`.
+9. Run `Multi-Agent E2E Smoke` with `RUN-E2E`.
+10. Inspect the final human-review state.
+11. Start real work through `Start Agent Task`.
 
-Do not enable auto-merge.
+## Required GitHub secrets
 
-## 2. Confirm WorkBuddy model lock
+Automation:
+- `AGENT_GITHUB_TOKEN`
+- `OPENAI_API_KEY`
+- `ORCHESTRATOR_URL`
+- `ORCHESTRATOR_TOKEN`
 
-In the dedicated WorkBuddy/Buddy App:
-1. expose only GLM-5.3-Flash;
-2. set it as default;
-3. verify no Auto/other model can be selected for this integration;
-4. set `WORKBUDDY_MODEL_LOCK_CONFIRMED=true` only after verification.
+Repository administration:
+- `REPO_ADMIN_TOKEN`
 
-## 3. Prepare persistent Linux server
+Persistent Orchestrator deployment:
+- `ORCH_SERVER_HOST`
+- `ORCH_SERVER_USER`
+- `ORCH_SERVER_PORT`
+- `ORCH_SERVER_SSH_KEY`
+- `ORCH_SERVER_KNOWN_HOSTS`
+- `ORCH_SERVER_PATH`
+- `ORCH_ENV_B64`
 
-Required:
-- Git
-- Docker Engine
-- Docker Compose plugin
-- outbound HTTPS access
-- SSH access from GitHub Actions
+Do not commit or post any secret value in an Issue.
 
-Create the GitHub environment:
-`orchestrator-production`
+## Automation identity
 
-Require human approval.
+`AGENT_GITHUB_TOKEN` must be a separate, narrowly scoped identity with only
+the repository permissions needed for:
+- task branch pushes;
+- Issue/PR comments and labels;
+- pull-request updates;
+- `repository_dispatch`.
 
-Configure the ORCH_SERVER_* secrets and ORCH_ENV_B64.
+It must not have main-branch protection bypass.
 
-## 4. Human merge
+`REPO_ADMIN_TOKEN` is a separate administrative identity used only for
+repository-protection setup/verification. The readiness gate fails if the two
+tokens are identical.
 
-Merge PR #1 to main only after the above review.
+## WorkBuddy model lock
 
-Immediately protect main.
+Before predeploy readiness:
+1. expose only `GLM-5.3-Flash` in the dedicated WorkBuddy/Buddy App;
+2. make it the default;
+3. disable Auto/alternate models for that integration;
+4. set `WORKBUDDY_MODEL=GLM-5.3-Flash` in the protected server env;
+5. set `WORKBUDDY_MODEL_LOCK_CONFIRMED=true` only after the UI/model
+   configuration has been verified.
 
-## 5. Deploy Orchestrator
+## Server env validation
 
-Run:
+`Activation Readiness` decodes `ORCH_ENV_B64` into an ephemeral runner file
+and validates only required keys and consistency. It does not print secret
+values.
 
-`Actions -> WorkBuddy Deploy Orchestrator`
+It checks:
+- repository identity;
+- Orchestrator bearer-token consistency;
+- WorkBuddy model lock;
+- WorkBuddy OAuth/access-token completeness.
 
-Input:
+## Real-time handoff chain
 
-`DEPLOY-ORCHESTRATOR`
+```text
+Codex product planning
+  -> repository_dispatch
+WorkBuddy prototype validation
+  -> repository_dispatch
+ChatGPT implementation
+  -> repository_dispatch
+WorkBuddy QA
+  -> repository_dispatch
+Codex release review
+  -> Human approval
+```
 
-The workflow verifies `/readyz` and rolls back on failure.
+Labels are visible state/safety gates. They are not relied upon as the sole
+cross-workflow transport.
 
-## 6. Configure normal runtime secrets
+## Monitoring
 
-GitHub Actions:
-- OPENAI_API_KEY
-- AGENT_GITHUB_TOKEN
-- ORCHESTRATOR_URL
-- ORCHESTRATOR_TOKEN
+Primary routing is real time.
 
-Server `.env`:
-- Orchestrator GitHub token/repository
-- WorkBuddy OAuth
-- WorkBuddy model lock
-- Orchestrator/WorkBuddy bearer tokens
-
-## 7. Bootstrap labels
-
-Run `Bootstrap Agent Labels` once.
-
-## 7.5 Configure automation identity
-
-Create `AGENT_GITHUB_TOKEN` as a fine-grained token scoped only to this repository with Contents, Issues and Pull requests read/write. It must not bypass protected `main`. This token is used for agent branch pushes, PR comments/labels and `repository_dispatch`, so cross-workflow handoffs are not suppressed by GitHub's `GITHUB_TOKEN` recursion protection.
-
-## 8. Run synthetic E2E
-
-Run `Multi-Agent E2E Smoke` with `RUN-E2E`.
-
-Expected chain:
-1. Codex product_planning
-2. WorkBuddy prototype_validation
-3. ChatGPT implementation
-4. WorkBuddy qa_acceptance
-5. Codex release_review
-6. human review state
-
-The E2E PR must stay unmerged.
-
-## 9. Release workflow
-
-After a real PR passes Codex release review:
-- human reviews and merges main;
-- optionally run `Codex Create Draft Release`;
-- human approves production;
-- WorkBuddy owns the approved deployment run and health checks.
-
-## 10. Monitoring
-
-Normal operation is real time.
-
-Do not create three independent polling loops.
-
-The central watchdog runs every 10 minutes:
+The recovery watchdog runs every 10 minutes:
 - queued handoff >10 minutes -> one warning;
 - Codex running >55 minutes -> blocked;
 - WorkBuddy running >30 minutes -> blocked;
 - ChatGPT running >75 minutes -> blocked.
 
-Deployment health is checked more aggressively during the first 15 minutes.
+## Starting normal work
 
-## 11. Failure rule
+After E2E passes, use:
 
-Never skip to the next agent when a phase is blocked.
+`Actions -> Start Agent Task`
 
-Fix the blocker and retry the same phase using the relevant manual `workflow_dispatch` entry point. Labels alone are state markers and are not relied upon to chain workflows.
+Provide:
+- task title;
+- objective/acceptance requirements;
+- priority.
+
+The launcher creates the source Issue, applies
+`phase:product-plan + status:todo`, then applies `agent:codex` last. This
+starts the automatic chain without requiring manual handoff between AI work
+bodies.
+
+## Failure rule
+
+Never skip a blocked phase. Fix the blocker and retry the same phase through its
+manual workflow-dispatch entry point.
