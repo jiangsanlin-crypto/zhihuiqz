@@ -1,30 +1,27 @@
 ## Summary
 
-Describe the change and the task ID.
+Describe the change and stable task ID.
 
 ## Agent handoff
 
 - [ ] Stable task ID is preserved.
 - [ ] Latest `agent-handoff:v1` is present.
 - [ ] Previous blockers are resolved.
-- [ ] Expected artifacts are attached/committed.
+- [ ] Expected artifacts are committed.
 - [ ] Correct model policy was used.
 
 ## Validation
 
 - [ ] CI passes.
 - [ ] Relevant tests pass.
-- [ ] No real candidate personal data is included.
 - [ ] No secret/token/private key is committed.
+- [ ] No real candidate personal data is included without explicit authorization.
 - [ ] Paid employer features do not directly increase match relevance.
 
-## Production boundary
+## Full-auto production boundary
 
-- [ ] This PR does not auto-merge `main`.
-- [ ] Production deployment still requires human approval.
-- [ ] If deployment logic changed, rollback behavior was reviewed.
-- [ ] If model policy changed, `docs/MODEL_POLICY.md` and CI model-policy check were reviewed.
-
-## Human review
-
-- [ ] Repository owner approved final merge.
+- [ ] Release gate can be evaluated deterministically.
+- [ ] Deployment rollback behavior is defined.
+- [ ] Automatic merge/deployment remains blocked unless `AUTO_PRODUCTION_ENABLED=true`.
+- [ ] `EMERGENCY_STOP=true` can halt production execution.
+- [ ] Real payment execution and real candidate-data onboarding are not implicitly authorized.

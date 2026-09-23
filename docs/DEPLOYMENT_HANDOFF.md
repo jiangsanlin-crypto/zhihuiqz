@@ -1,79 +1,55 @@
 # WorkBuddy Deployment Handoff
 
-## Owner
-
-Deployment owner: **WorkBuddy**
-
+Deployment owner: **WorkBuddy**  
 Command executor: **GitHub Actions**
 
-Final production approver: **Human owner**
+Normal product releases do not wait for a per-release human approval.
 
-WorkBuddy does not SSH to production ad hoc and does not overwrite server files
-directly. The approved workflow is the only deployment path.
+## Deployment gate
 
-## Initial Orchestrator bootstrap
+After Codex release review succeeds, WorkBuddy reads the public PR, QA reports,
+release gate, release notes, Docker/deployment documentation and prior handoffs.
 
-The first persistent Orchestrator deployment uses:
+Required outputs:
+- `reports/deployment_plan.md`
+- `reports/deployment_gate.json`
 
-`Actions -> WorkBuddy Deploy Orchestrator`
+The gate must be `ready` before execution.
 
-Human input:
+## Execution
 
-`DEPLOY-ORCHESTRATOR`
+After the WorkBuddy gate succeeds, the Orchestrator dispatches:
 
-GitHub environment:
+`agent_execute_deployment`
 
-`orchestrator-production`
+The deployment workflow then:
+- checks `AUTO_PRODUCTION_ENABLED=true`;
+- checks `EMERGENCY_STOP != true`;
+- waits for required PR checks;
+- merges the PR;
+- deploys main to the configured persistent server;
+- checks `/readyz` at 0m, 1m, 5m and 15m;
+- rolls back to the previous server SHA on failure;
+- marks the PR/task `status:deployed` and `status:done` on success.
 
-The environment should require human approval.
+## One-time activation
 
-Required repository/environment secrets:
-- ORCH_SERVER_HOST
-- ORCH_SERVER_USER
-- ORCH_SERVER_PORT
-- ORCH_SERVER_SSH_KEY
-- ORCH_SERVER_KNOWN_HOSTS
-- ORCH_SERVER_PATH
-- ORCH_ENV_B64
+The first Orchestrator bootstrap and repository administration still require
+account/secrets setup. Once activation is complete, normal task delivery is
+fully automatic.
 
-`ORCH_ENV_B64` is the base64-encoded server `.env` file. It must never be
-committed.
+## Emergency stop
 
-## Handoff into deployment
+Set GitHub secret:
 
-Codex release review hands to the human owner.
+`EMERGENCY_STOP=true`
 
-The human owner:
-1. reviews the PR and release gate;
-2. merges main;
-3. approves production deployment.
+to stop new automatic production executions before merge/deploy.
 
-Only then does WorkBuddy own the deployment phase.
+To re-enable, set it to `false` after the incident is resolved.
 
-WorkBuddy deployment inputs:
-- approved main SHA;
-- release notes;
-- WorkBuddy QA reports;
-- rollback SHA;
-- server health endpoint;
-- deployment workflow run ID.
+## Scope boundary
 
-WorkBuddy deployment outputs:
-- deployed SHA;
-- Docker service status;
-- `/readyz` result;
-- post-deploy health observations;
-- rollback decision/result;
-- final deployment summary.
-
-## Health sequence
-
-The deployment workflow checks readiness immediately and with delayed retries.
-For application releases, WorkBuddy should additionally check at approximately:
-- 0 minutes;
-- 1 minute;
-- 5 minutes;
-- 15 minutes after deployment.
-
-A failed mandatory health check blocks completion and triggers rollback where
-the workflow has a known previous SHA.
+Automatic deployment permission covers repository software delivery. It does
+not automatically authorize real payment execution or onboarding/processing of
+real candidate production data.

@@ -1,32 +1,47 @@
-# Three-Agent Activation Runbook
+# Full-Auto Activation Runbook
 
-## Current activation sequence
+## One-time activation sequence
 
 1. Configure `REPO_ADMIN_TOKEN`.
 2. Run `Configure Main Protection` with `PROTECT-MAIN`.
-3. Configure the protected `orchestrator-production` environment.
-4. Configure `AGENT_GITHUB_TOKEN`, `OPENAI_API_KEY`,
-   `ORCHESTRATOR_TOKEN`, deployment secrets and `ORCH_ENV_B64`.
-5. Lock the dedicated WorkBuddy app to `GLM-5.3-Flash`.
-6. Run `Activation Readiness` with stage `predeploy`.
-7. Run `WorkBuddy Deploy Orchestrator` with `DEPLOY-ORCHESTRATOR`.
-8. Run `Activation Readiness` with stage `postdeploy`.
-9. Run `Multi-Agent E2E Smoke` with `RUN-E2E`.
-10. Inspect the final human-review state.
+3. Configure `AGENT_GITHUB_TOKEN`, `OPENAI_API_KEY`,
+   `ORCHESTRATOR_TOKEN`, server secrets and `ORCH_ENV_B64`.
+4. Configure `AUTO_PRODUCTION_ENABLED=true`.
+5. Configure `EMERGENCY_STOP=false`.
+6. Lock the dedicated WorkBuddy app to `GLM-5.3-Flash`.
+7. Run `Activation Readiness -> predeploy`.
+8. Bootstrap/deploy the persistent Orchestrator.
+9. Run `Activation Readiness -> postdeploy`.
+10. Run `Multi-Agent E2E Smoke`.
 11. Start real work through `Start Agent Task`.
 
-## Required GitHub secrets
+## Normal task flow after activation
 
-Automation:
+```text
+Start Agent Task
+ -> Codex
+ -> WorkBuddy
+ -> ChatGPT
+ -> WorkBuddy
+ -> Codex
+ -> WorkBuddy deployment gate
+ -> wait required CI
+ -> automatic PR merge
+ -> automatic production deployment
+ -> 0/1/5/15 minute health checks
+ -> rollback on failure
+ -> done
+```
+
+No normal-path human handoff is required.
+
+## Required secrets
+
 - `AGENT_GITHUB_TOKEN`
 - `OPENAI_API_KEY`
 - `ORCHESTRATOR_URL`
 - `ORCHESTRATOR_TOKEN`
-
-Repository administration:
 - `REPO_ADMIN_TOKEN`
-
-Persistent Orchestrator deployment:
 - `ORCH_SERVER_HOST`
 - `ORCH_SERVER_USER`
 - `ORCH_SERVER_PORT`
@@ -34,91 +49,32 @@ Persistent Orchestrator deployment:
 - `ORCH_SERVER_KNOWN_HOSTS`
 - `ORCH_SERVER_PATH`
 - `ORCH_ENV_B64`
+- `AUTO_PRODUCTION_ENABLED`
+- `EMERGENCY_STOP`
 
-Do not commit or post any secret value in an Issue.
+Do not commit or paste secret values into Issues/chat.
 
-## Automation identity
+## Main protection
 
-`AGENT_GITHUB_TOKEN` must be a separate, narrowly scoped identity with only
-the repository permissions needed for:
-- task branch pushes;
-- Issue/PR comments and labels;
-- pull-request updates;
-- `repository_dispatch`.
+Main remains protected:
+- PR required;
+- CI `test` required and current;
+- force push disabled;
+- deletion disabled;
+- admins also follow protection.
 
-It must not have main-branch protection bypass.
+For full automation, no approving review or CODEOWNERS review is required on
+normal product PRs. Merge still cannot occur until required CI/gates pass.
 
-`REPO_ADMIN_TOKEN` is a separate administrative identity used only for
-repository-protection setup/verification. The readiness gate fails if the two
-tokens are identical.
+## Emergency behavior
 
-## WorkBuddy model lock
+Set `EMERGENCY_STOP=true` to stop automatic merge/deploy before production
+execution.
 
-Before predeploy readiness:
-1. expose only `GLM-5.3-Flash` in the dedicated WorkBuddy/Buddy App;
-2. make it the default;
-3. disable Auto/alternate models for that integration;
-4. set `WORKBUDDY_MODEL=GLM-5.3-Flash` in the protected server env;
-5. set `WORKBUDDY_MODEL_LOCK_CONFIRMED=true` only after the UI/model
-   configuration has been verified.
+A failed deployment automatically attempts rollback to the previous server SHA
+and marks the task blocked.
 
-## Server env validation
+## Sensitive business actions
 
-`Activation Readiness` decodes `ORCH_ENV_B64` into an ephemeral runner file
-and validates only required keys and consistency. It does not print secret
-values.
-
-It checks:
-- repository identity;
-- Orchestrator bearer-token consistency;
-- WorkBuddy model lock;
-- WorkBuddy OAuth/access-token completeness.
-
-## Real-time handoff chain
-
-```text
-Codex product planning
-  -> repository_dispatch
-WorkBuddy prototype validation
-  -> repository_dispatch
-ChatGPT implementation
-  -> repository_dispatch
-WorkBuddy QA
-  -> repository_dispatch
-Codex release review
-  -> Human approval
-```
-
-Labels are visible state/safety gates. They are not relied upon as the sole
-cross-workflow transport.
-
-## Monitoring
-
-Primary routing is real time.
-
-The recovery watchdog runs every 10 minutes:
-- queued handoff >10 minutes -> one warning;
-- Codex running >55 minutes -> blocked;
-- WorkBuddy running >30 minutes -> blocked;
-- ChatGPT running >75 minutes -> blocked.
-
-## Starting normal work
-
-After E2E passes, use:
-
-`Actions -> Start Agent Task`
-
-Provide:
-- task title;
-- objective/acceptance requirements;
-- priority.
-
-The launcher creates the source Issue, applies
-`phase:product-plan + status:todo`, then applies `agent:codex` last. This
-starts the automatic chain without requiring manual handoff between AI work
-bodies.
-
-## Failure rule
-
-Never skip a blocked phase. Fix the blocker and retry the same phase through its
-manual workflow-dispatch entry point.
+This runbook automates software delivery. It does not grant permission to
+execute real payments or process real candidate production data automatically.

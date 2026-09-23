@@ -1,0 +1,262 @@
+name: WorkBuddy Auto Production Deploy
+
+on:
+  repository_dispatch:
+    types: [agent_execute_deployment]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to retry
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Require autonomous production controls
+        env:
+          AUTO_PRODUCTION_ENABLED: ${{ secrets.AUTO_PRODUCTION_ENABLED }}
+          EMERGENCY_STOP: ${{ secrets.EMERGENCY_STOP }}
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: |
+          test "$AUTO_PRODUCTION_ENABLED" = "true"
+          test "${EMERGENCY_STOP:-false}" != "true"
+          test -n "$AGENT_GITHUB_TOKEN"
+
+      - name: Resolve deployment context
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER_AUTO: ${{ github.event.client_payload.pr_number }}
+          PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
+          TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
+          SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
+        run: |
+          PR_NUMBER="${PR_NUMBER_AUTO:-$PR_NUMBER_MANUAL}"
+          test -n "$PR_NUMBER"
+
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER"             > "$RUNNER_TEMP/pr.json"
+
+          HEAD_REF="$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")"
+          SOURCE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
+          BODY="$(jq -r '.body // ""' "$RUNNER_TEMP/pr.json")"
+          LABELS="$(jq -r '.labels[].name' "$RUNNER_TEMP/pr.json")"
+
+          TASK_ID="$(printf '%s' "$BODY" |
+            sed -n 's/.*<!-- agent-task-id:\([A-Za-z0-9._:-]*\) -->.*/\1/p' |
+            head -n1)"
+
+          test -n "$TASK_ID"
+          echo "$LABELS" | grep -qx "agent:workbuddy"
+          echo "$LABELS" | grep -qx "phase:deploy"
+          echo "$LABELS" | grep -qx "status:running"
+
+          if [ -n "$TASK_ID_HINT" ] && [ "$TASK_ID_HINT" != "$TASK_ID" ]; then
+            echo "task_id mismatch"
+            exit 1
+          fi
+          if [ -n "$SOURCE_SHA_HINT" ] && [ "$SOURCE_SHA_HINT" != "$SOURCE_SHA" ]; then
+            echo "source_sha mismatch"
+            exit 1
+          fi
+
+          ISSUE_NUMBER="$(printf '%s' "$TASK_ID" | sed -n 's/^GH-ISSUE-\([0-9][0-9]*\)$/\1/p')"
+          DRY_RUN="false"
+          if [ -n "$ISSUE_NUMBER" ]; then
+            TITLE="$(gh issue view "$ISSUE_NUMBER"               --repo "${{ github.repository }}"               --json title --jq '.title' 2>/dev/null || true)"
+            case "$TITLE" in
+              "[E2E]"*) DRY_RUN="true" ;;
+            esac
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.context.outputs.head_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate WorkBuddy deployment handoff
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
+
+          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent workbuddy             --to-agent workbuddy             --phase deployment_plan             --source-sha "$SOURCE_SHA"
+
+      - name: Validate release and deployment gates
+        run: |
+          test -f reports/release_gate.json
+          test -f reports/deployment_gate.json
+
+          python - <<'PY'
+          import json
+
+          release=json.load(open("reports/release_gate.json"))
+          deploy=json.load(open("reports/deployment_gate.json"))
+
+          if release.get("status") != "ready":
+              raise SystemExit("release gate is not ready")
+          if deploy.get("status") != "ready":
+              raise SystemExit("deployment gate is not ready")
+
+          print("release/deployment gates ready")
+          PY
+
+      - name: E2E dry-run completion
+        if: steps.context.outputs.dry_run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "✅ E2E full-auto chain reached the deployment execution gate. Merge/server deployment were intentionally skipped for the synthetic E2E task."
+
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:workbuddy"             --remove-label "phase:deploy"             --remove-label "status:running"             --add-label "status:done"
+
+      - name: Wait for required PR checks
+        if: steps.context.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          gh pr checks "$PR_NUMBER"             --repo "${{ github.repository }}"             --required             --watch             --interval 10
+
+      - name: Merge approved-by-policy PR
+        if: steps.context.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          gh pr merge "$PR_NUMBER"             --repo "${{ github.repository }}"             --squash             --delete-branch
+
+      - name: Resolve merged main SHA
+        if: steps.context.outputs.dry_run != 'true'
+        id: merged
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: |
+          SHA="$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Configure deployment SSH
+        if: steps.context.outputs.dry_run != 'true'
+        env:
+          SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+        run: |
+          test -n "$SSH_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy main and verify 0m 1m 5m 15m health
+        if: steps.context.outputs.dry_run != 'true'
+        env:
+          HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          USER: ${{ secrets.ORCH_SERVER_USER }}
+          PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          TARGET: ${{ secrets.ORCH_SERVER_PATH }}
+          EXPECTED_SHA: ${{ steps.merged.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$USER"
+          PORT="${PORT:-22}"
+          TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
+
+          ssh -p "$PORT" "$USER@$HOST" bash -s --             "$TARGET" "$EXPECTED_SHA" <<'REMOTE'
+          set -euo pipefail
+
+          TARGET="$1"
+          EXPECTED_SHA="$2"
+          cd "$TARGET"
+
+          PREV_SHA="$(git rev-parse HEAD)"
+          echo "$PREV_SHA" > /tmp/zhihuiqz-prev-sha
+
+          rollback() {
+            echo "Deployment failed. Rolling back to $PREV_SHA"
+            git reset --hard "$PREV_SHA"
+            docker compose up -d --build || true
+          }
+
+          trap rollback ERR
+
+          git fetch origin main
+          git reset --hard "$EXPECTED_SHA"
+
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+
+          docker compose up -d --build
+
+          check_ready() {
+            curl --fail --silent               http://127.0.0.1:8080/readyz               >/tmp/zhihuiqz-readyz.json
+
+            python - <<'PY'
+          import json
+          data=json.load(open("/tmp/zhihuiqz-readyz.json"))
+          if data.get("ok") is not True:
+              raise SystemExit("readyz returned ok != true")
+          for name, item in (data.get("checks") or {}).items():
+              if not item.get("ok"):
+                  raise SystemExit(f"readiness check failed: {name}")
+          PY
+          }
+
+          check_ready
+          sleep 60
+          check_ready
+          sleep 240
+          check_ready
+          sleep 600
+          check_ready
+
+          trap - ERR
+          docker compose ps
+          REMOTE
+
+      - name: Mark deployment complete
+        if: success() && steps.context.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
+          DEPLOYED_SHA: ${{ steps.merged.outputs.sha }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "✅ Full-auto deployment succeeded. Main SHA: `$DEPLOYED_SHA`. Health checks passed at 0m, 1m, 5m and 15m."
+
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:workbuddy"             --remove-label "phase:deploy"             --remove-label "status:running"             --add-label "status:deployed"             --add-label "status:done" || true
+
+          if [ -n "$ISSUE_NUMBER" ]; then
+            gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"               --body "✅ Task completed and deployed automatically at main SHA `$DEPLOYED_SHA`."
+            gh issue close "$ISSUE_NUMBER" --repo "${{ github.repository }}"               --reason completed || true
+          fi
+
+      - name: Mark deployment blocked after failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked" || true
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"               --body "❌ Full-auto production stage failed. If the server deployment had started, the deployment script attempted rollback to the previous server SHA. Inspect this workflow before retrying."
+          fi

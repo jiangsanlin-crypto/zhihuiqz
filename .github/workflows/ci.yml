@@ -20,6 +20,7 @@ jobs:
       - run: PYTHONPATH=. pytest -q
       - run: python scripts/check_model_policy.py
       - run: python scripts/check_dispatch_policy.py
+      - run: python scripts/check_full_auto_policy.py
       - name: Validate workflow YAML
         run: |
           python - <<'PY'

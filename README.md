@@ -1,6 +1,6 @@
 # zhihuiqz · Three-Agent GitHub Orchestrator
 
-This repository coordinates exactly three AI work bodies:
+This repository coordinates a fully automatic software-delivery chain:
 
 ```text
 Codex / product planning
@@ -8,8 +8,12 @@ Codex / product planning
   -> ChatGPT / implementation
   -> WorkBuddy / QA + UI/UX + classification acceptance
   -> Codex / release review
-  -> Human / merge + production approval
-  -> WorkBuddy / approved deployment
+  -> WorkBuddy / deployment gate
+  -> automatic PR merge
+  -> automatic production deployment
+  -> 0m / 1m / 5m / 15m health verification
+  -> rollback on failure
+  -> done
 ```
 
 The same task ID follows the work through every phase. Each phase publishes a
@@ -22,37 +26,34 @@ artifacts, checks, blockers, source SHA and acceptance criteria.
 - Codex product/release: `gpt-5.6-luna`, effort `max`
 - WorkBuddy: `GLM-5.3-Flash`, locked in the dedicated WorkBuddy app
 
-See `docs/MODEL_POLICY.md`.
+No model fallback is allowed.
+
+## Automatic production controls
+
+Full automatic merge/deploy is enabled only when:
+
+- `AUTO_PRODUCTION_ENABLED=true`
+- `EMERGENCY_STOP` is not `true`
+- release gate = ready
+- WorkBuddy deployment gate = ready
+- required CI checks pass
+- main branch protection is active
+- Orchestrator is healthy
+
+Any failed gate blocks the chain. A deployment failure triggers rollback to the
+previous server Git SHA.
+
+Real payment execution and use of real candidate production data remain outside
+this automatic software-delivery permission unless separately authorized.
 
 ## Monitoring
 
-Primary handoff is real-time/event-driven. Every successful phase emits a `repository_dispatch` event to the exact next work body, while GitHub labels remain visible state only. Agents do not individually poll GitHub.
+Primary handoff is real-time/event-driven through `repository_dispatch`.
+Agents do not individually poll GitHub.
 
-A central watchdog runs every 10 minutes only to detect lost/stuck handoffs, with separate running limits for Codex (55m), WorkBuddy (30m), and ChatGPT (75m).
+A central watchdog runs every 10 minutes to detect lost/stuck handoffs.
 
-## Persistent Orchestrator
+## Activation
 
-After human merge to main, use:
-
-`Actions -> WorkBuddy Deploy Orchestrator`
-
-This deploys the Orchestrator to the configured persistent Linux server,
-requires the protected `orchestrator-production` environment, checks
-`/readyz`, and rolls back to the previous Git SHA if readiness fails.
-
-See:
-- docs/ROLE_MATRIX.md
-- docs/HANDOFF_PROTOCOL.md
-- docs/MODEL_POLICY.md
-- docs/DEPLOYMENT_HANDOFF.md
-- docs/ACTIVATION_RUNBOOK.md
-
-
-## Activation controls
-
-Use `Activation Readiness` before and after the first persistent deployment.
-
-Use `Start Agent Task` for normal product work after activation. The launcher
-creates the source Issue, prepares the phase/status labels, and adds
-`agent:codex` last so the full automatic chain starts only after task state is
-complete.
+Use `Activation Readiness` before and after the first persistent Orchestrator
+deployment. Once activated, start normal work through `Start Agent Task`.

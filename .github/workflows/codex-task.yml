@@ -340,7 +340,7 @@ jobs:
           git commit -m "docs: Codex release review" || true
           git push origin "HEAD:$HEAD_REF"
 
-      - name: Apply release gate
+      - name: Apply release gate and dispatch WorkBuddy deployment
         if: steps.codex.outcome == 'success' && steps.release_files.outputs.value == 'true'
         env:
           GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
@@ -374,15 +374,15 @@ jobs:
               "version":"1.0",
               "task_id":os.environ["TASK_ID"],
               "from_agent":"codex",
-              "to_agent":"human",
+              "to_agent":"workbuddy",
               "phase":"release_review",
               "status":"success",
               "summary":os.environ.get("SUMMARY",""),
               "model":"gpt-5.6-luna",
               "effort":"max",
               "required_inputs":["WorkBuddy QA reports","ChatGPT implementation","product specification"],
-              "expected_outputs":["human merge approval","production approval"],
-              "acceptance":["human approval is mandatory before production deployment"],
+              "expected_outputs":["WorkBuddy deployment plan","machine-readable deployment gate"],
+              "acceptance":["WorkBuddy deployment gate must be ready before automatic merge/deployment"],
               "artifacts":["CHANGELOG.md","docs/RELEASE_NOTES.md","reports/release_gate.json"],
               "checks":[],
               "blockers":[],
@@ -390,13 +390,24 @@ jobs:
               "source_sha":os.environ["SHA"],
               "pr_number":int(os.environ["PR_NUMBER"]),
           }
-          body="<!-- agent-handoff:v1 -->\n### Agent handoff: codex → human\n\n```json\n"+json.dumps(payload,ensure_ascii=False,indent=2)+"\n```\n"
+          body="<!-- agent-handoff:v1 -->\n### Agent handoff: codex → workbuddy\n\n```json\n"+json.dumps(payload,ensure_ascii=False,indent=2)+"\n```\n"
           Path(os.environ["RUNNER_TEMP"],"handoff.md").write_text(body)
           PY
 
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/handoff.md"
 
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "phase:release"             --remove-label "status:running"             --add-label "status:review"             --add-label "approval:production-required"
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "phase:release"             --remove-label "status:running"             --remove-label "approval:production-required"             --add-label "agent:workbuddy"             --add-label "phase:deploy"             --add-label "status:todo"
+
+          jq -n             --argjson pr_number "$PR_NUMBER"             --arg task_id "$TASK_ID"             --arg head_ref "$HEAD_REF"             --arg source_sha "$SHA"             '{
+              event_type:"agent_workbuddy_deploy",
+              client_payload:{
+                pr_number:$pr_number,
+                task_id:$task_id,
+                head_ref:$head_ref,
+                source_sha:$source_sha,
+                phase:"deploy"
+              }
+            }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
 
       - name: Block failed release review
         if: steps.codex.outcome != 'success' || steps.release_files.outputs.value != 'true'

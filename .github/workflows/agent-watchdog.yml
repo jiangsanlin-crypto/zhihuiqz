@@ -66,23 +66,27 @@ jobs:
             gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: Codex exceeded the 55-minute running limit. The task was blocked instead of advancing. Inspect the latest handoff/workflow logs and retry the same Codex phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
 
-      - name: Block WorkBuddy running longer than 30 minutes
+      - name: Block WorkBuddy phases after phase-specific timeout
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          AGENT="workbuddy"
-          LIMIT="30"
-          THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
-          QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
+          # Prototype/QA: 30 minutes. Deployment: 45 minutes because it includes
+          # required-check waiting plus 0/1/5/15-minute production health gates.
+          for SPEC in "phase:prototype:30" "phase:qa:30" "phase:deploy:45"; do
+            PHASE="${SPEC%:*}"
+            LIMIT="${SPEC##*:}"
+            THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
+            QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:workbuddy label:$PHASE updated:<$THRESHOLD"
 
-          gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
+            gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
 
-          while read -r NUMBER; do
-            [ -n "$NUMBER" ] || continue
-            gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
+            while read -r NUMBER; do
+              [ -n "$NUMBER" ] || continue
+              gh issue edit "$NUMBER" --repo "${{ github.repository }}"                 --remove-label "status:running"                 --add-label "status:blocked"                 --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: WorkBuddy exceeded the 30-minute running limit. The task was blocked instead of advancing. Inspect the WorkBuddy Cloud Task/Orchestrator logs and retry the same phase after resolving the cause."
-          done < "$RUNNER_TEMP/running-$AGENT.txt"
+              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "<!-- agent-watchdog:timeout:workbuddy:$PHASE --> ⏱ Central watchdog: WorkBuddy exceeded the $LIMIT-minute limit for $PHASE. The task was blocked instead of advancing."
+            done < "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
+          done
 
       - name: Block ChatGPT running longer than 75 minutes
         env:

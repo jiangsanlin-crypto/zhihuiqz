@@ -72,7 +72,7 @@ def build(event, payload, repo):
         return None
 
     phase = phase_from_labels(labels)
-    if phase not in {"phase:prototype", "phase:qa"}:
+    if phase not in {"phase:prototype", "phase:qa", "phase:deploy"}:
         return None
 
     number = payload["number"]
@@ -133,6 +133,18 @@ def next_labels(
                     "agent:codex",
                     "phase:release",
                     "status:todo",
+                ]
+            )
+        )
+
+    if agent == "workbuddy" and phase == "phase:deploy":
+        return sorted(
+            set(
+                keep
+                + [
+                    "agent:workbuddy",
+                    "phase:deploy",
+                    "status:running",
                 ]
             )
         )

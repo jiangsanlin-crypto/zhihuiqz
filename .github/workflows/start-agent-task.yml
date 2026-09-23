@@ -25,10 +25,15 @@ jobs:
   create:
     runs-on: ubuntu-latest
     steps:
-      - name: Require automation identity
+      - name: Require full-auto controls
         env:
           GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
-        run: test -n "$GH_TOKEN"
+          AUTO_PRODUCTION_ENABLED: ${{ secrets.AUTO_PRODUCTION_ENABLED }}
+          EMERGENCY_STOP: ${{ secrets.EMERGENCY_STOP }}
+        run: |
+          test -n "$GH_TOKEN"
+          test "$AUTO_PRODUCTION_ENABLED" = "true"
+          test "${EMERGENCY_STOP:-false}" != "true"
 
       - name: Create source issue
         id: issue
@@ -56,13 +61,17 @@ jobs:
           -> ChatGPT implementation
           -> WorkBuddy QA/UIUX/classification acceptance
           -> Codex release review
-          -> Human production approval.
+          -> WorkBuddy deployment gate
+          -> automatic merge
+          -> automatic production deployment
+          -> health verification / rollback
+          -> done.
 
           ## Safety
 
           - Use synthetic data unless the human owner explicitly authorizes real data.
-          - Do not merge main automatically.
-          - Do not deploy production automatically.
+          - Automatic merge/deployment is allowed only after every policy gate succeeds.
+          - Stop immediately if AUTO_PRODUCTION_ENABLED is not true or EMERGENCY_STOP is true.
           - Preserve the stable task ID and all agent-handoff records.
           EOF
 
@@ -94,5 +103,5 @@ jobs:
             echo "- Issue: #${{ steps.issue.outputs.number }}"
             echo "- First owner: Codex"
             echo "- First phase: product-plan"
-            echo "- Automatic chain ends at human production approval"
+            echo "- Automatic chain ends at production deployment + health verification"
           } >> "$GITHUB_STEP_SUMMARY"

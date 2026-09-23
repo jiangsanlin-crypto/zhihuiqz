@@ -9,14 +9,12 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 jobs:
   smoke:
     if: github.event.inputs.confirm == 'RUN-E2E'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Verify activation
@@ -24,26 +22,30 @@ jobs:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          AUTO_PRODUCTION_ENABLED: ${{ secrets.AUTO_PRODUCTION_ENABLED }}
+          EMERGENCY_STOP: ${{ secrets.EMERGENCY_STOP }}
         run: |
           test -n "$ORCHESTRATOR_URL"
           test -n "$OPENAI_API_KEY"
           test -n "$AGENT_GITHUB_TOKEN"
+          test "$AUTO_PRODUCTION_ENABLED" = "true"
+          test "${EMERGENCY_STOP:-false}" != "true"
           curl --fail-with-body -sS "$ORCHESTRATOR_URL/readyz"
 
-      - name: Create synthetic issue
+      - name: Create synthetic source issue
         id: issue
         env:
           GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
         run: |
-          ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "[E2E] three-agent chain ${{ github.run_id }}"             --body "Synthetic test. ChatGPT acceptance requirement: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK. No production data or deployment.")"
+          ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "[E2E] three-agent full-auto chain ${{ github.run_id }}"             --body "Synthetic coordination test. ChatGPT acceptance requirement: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK. Do not use production data.")"
 
           ISSUE_NUMBER="${ISSUE_URL##*/}"
           echo "number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
           echo "task_id=GH-ISSUE-$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:product-plan"             --add-label "status:todo"
+          gh issue edit "$ISSUE_NUMBER"             --repo "${{ github.repository }}"             --add-label "phase:product-plan"             --add-label "status:todo"
 
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "agent:codex"
+          gh issue edit "$ISSUE_NUMBER"             --repo "${{ github.repository }}"             --add-label "agent:codex"
 
       - name: Wait for planning PR
         id: pr
@@ -58,39 +60,45 @@ jobs:
               echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+
             sleep 15
           done
+
+          echo "Timed out waiting for planning PR."
           exit 1
 
-      - name: Wait for final human review state
+      - name: Wait for full-auto completion state
         env:
           GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          for attempt in $(seq 1 160); do
-            LABELS="$(gh pr view "$PR_NUMBER"               --repo "${{ github.repository }}"               --json labels --jq '.labels[].name')"
+          for attempt in $(seq 1 200); do
+            LABELS="$(gh pr view "$PR_NUMBER"               --repo "${{ github.repository }}"               --json labels               --jq '.labels[].name')"
 
             if echo "$LABELS" | grep -qx "status:blocked"; then
-              gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --comments
+              gh pr view "$PR_NUMBER"                 --repo "${{ github.repository }}"                 --comments
               exit 1
             fi
 
-            if echo "$LABELS" | grep -qx "status:review"               && echo "$LABELS" | grep -qx "approval:production-required"               && ! echo "$LABELS" | grep -Eq '^agent:(codex|chatgpt|workbuddy)$'; then
+            if echo "$LABELS" | grep -qx "status:done"               && ! echo "$LABELS" | grep -Eq '^agent:(codex|chatgpt|workbuddy)$'; then
               exit 0
             fi
 
             sleep 30
           done
+
+          echo "Timed out waiting for full-auto completion."
           exit 1
 
-      - name: Verify handoff chain
+      - name: Verify full handoff chain
         env:
           GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate --jq '.[].body' > "$RUNNER_TEMP/comments.txt"
+          gh api             "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate             --jq '.[].body'             > "$RUNNER_TEMP/comments.txt"
 
-          for phase in product_planning prototype_validation implementation qa_acceptance release_review; do
+          for phase in             product_planning             prototype_validation             implementation             qa_acceptance             release_review             deployment_plan
+          do
             grep -q "\"phase\": \"$phase\"" "$RUNNER_TEMP/comments.txt"
           done
 
@@ -99,7 +107,7 @@ jobs:
           GH_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          HEAD_SHA="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}"             --json headRefOid --jq '.headRefOid')"
+          HEAD_SHA="$(gh pr view "$PR_NUMBER"             --repo "${{ github.repository }}"             --json headRefOid             --jq '.headRefOid')"
 
           VALUE="$(gh api             -H "Accept: application/vnd.github.raw+json"             "repos/${{ github.repository }}/contents/tests/agent_e2e_marker.txt?ref=$HEAD_SHA")"
 
@@ -111,4 +119,6 @@ jobs:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --body "E2E passed: Codex -> WorkBuddy -> ChatGPT -> WorkBuddy -> Codex -> human review. PR #$PR_NUMBER remains unmerged."
+          gh issue comment "$ISSUE_NUMBER"             --repo "${{ github.repository }}"             --body "✅ E2E passed through Codex -> WorkBuddy -> ChatGPT -> WorkBuddy -> Codex -> WorkBuddy deployment gate -> automatic completion. Synthetic E2E intentionally skipped real merge/server deployment."
+
+          gh pr comment "$PR_NUMBER"             --repo "${{ github.repository }}"             --body "✅ Full-auto E2E passed. This synthetic PR remains unmerged by design."

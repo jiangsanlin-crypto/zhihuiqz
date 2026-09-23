@@ -16,7 +16,9 @@ require(
         "repository_dispatch:",
         "types: [agent_codex_release]",
         'event_type:"agent_workbuddy_prototype"',
+        'event_type:"agent_workbuddy_deploy"',
         'phase:"prototype"',
+        'phase:"deploy"',
     ],
 )
 
@@ -35,6 +37,7 @@ require(
     [
         "agent_workbuddy_prototype",
         "agent_workbuddy_qa",
+        "agent_workbuddy_deploy",
         "Relay WorkBuddy event to persistent Orchestrator",
     ],
 )
@@ -44,8 +47,21 @@ require(
     [
         '"agent_chatgpt_implementation"',
         '"agent_codex_release"',
+        '"agent_execute_deployment"',
         "repository_dispatch(",
     ],
 )
 
 print("repository-dispatch chain validated")
+
+require(
+    ".github/workflows/auto-production-deploy.yml",
+    [
+        "types: [agent_execute_deployment]",
+        "AUTO_PRODUCTION_ENABLED",
+        "EMERGENCY_STOP",
+        "gh pr merge",
+        "status:deployed",
+        "status:done",
+    ],
+)
