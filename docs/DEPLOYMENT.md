@@ -36,12 +36,13 @@ WorkBuddy runner gets:
 - WORKBUDDY_MODEL=GLM-5.3-Flash
 - WORKBUDDY_MODEL_LOCK_CONFIRMED=true after the dedicated app is verified
 
-WorkBuddy receives no GitHub token.
+WorkBuddy receives no GitHub token. The persistent Orchestrator uses a narrowly scoped repository automation token and performs validated write-back/dispatch on WorkBuddy's behalf.
 
 ## GitHub Actions secrets
 
 Development/release:
 - OPENAI_API_KEY
+- AGENT_GITHUB_TOKEN
 - ORCHESTRATOR_URL
 - ORCHESTRATOR_TOKEN
 
