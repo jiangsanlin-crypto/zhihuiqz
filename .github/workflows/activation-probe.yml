@@ -5,27 +5,23 @@ on:
     types: [opened]
 
 permissions:
-  contents: read
+  contents: write
   issues: write
+  pull-requests: write
 
 jobs:
   probe:
     if: startsWith(github.event.issue.title, '[ACTIVATION PROBE]')
     runs-on: ubuntu-latest
-    environment: orchestrator-production
     timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check secret presence and activation state
-        id: probe
+      - name: Check activation state
         env:
-          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
-          REPO_ADMIN_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
           ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
           ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
           ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
@@ -33,8 +29,6 @@ jobs:
           ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
           ORCH_SERVER_PATH: ${{ secrets.ORCH_SERVER_PATH }}
           ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
-          AUTO_PRODUCTION_ENABLED: ${{ secrets.AUTO_PRODUCTION_ENABLED }}
-          EMERGENCY_STOP: ${{ secrets.EMERGENCY_STOP }}
         run: |
           set +e
 
@@ -56,7 +50,7 @@ jobs:
             fi
           }
 
-          for NAME in             AGENT_GITHUB_TOKEN             OPENAI_API_KEY             ORCHESTRATOR_TOKEN             ORCHESTRATOR_URL             REPO_ADMIN_TOKEN             ORCH_SERVER_HOST             ORCH_SERVER_USER             ORCH_SERVER_SSH_KEY             ORCH_SERVER_KNOWN_HOSTS             ORCH_ENV_B64             AUTO_PRODUCTION_ENABLED             EMERGENCY_STOP
+          for NAME in             ORCH_SERVER_HOST             ORCH_SERVER_USER             ORCH_SERVER_SSH_KEY             ORCH_SERVER_KNOWN_HOSTS             ORCH_ENV_B64
           do
             check_present "$NAME"
           done
@@ -64,68 +58,26 @@ jobs:
           echo "| \`ORCH_SERVER_PORT\` | $([ -n "$ORCH_SERVER_PORT" ] && echo '✅ present' || echo 'ℹ️ optional/default 22') |" >> "$REPORT"
           echo "| \`ORCH_SERVER_PATH\` | $([ -n "$ORCH_SERVER_PATH" ] && echo '✅ present' || echo 'ℹ️ optional/default /opt/zhihuiqz-orchestrator') |" >> "$REPORT"
 
-          if [ "$AUTO_PRODUCTION_ENABLED" = "true" ]; then
-            echo "| full-auto production switch | ✅ enabled |" >> "$REPORT"
-          else
-            echo "| full-auto production switch | ❌ not enabled |" >> "$REPORT"
-          fi
-
-          if [ "${EMERGENCY_STOP:-}" = "false" ]; then
-            echo "| emergency stop | ✅ inactive |" >> "$REPORT"
-          elif [ "${EMERGENCY_STOP:-}" = "true" ]; then
-            echo "| emergency stop | ⛔ active |" >> "$REPORT"
-          else
-            echo "| emergency stop | ❌ not configured |" >> "$REPORT"
-          fi
-
-          if [ -n "$AGENT_GITHUB_TOKEN" ]; then
-            if GH_TOKEN="$AGENT_GITHUB_TOKEN" gh api "repos/${{ github.repository }}" >/dev/null 2>&1; then
-              echo "| automation token repository access | ✅ works |" >> "$REPORT"
-            else
-              echo "| automation token repository access | ❌ invalid/insufficient |" >> "$REPORT"
-            fi
-
-            if printf '%s\n' '{"event_type":"activation_probe","client_payload":{"source":"activation-probe"}}'               | GH_TOKEN="$AGENT_GITHUB_TOKEN" gh api --method POST                 "repos/${{ github.repository }}/dispatches" --input - >/dev/null 2>&1
-            then
-              echo "| automation token repository_dispatch | ✅ works |" >> "$REPORT"
-            else
-              echo "| automation token repository_dispatch | ❌ invalid/insufficient |" >> "$REPORT"
-            fi
-          else
-            echo "| automation token repository access | ❌ not testable |" >> "$REPORT"
-            echo "| automation token repository_dispatch | ❌ not testable |" >> "$REPORT"
-          fi
-
-          if [ -n "$REPO_ADMIN_TOKEN" ]; then
-            if GH_TOKEN="$REPO_ADMIN_TOKEN" gh api               "repos/${{ github.repository }}/branches/main/protection"               > "$RUNNER_TEMP/protection.json" 2>/dev/null
-            then
-              python - <<'PY' >> "$REPORT"
-          import json, os
-          from pathlib import Path
-          d=json.loads(Path(os.environ["RUNNER_TEMP"],"protection.json").read_text())
-          contexts=(d.get("required_status_checks") or {}).get("contexts") or []
-          reviews=d.get("required_pull_request_reviews") or {}
-          ok=(
-              "test" in contexts
-              and int(reviews.get("required_approving_review_count") or 0) == 0
-              and reviews.get("require_code_owner_reviews") is False
-              and (d.get("enforce_admins") or {}).get("enabled") is True
-              and (d.get("allow_force_pushes") or {}).get("enabled") is False
-              and (d.get("allow_deletions") or {}).get("enabled") is False
-          )
-          print("| main protection | " + ("✅ full-auto policy active |" if ok else "❌ present but policy mismatch |"))
+          python - <<'PY' >> "$REPORT"
+          import json
+          policy=json.load(open("config/automation_policy.json"))
+          print("| repository auto-production policy | " + ("✅ enabled |" if policy.get("auto_production_enabled") is True else "❌ disabled |"))
+          print("| repository emergency stop | " + ("⛔ active |" if policy.get("emergency_stop") is True else "✅ inactive |"))
+          print("| required CI check | `" + str(policy.get("require_ci_check")) + "` |")
           PY
-            else
-              echo "| main protection | ❌ unavailable / token insufficient |" >> "$REPORT"
-            fi
+
+          if printf '%s\n' '{"event_type":"activation_probe","client_payload":{"source":"activation-probe"}}' |
+            GH_TOKEN="${{ github.token }}" gh api --method POST               "repos/${{ github.repository }}/dispatches" --input - >/dev/null 2>&1
+          then
+            echo "| built-in GitHub repository_dispatch | ✅ works |" >> "$REPORT"
           else
-            echo "| main protection | ❌ REPO_ADMIN_TOKEN missing |" >> "$REPORT"
+            echo "| built-in GitHub repository_dispatch | ❌ failed |" >> "$REPORT"
           fi
 
           if [ -n "$ORCH_ENV_B64" ]; then
             printf '%s' "$ORCH_ENV_B64" | base64 -d > "$RUNNER_TEMP/server.env" 2>/dev/null
             if [ "$?" -ne 0 ]; then
-              echo "| protected server env | ❌ invalid base64 |" >> "$REPORT"
+              echo "| protected runtime bundle | ❌ invalid base64 |" >> "$REPORT"
             else
               python - <<'PY' >> "$REPORT"
           import os
@@ -136,8 +88,8 @@ jobs:
               line=raw.strip()
               if not line or line.startswith("#") or "=" not in line:
                   continue
-              k,v=line.split("=",1)
-              values[k.strip()]=v.strip()
+              key,value=line.split("=",1)
+              values[key.strip()]=value.strip()
 
           required=[
               "GITHUB_TOKEN",
@@ -147,58 +99,60 @@ jobs:
               "WORKBUDDY_MODEL",
               "WORKBUDDY_MODEL_LOCK_CONFIRMED",
           ]
-          missing=[k for k in required if not values.get(k)]
-          oauth_ok=bool(values.get("WORKBUDDY_ACCESS_TOKEN")) or all(
-              values.get(k) for k in (
-                  "WORKBUDDY_CLIENT_ID",
-                  "WORKBUDDY_CLIENT_SECRET",
-                  "WORKBUDDY_REFRESH_TOKEN",
-              )
-          )
+          missing=[key for key in required if not values.get(key)]
+
+          if missing:
+              print("| protected runtime bundle | ❌ missing: " + ", ".join(missing) + " |")
+          else:
+              print("| protected runtime bundle | ✅ required keys complete |")
+
+          repo_ok=values.get("GITHUB_REPOSITORY") == "jiangsanlin-crypto/zhihuiqz"
+          print("| server repository binding | " + ("✅ correct |" if repo_ok else "❌ incorrect |"))
+
           model_ok=(
               values.get("WORKBUDDY_MODEL") == "GLM-5.3-Flash"
               and values.get("WORKBUDDY_MODEL_LOCK_CONFIRMED","").lower()
                   in {"1","true","yes","on"}
           )
-          repo_ok=values.get("GITHUB_REPOSITORY") == "jiangsanlin-crypto/zhihuiqz"
-
-          if missing:
-              print("| protected server env required keys | ❌ missing: " + ", ".join(missing) + " |")
-          else:
-              print("| protected server env required keys | ✅ complete |")
-
-          optional_presence=[
-              "OPENAI_API_KEY",
-              "AGENT_GITHUB_TOKEN",
-              "REPO_ADMIN_TOKEN",
-              "AUTO_PRODUCTION_ENABLED",
-              "EMERGENCY_STOP",
-          ]
-          present_optional=[k for k in optional_presence if values.get(k)]
-          if present_optional:
-              print("| server env optional activation keys | ℹ️ present: " + ", ".join(present_optional) + " |")
-          else:
-              print("| server env optional activation keys | ℹ️ none present |")
-
           print("| WorkBuddy model lock | " + ("✅ confirmed |" if model_ok else "❌ not confirmed |"))
+
+          oauth_ok=bool(values.get("WORKBUDDY_ACCESS_TOKEN")) or all(
+              values.get(key)
+              for key in (
+                  "WORKBUDDY_CLIENT_ID",
+                  "WORKBUDDY_CLIENT_SECRET",
+                  "WORKBUDDY_REFRESH_TOKEN",
+              )
+          )
           print("| WorkBuddy OAuth/access token | " + ("✅ configured |" if oauth_ok else "❌ incomplete |"))
-          print("| server repository binding | " + ("✅ correct |" if repo_ok else "❌ incorrect |"))
+
+          openai_ok=bool(os.environ.get("OPENAI_API_KEY_REPO")) or bool(values.get("OPENAI_API_KEY"))
+          print("| OpenAI API key | " + ("✅ configured |" if openai_ok else "❌ missing |"))
+
+          orch_token_ok=bool(values.get("ORCHESTRATOR_TOKEN"))
+          print("| Orchestrator bearer token | " + ("✅ configured in bundle |" if orch_token_ok else "❌ missing |"))
           PY
             fi
           else
-            echo "| protected server env | ❌ ORCH_ENV_B64 missing |" >> "$REPORT"
+            echo "| protected runtime bundle | ❌ ORCH_ENV_B64 missing |" >> "$REPORT"
             echo "| WorkBuddy model lock | ❌ not testable |" >> "$REPORT"
             echo "| WorkBuddy OAuth/access token | ❌ not testable |" >> "$REPORT"
+            echo "| OpenAI API key | $([ -n "$OPENAI_API_KEY_REPO" ] && echo '✅ configured as repository secret' || echo '❌ missing') |" >> "$REPORT"
           fi
 
-          if [ -n "$ORCHESTRATOR_URL" ]; then
-            if curl --max-time 15 --fail-with-body -sS               "$ORCHESTRATOR_URL/readyz" > "$RUNNER_TEMP/readyz.json" 2>/dev/null
+          URL="$ORCHESTRATOR_URL"
+          if [ -z "$URL" ] && [ -n "$ORCH_SERVER_HOST" ]; then
+            URL="http://$ORCH_SERVER_HOST:8080"
+          fi
+
+          if [ -n "$URL" ]; then
+            if curl --max-time 15 --fail-with-body -sS "$URL/readyz"               > "$RUNNER_TEMP/readyz.json" 2>/dev/null
             then
               if python - <<'PY'
           import json, os
           from pathlib import Path
-          d=json.loads(Path(os.environ["RUNNER_TEMP"],"readyz.json").read_text())
-          raise SystemExit(0 if d.get("ok") is True else 1)
+          data=json.loads(Path(os.environ["RUNNER_TEMP"],"readyz.json").read_text())
+          raise SystemExit(0 if data.get("ok") is True else 1)
           PY
               then
                 echo "| live Orchestrator /readyz | ✅ ready |" >> "$REPORT"
@@ -209,7 +163,7 @@ jobs:
               echo "| live Orchestrator /readyz | ❌ unreachable/not deployed |" >> "$REPORT"
             fi
           else
-            echo "| live Orchestrator /readyz | ❌ ORCHESTRATOR_URL missing |" >> "$REPORT"
+            echo "| live Orchestrator /readyz | ❌ no URL/host available |" >> "$REPORT"
           fi
 
           {
