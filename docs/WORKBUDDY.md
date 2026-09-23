@@ -1,61 +1,68 @@
-# WorkBuddy integration
+# WorkBuddy Integration
 
-The WorkBuddy runner uses WorkBuddy Cloud Tasks for product/specification work and final product review.
+WorkBuddy is the independent validation/deployment work body.
 
-## Public GitHub read mode
+## GitHub access
 
-The repository is public, so WorkBuddy is instructed to read:
+The repository and task PRs are public.
 
-- https://github.com/jiangsanlin-crypto/zhihuiqz
-- public PR pages
-- public files and commit history
+WorkBuddy reads them directly and receives no GitHub token, GitHub OAuth grant,
+or GitHub connector authorization.
 
-directly. WorkBuddy does not receive a GitHub token, connector authorization, or GitHub OAuth grant.
+All report write-back is performed by the Orchestrator after strict path
+validation.
 
-GitHub write operations remain outside WorkBuddy.
+## WorkBuddy API authentication
 
-## WorkBuddy authentication
-
-The orchestrator still needs to start WorkBuddy Cloud Tasks. Configure WorkBuddy's own API/OAuth credentials on the persistent server:
-
+The persistent WorkBuddy runner needs WorkBuddy's own OAuth credentials:
 - WORKBUDDY_CLIENT_ID
 - WORKBUDDY_CLIENT_SECRET
 - WORKBUDDY_REFRESH_TOKEN
 
-A temporary WORKBUDDY_ACCESS_TOKEN can be used during setup, but refresh-token operation is preferred for unattended use.
+A temporary WORKBUDDY_ACCESS_TOKEN can be used during bootstrap.
 
-## Specification handoff
+## Model lock
 
-For a source Issue, WorkBuddy returns JSON only. The runner accepts changes only for:
+Required model: `GLM-5.3-Flash`.
 
-- docs/PRD.md
-- docs/MATCHING_SPEC.md
-- docs/I18N.md
-- docs/MONETIZATION.md
-- TASKS.md
+The Cloud Task create endpoint does not expose a per-task model parameter.
+Therefore enforcement is at the dedicated WorkBuddy/Buddy App configuration:
 
-The WorkBuddy runner does not push those files itself. It returns the validated file payload to the Orchestrator.
+1. expose GLM-5.3-Flash only;
+2. set it as default;
+3. verify no Auto/alternate model is selectable;
+4. set WORKBUDDY_MODEL=GLM-5.3-Flash;
+5. set WORKBUDDY_MODEL_LOCK_CONFIRMED=true only after verification.
 
-The Orchestrator then:
-1. creates or reuses agent/workbuddy/issue-<number>;
-2. writes only the validated allowlisted files;
-3. creates the specification PR;
-4. records the stable task ID in the PR body;
-5. publishes the structured handoff comment;
-6. hands the PR to Sandbox QA.
+The Orchestrator remains not-ready until this is confirmed.
 
-## Final review
+## Prototype phase
 
-For final review, WorkBuddy receives the public repository and PR URLs and is instructed to read the PR diff, specification files, implementation, and previous handoff comments directly.
+WorkBuddy reads Codex planning outputs and returns only the allowed reports:
+- reports/prototype_review.md
+- reports/data_analysis.md
+- reports/classification_validation.md
+- reports/uiux_prototype.md
 
-Its result is only success or blocked. It cannot merge the PR.
+Successful handoff goes to ChatGPT.
 
-## Security boundary
+## QA phase
 
-WorkBuddy receives no:
-- GITHUB_TOKEN
-- production payment credential
-- production database credential
-- real candidate production data
+The WorkBuddy runner first executes deterministic Git/Python checks in an
+isolated temporary workspace, then asks WorkBuddy to perform classification,
+multilingual UI and UI/UX acceptance.
 
-Only the Orchestrator holds the GitHub credential used for the WorkBuddy specification write-back.
+Allowed outputs:
+- reports/test_report.md
+- reports/uiux_acceptance.md
+- reports/classification_validation.md
+- reports/qa_summary.json
+
+Successful handoff goes to Codex release review.
+
+## Deployment phase
+
+WorkBuddy owns deployment review, health verification and rollback decisions.
+GitHub Actions performs the actual SSH/Docker commands after human approval.
+
+See docs/DEPLOYMENT_HANDOFF.md.
