@@ -42,10 +42,11 @@ jobs:
           printf '%s' "$ORCH_ENV_B64" | base64 -d > "$RUNNER_TEMP/server.env"
 
           python - <<'PY'
+          import os
           from pathlib import Path
 
           values={}
-          for raw in Path("$RUNNER_TEMP/server.env").read_text().splitlines():
+          for raw in Path(os.environ["RUNNER_TEMP"],"server.env").read_text().splitlines():
               line=raw.strip()
               if not line or line.startswith("#") or "=" not in line:
                   continue
