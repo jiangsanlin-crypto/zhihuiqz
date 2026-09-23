@@ -108,8 +108,14 @@ jobs:
                   "WORKBUDDY_REFRESH_TOKEN",
               )
           )
-          if not oauth_ok:
-              raise SystemExit("WorkBuddy OAuth/access token is incomplete")
+          print(
+              "WorkBuddy mode: "
+              + (
+                  "full (real dispatch enabled)"
+                  if oauth_ok
+                  else "degraded (OAuth optional; real dispatch disabled)"
+              )
+          )
 
           openai_ok=bool(os.environ.get("OPENAI_API_KEY_REPO")) or bool(values.get("OPENAI_API_KEY"))
           if not openai_ok:
