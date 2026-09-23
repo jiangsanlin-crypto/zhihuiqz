@@ -90,9 +90,9 @@ jobs:
           PORT="${PORT:-22}"
           TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
 
-          ssh -p "$PORT" "$USER@$HOST" "mkdir -p '$TARGET' && chmod 700 '$TARGET'"
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST" "mkdir -p '$TARGET' && chmod 700 '$TARGET'"
           printf '%s' "$ENV_B64" |
-            ssh -p "$PORT" "$USER@$HOST"             "base64 -d > '$TARGET/.env' && chmod 600 '$TARGET/.env'"
+            ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST"             "base64 -d > '$TARGET/.env' && chmod 600 '$TARGET/.env'"
 
       - name: Deploy persistent Orchestrator
         env:
@@ -104,7 +104,7 @@ jobs:
           PORT="${PORT:-22}"
           TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
 
-          ssh -p "$PORT" "$USER@$HOST" bash -s -- "$TARGET" <<'REMOTE'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST" bash -s -- "$TARGET" <<'REMOTE'
           set -euo pipefail
           TARGET="$1"
           REPO="https://github.com/jiangsanlin-crypto/zhihuiqz.git"

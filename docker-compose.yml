@@ -1,6 +1,11 @@
 services:
   orchestrator:
-    build: .
+    build:
+      context: .
+      args:
+        # Optional mirrors; empty by default -> upstream behaviour.
+        APT_MIRROR: ${APT_MIRROR:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     restart: unless-stopped
     env_file:
       - .env
