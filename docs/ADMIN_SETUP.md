@@ -1,48 +1,47 @@
 # Repository Administration Setup
 
-## Full-auto main protection
+## Required setup
 
-Configure `REPO_ADMIN_TOKEN` as a narrowly scoped repository administration
-credential, then run `Configure Main Protection` with `PROTECT-MAIN`.
+Normal full-auto operation no longer requires a separate repository-admin token
+or a separate agent PAT.
 
-The workflow configures:
-- PR required for main;
-- required `test` CI context;
-- zero required human approvals for policy-gated automation;
-- CODEOWNERS review not required for normal auto delivery;
-- conversation resolution;
-- force-push disabled;
-- branch deletion disabled;
-- admin enforcement enabled.
+GitHub Actions use the built-in `github.token` and explicit
+`repository_dispatch` events.
 
-## Automation identity
+Required repository secrets are limited to the persistent-server connection and
+the protected runtime bundle:
+- ORCH_SERVER_HOST
+- ORCH_SERVER_USER
+- ORCH_SERVER_SSH_KEY
+- ORCH_SERVER_KNOWN_HOSTS
+- ORCH_ENV_B64
 
-`AGENT_GITHUB_TOKEN` must be separate from `REPO_ADMIN_TOKEN`.
+Optional:
+- ORCH_SERVER_PORT
+- ORCH_SERVER_PATH
+- ORCHESTRATOR_URL
+- OPENAI_API_KEY if it is not included inside ORCH_ENV_B64
 
-It needs repository-scoped:
-- Contents read/write;
-- Issues read/write;
-- Pull requests read/write;
-- Metadata read.
+## Runtime bundle
 
-Do not give it branch-protection bypass or unrelated repository access.
+ORCH_ENV_B64 is the base64-encoded server .env and is the single source for:
+- server GitHub write token;
+- Orchestrator bearer token;
+- WorkBuddy runner token;
+- WorkBuddy model lock;
+- WorkBuddy OAuth/access token;
+- optionally the OpenAI API key.
 
-## Full-auto controls
+## Production control
 
-Configure:
-- `AUTO_PRODUCTION_ENABLED=true`
-- `EMERGENCY_STOP=false`
+`config/automation_policy.json` controls automatic production and emergency
+stop state.
 
-Set `EMERGENCY_STOP=true` at any time to stop new automatic production
-execution.
+Branch protection remains recommended but is not an activation blocker because
+the automatic deploy workflow directly verifies the CI test check and both
+release gates before merging.
 
 ## WorkBuddy
 
-The dedicated WorkBuddy app must expose only `GLM-5.3-Flash` before
-`WORKBUDDY_MODEL_LOCK_CONFIRMED=true` is set on the server.
-
-## Activation
-
-Run readiness -> bootstrap Orchestrator -> postdeploy readiness -> E2E. After
-that, `Start Agent Task` can drive the chain to deployment without a human
-handoff.
+The dedicated WorkBuddy app must expose only GLM-5.3-Flash before
+WORKBUDDY_MODEL_LOCK_CONFIRMED=true is placed in the protected runtime bundle.
