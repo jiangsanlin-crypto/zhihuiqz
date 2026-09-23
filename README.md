@@ -1,15 +1,15 @@
-# zhihuiqz · Three-Agent GitHub Orchestrator
+# zhihuiqz · Three-Agent GitHub Automation
 
 The repository coordinates a fully automatic software-delivery chain:
 
 ```text
 Codex product planning
-  -> WorkBuddy prototype/data/classification validation
+  -> OpenAI Validation Agent / prototype + data + classification review
   -> ChatGPT implementation
-  -> WorkBuddy QA/UIUX/classification acceptance
+  -> OpenAI Validation Agent / QA + UIUX + classification acceptance
   -> Codex release review
-  -> WorkBuddy deployment gate
-  -> CI test
+  -> OpenAI Validation Agent / deployment gate
+  -> final repository tests
   -> automatic PR merge
   -> automatic production deployment
   -> 0m / 1m / 5m / 15m health verification
@@ -19,42 +19,40 @@ Codex product planning
 
 ## Models
 
-- ChatGPT development: `gpt-5.6-sol` / high
 - Codex product/release: `gpt-5.6-luna` / max
-- WorkBuddy: `GLM-5.3-Flash`
+- ChatGPT implementation: `gpt-5.6-sol` / high
+- OpenAI Validation Agent: `gpt-5.6-luna` / high
 
-No fallback is allowed.
+All three work bodies use the configured `OPENAI_API_KEY`. WorkBuddy Cloud,
+WorkBuddy OAuth and the persistent Orchestrator are no longer required for
+agent-to-agent routing.
+
+For compatibility with existing labels and `agent-handoff:v1`, the validation
+agent still uses the internal agent ID `workbuddy`.
 
 ## Dispatch
 
-Agent handoffs use explicit `repository_dispatch`. GitHub Actions use the
-built-in `github.token`; a separate AGENT_GITHUB_TOKEN is not required.
+Every handoff is explicit `repository_dispatch`:
 
-WorkBuddy is invoked by the persistent Orchestrator. The Orchestrator bearer
-token is read from the protected runtime bundle.
+```text
+Codex -> agent_workbuddy_prototype
+Validator -> agent_chatgpt_implementation
+ChatGPT -> agent_workbuddy_qa
+Validator -> agent_codex_release
+Codex -> agent_workbuddy_deploy
+Validator -> agent_execute_deployment
+```
 
-## Production policy
+GitHub Actions is the control plane and uses the built-in `github.token`.
 
-`config/automation_policy.json` controls:
-- whether automatic production is enabled;
-- emergency stop;
-- the mandatory CI check.
+## Safety gates
 
-A production deployment also requires both Codex release gate and WorkBuddy
-deployment gate to be ready.
+Automatic production still requires:
+- repository automation policy enabled;
+- emergency stop inactive;
+- successful handoff task/phase/SHA validation;
+- Codex release gate ready;
+- validator deployment gate ready;
+- final repository tests passing.
 
-## Activation
-
-Required external configuration is intentionally narrow:
-- persistent-server SSH secrets;
-- ORCH_ENV_B64 runtime bundle;
-- OpenAI API key;
-- WorkBuddy token/OAuth.
-
-Run Activation Readiness before and after deploying the persistent Orchestrator,
-then run the synthetic E2E.
-
-## Monitoring
-
-Normal routing is real time. A central watchdog runs every 10 minutes only as a
-recovery layer for lost/stuck work.
+Synthetic `[E2E]` tasks never perform real merge/server deployment.
