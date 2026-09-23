@@ -45,6 +45,45 @@ MODEL_LOCK_CONFIRMED = os.getenv(
     "false",
 ).strip().lower() in {"1", "true", "yes", "on"}
 
+DEGRADED_DISPATCH_CODE = "WORKBUDDY_DEGRADED"
+DEGRADED_DISPATCH_MESSAGE = (
+    "WorkBuddy OAuth is not configured. Bootstrap remains available in "
+    "degraded mode, but real WorkBuddy cloud task dispatch is disabled. "
+    "Add OAuth credentials and restart the runner before retrying."
+)
+
+
+def token_file_has_credentials() -> bool:
+    try:
+        data = json.loads(WB_TOKEN_FILE.read_text())
+    except (OSError, ValueError, TypeError):
+        return False
+    return bool(
+        data.get("access_token")
+        or (
+            data.get("refresh_token")
+            and WB_CLIENT_ID
+            and WB_CLIENT_SECRET
+        )
+    )
+
+
+def workbuddy_oauth_configured() -> bool:
+    return bool(
+        WB_ACCESS_TOKEN
+        or (
+            WB_REFRESH_TOKEN
+            and WB_CLIENT_ID
+            and WB_CLIENT_SECRET
+        )
+        or token_file_has_credentials()
+    )
+
+
+def workbuddy_mode() -> str:
+    return "full" if workbuddy_oauth_configured() else "degraded"
+
+
 MAX_FILE_BYTES = 120_000
 MAX_TEST_OUTPUT = 12_000
 
@@ -660,17 +699,17 @@ async def healthz():
         "agent": "workbuddy",
         "allowed_repo": ALLOWED_REPO,
         "github_auth_required_for_public_read": False,
-        "oauth_configured": bool(
-            WB_ACCESS_TOKEN
-            or (
-                WB_REFRESH_TOKEN
-                and WB_CLIENT_ID
-                and WB_CLIENT_SECRET
-            )
-            or WB_TOKEN_FILE.exists()
-        ),
+        "oauth_configured": workbuddy_oauth_configured(),
+        "workbuddy_configured": workbuddy_oauth_configured(),
+        "workbuddy_mode": workbuddy_mode(),
+        "real_dispatch_enabled": workbuddy_oauth_configured(),
         "expected_model": EXPECTED_MODEL,
         "model_lock_confirmed": MODEL_LOCK_CONFIRMED,
+        "degraded_reason": (
+            DEGRADED_DISPATCH_MESSAGE
+            if not workbuddy_oauth_configured()
+            else ""
+        ),
     }
 
 
@@ -696,6 +735,18 @@ async def run(
                 "WorkBuddy app to expose only GLM-5.3-Flash, then set "
                 "WORKBUDDY_MODEL_LOCK_CONFIRMED=true."
             ),
+        )
+
+    if not workbuddy_oauth_configured():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": DEGRADED_DISPATCH_CODE,
+                "message": DEGRADED_DISPATCH_MESSAGE,
+                "workbuddy_mode": "degraded",
+                "workbuddy_configured": False,
+                "real_dispatch_enabled": False,
+            },
         )
 
     wb = WorkBuddyClient()
