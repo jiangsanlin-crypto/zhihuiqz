@@ -136,3 +136,21 @@ def test_deploy_success_hands_to_execution_state():
     assert "agent:workbuddy" in labels
     assert "phase:deploy" in labels
     assert "status:running" in labels
+
+
+def test_degraded_dispatch_cannot_promote_to_next_agent():
+    labels = next_labels(
+        "workbuddy",
+        "pull_request",
+        [
+            "agent:workbuddy",
+            "phase:prototype",
+            "status:running",
+        ],
+        "blocked",
+        [],
+        phase="phase:prototype",
+    )
+    assert "agent:workbuddy" in labels
+    assert "agent:chatgpt" not in labels
+    assert "status:blocked" in labels
