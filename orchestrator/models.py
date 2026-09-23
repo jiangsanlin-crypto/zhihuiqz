@@ -4,8 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-AgentName = Literal["workbuddy", "sandbox", "codex"]
-HandoffTarget = Literal["workbuddy", "sandbox", "codex", "human"]
+AgentName = Literal["codex", "chatgpt", "workbuddy"]
+HandoffTarget = Literal["codex", "chatgpt", "workbuddy", "human"]
 
 
 class FileChange(BaseModel):
@@ -28,9 +28,18 @@ class Handoff(BaseModel):
     phase: str
     status: Literal["success", "blocked", "failed"]
     summary: str
+
+    model: str | None = None
+    effort: str | None = None
+
+    required_inputs: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    acceptance: list[str] = Field(default_factory=list)
+
     artifacts: list[str] = Field(default_factory=list)
     checks: list[CheckResult] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
+
     source_ref: str | None = None
     source_sha: str | None = None
     pr_number: int | None = None
@@ -45,6 +54,7 @@ class AgentRunRequest(BaseModel):
     event_name: str
     action: str | None = None
     prompt_path: str
+    phase: str | None = None
     source_ref: str | None = None
     source_sha: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
