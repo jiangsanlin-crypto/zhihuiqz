@@ -28,6 +28,8 @@ jobs:
   route:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Resolve PR and synthesize WorkBuddy event
         id: event
         env:
@@ -93,12 +95,26 @@ jobs:
           echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve Orchestrator bearer token
+        id: orchestrator_token
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          ORCHESTRATOR_TOKEN_REPO: ${{ secrets.ORCHESTRATOR_TOKEN }}
+        run: |
+          python scripts/runtime_secret.py ORCHESTRATOR_TOKEN             --fallback-env ORCHESTRATOR_TOKEN_REPO             --output-name token
+
       - name: Relay WorkBuddy event to persistent Orchestrator
         env:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
-          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCHESTRATOR_TOKEN: ${{ steps.orchestrator_token.outputs.token }}
         run: |
-          test -n "$ORCHESTRATOR_URL"
+          URL="$ORCHESTRATOR_URL"
+          if [ -z "$URL" ] && [ -n "$ORCH_SERVER_HOST" ]; then
+            URL="http://$ORCH_SERVER_HOST:8080"
+          fi
+
+          test -n "$URL"
           test -n "$ORCHESTRATOR_TOKEN"
 
-          curl --fail-with-body -sS -X POST "$ORCHESTRATOR_URL/github/events"             -H "Authorization: Bearer $ORCHESTRATOR_TOKEN"             -H "Content-Type: application/json"             -H "X-GitHub-Event: pull_request"             -H "X-GitHub-Delivery: dispatch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"             --data-binary @"$RUNNER_TEMP/synthetic-pull-request-event.json"
+          curl --fail-with-body -sS -X POST "$URL/github/events"             -H "Authorization: Bearer $ORCHESTRATOR_TOKEN"             -H "Content-Type: application/json"             -H "X-GitHub-Event: pull_request"             -H "X-GitHub-Delivery: dispatch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"             --data-binary @"$RUNNER_TEMP/synthetic-pull-request-event.json"
