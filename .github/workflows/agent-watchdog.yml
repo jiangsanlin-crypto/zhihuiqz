@@ -28,7 +28,7 @@ jobs:
           for AGENT in codex chatgpt workbuddy; do
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
 
-            gh api search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
+            gh api --method GET search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
@@ -57,7 +57,7 @@ jobs:
           THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
           QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
 
-          gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
+          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
@@ -78,7 +78,7 @@ jobs:
             THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
             QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:workbuddy label:$PHASE updated:<$THRESHOLD"
 
-            gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
+            gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
@@ -97,7 +97,7 @@ jobs:
           THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
           QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
 
-          gh api search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
+          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
