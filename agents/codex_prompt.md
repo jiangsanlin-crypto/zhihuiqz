@@ -34,12 +34,12 @@ Produce/update only:
 Use synthetic examples. Paid employer features must never directly increase
 relevance scores.
 
-Successful planning hands off to WorkBuddy prototype validation.
+Successful planning hands off to OpenAI Validator prototype validation.
 
 ## Release-review phase
 
 Read the entire handoff chain, product documents, ChatGPT implementation,
-WorkBuddy QA reports, PR diff and available test/CI evidence.
+OpenAI Validator QA reports, PR diff and available test/CI evidence.
 
 Produce/update:
 - CHANGELOG.md
@@ -48,6 +48,6 @@ Produce/update:
 
 The release gate must be `ready` or `blocked` with explicit reasons.
 
-A ready result hands off directly to WorkBuddy deployment readiness. Do not
+A ready result hands off directly to OpenAI Validator deployment readiness. Do not
 merge/deploy yourself; the deterministic production workflow performs those
-actions only after the WorkBuddy deployment gate and required CI pass.
+actions only after the OpenAI Validator deployment gate and required CI pass.
