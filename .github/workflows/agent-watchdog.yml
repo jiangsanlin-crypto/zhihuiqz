@@ -45,10 +45,7 @@ jobs:
                 continue
               fi
 
-              gh issue comment "$NUMBER"                 --repo "${{ github.repository }}"                 --body "$MARKER
-          ⚠️ Central watchdog: handoff to **$AGENT** (`$PHASE`) has remained queued for more than 10 minutes.
-
-          Normal routing is event-driven, so this indicates a missed/failed trigger or unavailable runner. The watchdog will not skip the phase or start a different agent. Check the corresponding GitHub Action/Orchestrator event and retry the same phase if needed."
+              gh issue comment "$NUMBER"                 --repo "${{ github.repository }}"                 --body "$MARKER ⚠️ Central watchdog: handoff to $AGENT ($PHASE) has remained queued for more than 10 minutes. Normal routing is event-driven; the watchdog will not skip the phase or start a different agent. Check the corresponding GitHub Action/Orchestrator event and retry the same phase if needed."
             done < "$RUNNER_TEMP/queued-$AGENT.txt"
           done
 
@@ -67,8 +64,7 @@ jobs:
             [ -n "$NUMBER" ] || continue
             gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT -->
-          ⏱ Central watchdog: **Codex** exceeded the 55-minute running limit. The task was blocked instead of advancing. Inspect the latest handoff/workflow logs and retry the same Codex phase after resolving the cause."
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: Codex exceeded the 55-minute running limit. The task was blocked instead of advancing. Inspect the latest handoff/workflow logs and retry the same Codex phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
 
       - name: Block WorkBuddy running longer than 30 minutes
@@ -86,8 +82,7 @@ jobs:
             [ -n "$NUMBER" ] || continue
             gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT -->
-          ⏱ Central watchdog: **WorkBuddy** exceeded the 30-minute running limit. The task was blocked instead of advancing. Inspect the WorkBuddy Cloud Task/Orchestrator logs and retry the same phase after resolving the cause."
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: WorkBuddy exceeded the 30-minute running limit. The task was blocked instead of advancing. Inspect the WorkBuddy Cloud Task/Orchestrator logs and retry the same phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
 
       - name: Block ChatGPT running longer than 75 minutes
@@ -105,6 +100,5 @@ jobs:
             [ -n "$NUMBER" ] || continue
             gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT -->
-          ⏱ Central watchdog: **ChatGPT** exceeded the 75-minute running limit. The task was blocked instead of advancing. Inspect the development workflow/test logs and retry the same implementation phase after resolving the cause."
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 75-minute running limit. The task was blocked instead of advancing. Inspect the development workflow/test logs and retry the same implementation phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
