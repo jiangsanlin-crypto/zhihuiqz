@@ -1,0 +1,39 @@
+name: Codex Create Draft Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag, for example v0.1.0
+        required: true
+      confirm:
+        description: Type CREATE-DRAFT
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.inputs.confirm == 'CREATE-DRAFT'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Require Codex release artifacts
+        run: |
+          test -f docs/RELEASE_NOTES.md
+          test -f reports/release_gate.json
+          python - <<'PY'
+          import json
+          gate=json.load(open("reports/release_gate.json"))
+          if gate.get("status") != "ready":
+              raise SystemExit("release gate is not ready")
+          PY
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          gh release create "$VERSION"             --repo "${{ github.repository }}"             --target main             --title "$VERSION"             --notes-file docs/RELEASE_NOTES.md             --draft

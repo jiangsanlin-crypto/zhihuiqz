@@ -1,0 +1,133 @@
+name: WorkBuddy Deploy Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type DEPLOY-ORCHESTRATOR
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.event.inputs.confirm == 'DEPLOY-ORCHESTRATOR'
+    runs-on: ubuntu-latest
+    environment: orchestrator-production
+    timeout-minutes: 30
+
+    steps:
+      - name: Validate deployment secrets
+        env:
+          HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          USER: ${{ secrets.ORCH_SERVER_USER }}
+          SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+        run: |
+          test -n "$HOST"
+          test -n "$USER"
+          test -n "$SSH_KEY"
+          test -n "$KNOWN_HOSTS"
+          test -n "$ENV_B64"
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload protected environment
+        env:
+          HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          USER: ${{ secrets.ORCH_SERVER_USER }}
+          PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          TARGET: ${{ secrets.ORCH_SERVER_PATH }}
+          ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+        run: |
+          PORT="${PORT:-22}"
+          TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
+
+          ssh -p "$PORT" "$USER@$HOST" "mkdir -p '$TARGET' && chmod 700 '$TARGET'"
+          printf '%s' "$ENV_B64" |             ssh -p "$PORT" "$USER@$HOST"             "base64 -d > '$TARGET/.env' && chmod 600 '$TARGET/.env'"
+
+      - name: Deploy public repository to persistent server
+        env:
+          HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          USER: ${{ secrets.ORCH_SERVER_USER }}
+          PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          TARGET: ${{ secrets.ORCH_SERVER_PATH }}
+        run: |
+          PORT="${PORT:-22}"
+          TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
+
+          ssh -p "$PORT" "$USER@$HOST" bash -s -- "$TARGET" <<'REMOTE'
+          set -euo pipefail
+          TARGET="$1"
+          REPO="https://github.com/jiangsanlin-crypto/zhihuiqz.git"
+
+          if [ ! -d "$TARGET/.git" ]; then
+            git clone "$REPO" "$TARGET/repo.tmp"
+            cp -a "$TARGET/repo.tmp/.git" "$TARGET/.git"
+            rm -rf "$TARGET/repo.tmp"
+          fi
+
+          cd "$TARGET"
+          PREV_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          set +e
+          docker compose up -d --build
+          DEPLOY_RC=$?
+          set -e
+
+          if [ "$DEPLOY_RC" -ne 0 ]; then
+            if [ -n "$PREV_SHA" ]; then
+              git reset --hard "$PREV_SHA"
+              docker compose up -d --build || true
+            fi
+            exit "$DEPLOY_RC"
+          fi
+
+          READY=0
+          for delay in 0 5 10 20 30 45; do
+            sleep "$delay"
+            if curl --fail --silent http://127.0.0.1:8080/readyz >/tmp/readyz.json; then
+              READY=1
+              break
+            fi
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            echo "Orchestrator readiness failed; rolling back."
+            docker compose ps || true
+            if [ -n "$PREV_SHA" ]; then
+              git reset --hard "$PREV_SHA"
+              docker compose up -d --build || true
+            fi
+            exit 1
+          fi
+
+          docker compose ps
+          cat /tmp/readyz.json
+          REMOTE
+
+      - name: Deployment handoff summary
+        run: |
+          {
+            echo "## WorkBuddy deployment handoff"
+            echo
+            echo "- Deployment transport: GitHub Actions -> SSH -> Docker Compose"
+            echo "- Target: persistent Orchestrator server"
+            echo "- Readiness gate: /readyz"
+            echo "- Rollback: previous Git SHA on failed readiness"
+            echo "- Production application deployment remains separately human-approved"
+          } >> "$GITHUB_STEP_SUMMARY"

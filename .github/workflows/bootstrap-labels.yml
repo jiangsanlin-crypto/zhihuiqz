@@ -1,0 +1,33 @@
+name: Bootstrap Agent Labels
+on: workflow_dispatch
+
+permissions:
+  issues: write
+
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "agent:codex" --repo "${{ github.repository }}" --color 0E8A16 --force
+          gh label create "agent:chatgpt" --repo "${{ github.repository }}" --color 1D76DB --force
+          gh label create "agent:workbuddy" --repo "${{ github.repository }}" --color 5319E7 --force
+
+          gh label create "phase:product-plan" --repo "${{ github.repository }}" --color C5DEF5 --force
+          gh label create "phase:prototype" --repo "${{ github.repository }}" --color C5DEF5 --force
+          gh label create "phase:implementation" --repo "${{ github.repository }}" --color C5DEF5 --force
+          gh label create "phase:qa" --repo "${{ github.repository }}" --color C5DEF5 --force
+          gh label create "phase:release" --repo "${{ github.repository }}" --color C5DEF5 --force
+          gh label create "phase:deploy" --repo "${{ github.repository }}" --color C5DEF5 --force
+
+          gh label create "approval:production-required" --repo "${{ github.repository }}" --color D93F0B --force
+          gh label create "approval:production-approved" --repo "${{ github.repository }}" --color 0E8A16 --force
+
+          gh label create "status:todo" --repo "${{ github.repository }}" --color D4C5F9 --force
+          gh label create "status:running" --repo "${{ github.repository }}" --color FBCA04 --force
+          gh label create "status:blocked" --repo "${{ github.repository }}" --color B60205 --force
+          gh label create "status:review" --repo "${{ github.repository }}" --color FEF2C0 --force
+          gh label create "status:done" --repo "${{ github.repository }}" --color 0E8A16 --force
+          gh label create "status:deployed" --repo "${{ github.repository }}" --color 0E8A16 --force
