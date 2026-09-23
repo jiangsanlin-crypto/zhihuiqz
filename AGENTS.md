@@ -1,6 +1,6 @@
 # Multi-Agent Workflow
 
-Exactly three AI work bodies participate in the development chain.
+Exactly three AI work bodies participate.
 
 ## Canonical pipeline
 
@@ -15,76 +15,51 @@ WorkBuddy / tests + UI/UX + classification acceptance
         ↓
 Codex / release review + release notes
         ↓
-Human / approve merge and production
+WorkBuddy / deployment readiness gate
         ↓
-WorkBuddy / approved deployment + health check + rollback if needed
+GitHub Actions / automatic merge + production deploy
+        ↓
+WorkBuddy-owned health checks / rollback
+        ↓
+status:done
 ```
-
-## Labels
-
-Agents:
-- agent:codex
-- agent:chatgpt
-- agent:workbuddy
-
-Phases:
-- phase:product-plan
-- phase:prototype
-- phase:implementation
-- phase:qa
-- phase:release
-- phase:deploy
-
-Approval:
-- approval:production-required
-- approval:production-approved
-
-Status:
-- status:todo
-- status:running
-- status:blocked
-- status:review
-- status:done
-- status:deployed
 
 ## Handoff rule
 
-Every phase publishes a machine-readable comment beginning with:
+Every phase publishes `<!-- agent-handoff:v1 -->`.
 
-`<!-- agent-handoff:v1 -->`
+A phase may start only when:
+- task ID matches;
+- from/to agent matches;
+- expected phase matches;
+- previous handoff status is success;
+- blockers are empty;
+- handoff source SHA equals the current PR head SHA.
 
-A handoff carries:
-- stable task_id;
-- current/next owner;
-- phase/status;
-- model and effort;
-- required inputs;
-- expected outputs;
-- acceptance criteria;
-- artifacts;
-- checks;
-- blockers;
-- source branch/SHA/PR.
-
-The next agent must consume the latest successful handoff plus all referenced artifacts. It may not skip a blocked phase. Cross-workflow execution is triggered explicitly with repository_dispatch; labels are state markers, not the sole transport.
+Cross-workflow execution uses explicit `repository_dispatch`. Labels are
+visible state/safety gates, not the sole transport.
 
 ## Model policy
 
-See `docs/MODEL_POLICY.md`.
-
-Runtime pins:
-- ChatGPT: gpt-5.6-sol / high
-- Codex: gpt-5.6-luna / max
-- WorkBuddy: GLM-5.3-Flash
+- ChatGPT: `gpt-5.6-sol` / high
+- Codex: `gpt-5.6-luna` / max
+- WorkBuddy: `GLM-5.3-Flash`
 
 No fallback is allowed.
 
-## Permissions
+## Production policy
 
-- Codex: may write planning/release documents on task PR branches; cannot merge main.
-- ChatGPT: may write implementation/test files on the active PR branch; cannot merge main.
-- WorkBuddy: public GitHub read; report write-back occurs through Orchestrator; deployment occurs only through approved GitHub Actions.
-- Orchestrator: routing/report write-back only.
-- Human: main merge and production approval.
+Normal software delivery is fully automatic after one-time activation.
 
-No AI work body may bypass human production approval.
+Automatic merge/deploy is allowed only when:
+- `AUTO_PRODUCTION_ENABLED=true`;
+- `EMERGENCY_STOP` is not true;
+- required CI passes;
+- Codex release gate is ready;
+- WorkBuddy deployment gate is ready.
+
+No agent may bypass failed gates or branch protection.
+
+Real payment execution and real candidate production data still require
+separate explicit authorization; this full-auto policy covers software delivery,
+not business transactions or sensitive-data onboarding.
