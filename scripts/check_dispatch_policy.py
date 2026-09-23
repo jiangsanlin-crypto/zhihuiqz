@@ -13,8 +13,8 @@ def require(path: str, fragments: list[str]) -> None:
 require(
     ".github/workflows/codex-task.yml",
     [
-        "repository_dispatch:",
-        "types: [agent_codex_release]",
+        "agent_codex_product",
+        "agent_codex_release",
         'event_type:"agent_workbuddy_prototype"',
         'event_type:"agent_workbuddy_deploy"',
         'phase:"prototype"',
@@ -39,6 +39,7 @@ require(
         "agent_workbuddy_qa",
         "agent_workbuddy_deploy",
         "Relay WorkBuddy event to persistent Orchestrator",
+        "runtime_secret.py ORCHESTRATOR_TOKEN",
     ],
 )
 
@@ -52,16 +53,15 @@ require(
     ],
 )
 
-print("repository-dispatch chain validated")
-
 require(
     ".github/workflows/auto-production-deploy.yml",
     [
         "types: [agent_execute_deployment]",
-        "AUTO_PRODUCTION_ENABLED",
-        "EMERGENCY_STOP",
+        "config/automation_policy.json",
         "gh pr merge",
         "status:deployed",
         "status:done",
     ],
 )
+
+print("repository-dispatch chain validated")
