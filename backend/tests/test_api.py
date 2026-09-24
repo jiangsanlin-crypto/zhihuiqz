@@ -474,7 +474,14 @@ def test_task004_team_interview_messages_matching_and_moderation():
     assert matches.status_code == 200, matches.text
     matched = next(item for item in matches.json() if item["candidate_user_id"] == profile.json()["user_id"])
     assert matched["score"] > 0
-    assert {factor["name"] for factor in matched["factors"]} == {"distance", "languages", "skills", "availability"}
+    assert matched["policy_version"] == "GH-ISSUE-13-v1.1"
+    assert matched["dictionary_version"] == "1.1"
+    assert matched["eligibility"] in {"eligible", "needs_review", "ineligible"}
+    assert 0 <= matched["confidence"] <= 1
+    assert set(matched["score_components"]) == {
+        "skills", "role", "experience", "location", "language", "schedule", "salary"
+    }
+    assert {factor["name"] for factor in matched["factors"]} == set(matched["score_components"])
 
     report = client.post(
         "/reports",
@@ -493,3 +500,82 @@ def test_task004_team_interview_messages_matching_and_moderation():
     audit = client.get("/admin/audit", headers=auth_header(admin_token))
     assert audit.status_code == 200
     assert any(item["action"] == "moderation.report_resolved" for item in audit.json())
+
+
+
+def test_matching_endpoint_uses_v11_stale_policy_and_ignores_paid_metadata():
+    owner_token = register_and_login("010400001", "employer_admin", "Matching Owner")
+    candidate_token = register_and_login("010400002", "candidate", "Matching Candidate")
+
+    employer = client.post(
+        "/employers",
+        headers=auth_header(owner_token),
+        json={"name": "Synthetic Match Employer", "employer_type": "factory", "location": "Phnom Penh"},
+    )
+    employer_id = employer.json()["id"]
+    verification = client.post(
+        f"/employers/{employer_id}/verification",
+        headers=auth_header(owner_token),
+        json={"legal_name": "Synthetic Match Employer", "registration_number": "SYN-001", "document_url": "https://example.invalid/synthetic.pdf"},
+    )
+    admin_token = create_platform_admin("099999998")
+    client.post(
+        f"/admin/verifications/{verification.json()['id']}/decision",
+        headers=auth_header(admin_token),
+        json={"decision": "approved", "note": "synthetic test"},
+    )
+
+    profile = client.put(
+        "/candidate/profile",
+        headers=auth_header(candidate_token),
+        json={
+            "location": "Phnom Penh",
+            "skills": "sewing quality",
+            "languages": "km,en",
+            "available_date": "immediately",
+        },
+    )
+    job = client.post(
+        "/jobs",
+        headers=auth_header(owner_token),
+        json={
+            "employer_id": employer_id,
+            "category": "factory",
+            "title_km": "កម្មករដេរ",
+            "title_en": "Sewing Worker",
+            "title_zh": "缝纫工",
+            "location": "Phnom Penh",
+            "languages_required": "km,en",
+            "description": "sewing quality",
+            "salary_max": 400,
+        },
+    )
+    job_id = job.json()["id"]
+
+    current = client.get(f"/jobs/{job_id}/matches", headers=auth_header(owner_token))
+    assert current.status_code == 200, current.text
+    item = next(x for x in current.json() if x["candidate_user_id"] == profile.json()["user_id"])
+    assert item["policy_version"] == "GH-ISSUE-13-v1.1"
+    assert item["dictionary_version"] == "1.1"
+    assert "score_components" in item
+    assert "reasons" in item
+    assert "missing_information" in item
+
+    # The production schema has no paid/sponsored ranking inputs. Adding arbitrary
+    # paid metadata to a scorer fixture is covered by test_matching; the endpoint
+    # therefore has no paid field to map into organic relevance.
+
+    from datetime import datetime, timedelta
+    from app.models import CandidateProfile, Job
+    with SessionLocal() as db:
+        stored_job = db.get(Job, job_id)
+        stored_profile = db.query(CandidateProfile).filter(CandidateProfile.user_id == profile.json()["user_id"]).one()
+        stored_job.created_at = datetime.utcnow() - timedelta(days=31)
+        stored_profile.updated_at = datetime.utcnow() - timedelta(days=91)
+        db.commit()
+
+    stale = client.get(f"/jobs/{job_id}/matches", headers=auth_header(owner_token))
+    assert stale.status_code == 200, stale.text
+    stale_item = next(x for x in stale.json() if x["candidate_user_id"] == profile.json()["user_id"])
+    assert stale_item["eligibility"] == "ineligible"
+    assert "STALE_RECORD" in stale_item["reasons"]
