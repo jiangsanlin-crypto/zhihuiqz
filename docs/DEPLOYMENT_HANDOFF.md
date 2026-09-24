@@ -34,3 +34,18 @@ After the Validator gate succeeds, GitHub Actions receives
 
 Software-delivery automation does not authorize real payment execution or
 onboarding/processing of real candidate production data.
+
+
+## Real server commissioning
+
+The production workflow implementation is not considered fully commissioned
+until the real server acceptance standard in
+`docs/DEPLOYMENT_ACCEPTANCE.md` has passed.
+
+Required commissioning evidence:
+- one real server deployment acceptance run with SSH, exact-SHA deployment,
+  Docker Compose, and 0/1/5/15-minute readiness all passing;
+- at least one explicit controlled rollback/recovery drill passing.
+
+Synthetic E2E intentionally skips real server deployment and cannot satisfy
+this commissioning requirement.
