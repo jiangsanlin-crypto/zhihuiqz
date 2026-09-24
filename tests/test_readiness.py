@@ -22,3 +22,7 @@ def test_static_readiness_fails_without_github_token():
     checks = static_checks(settings)
     assert checks["github_write_token"]["ok"] is False
     assert all_ok(checks) is False
+
+
+def test_readiness_fails_with_no_checks():
+    assert all_ok({}) is False
