@@ -49,7 +49,8 @@ forbid(
     ".github/workflows/chatgpt-dev.yml",
     [
         "openai/codex-action",
-        "OPENAI_API_KEY",
+        "openai-api-key:",
+        "secrets.OPENAI_API_KEY",
         "model: gpt-5.6-sol",
         "agent_chatgpt_implementation",
     ],
