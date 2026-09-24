@@ -20,10 +20,12 @@ jobs:
           gh label create "agent:codex" --repo "${{ github.repository }}" --color 0E8A16 --force
           gh label create "agent:chatgpt" --repo "${{ github.repository }}" --color 1D76DB --force
           gh label create "agent:workbuddy" --repo "${{ github.repository }}" --color 5319E7 --force
+          gh label create "agent:workreview" --repo "${{ github.repository }}" --color B60205 --force
 
           gh label create "phase:product-plan" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:prototype" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:implementation" --repo "${{ github.repository }}" --color C5DEF5 --force
+          gh label create "phase:code-review" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:qa" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:release" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:deploy" --repo "${{ github.repository }}" --color C5DEF5 --force
