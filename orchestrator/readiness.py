@@ -31,3 +31,7 @@ def static_checks(settings: Settings) -> dict[str, dict[str, Any]]:
 
 def all_ok(checks: dict[str, dict[str, Any]]) -> bool:
     return all(bool(item.get("ok")) for item in checks.values())
+
+
+def failed_check_names(checks: dict[str, dict[str, Any]]) -> list[str]:
+    return sorted(name for name, item in checks.items() if not bool(item.get("ok")))
