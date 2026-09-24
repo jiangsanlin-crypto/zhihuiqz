@@ -9,7 +9,7 @@ through OpenAI.
 
 ## Fixed runtime policy
 
-- Runtime model: `gpt-5.6-luna`
+- Runtime model: `gpt-6-luna`
 - Reasoning effort: `high`
 - No model fallback
 - No WorkBuddy OAuth or WorkBuddy Cloud dependency
