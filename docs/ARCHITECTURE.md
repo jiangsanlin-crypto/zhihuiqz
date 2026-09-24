@@ -20,6 +20,12 @@ Owner account ChatGPT worker
 GPT-5.6 Sol / High
   |
   | code/tests + implementation handoff
+  | add agent:workreview + phase:code-review + status:todo(last)
+  v
+Owner account Work GPT-6
+independent code review + targeted repair
+  |
+  | exact-final-SHA CI + code-review handoff
   | add agent:workbuddy + phase:qa + status:todo(last)
   v
 OpenAI Validator
@@ -40,13 +46,14 @@ required CI -> merge -> deploy -> health checks / rollback
 
 ## Emergency path
 
-The owner's ChatGPT Work GPT-6 worker is reserved for urgent/high-difficulty
-implementation or recovery. It is an alternative execution surface for the
-logical `chatgpt` implementation phase, not an extra release gate.
+The owner's ChatGPT Work GPT-6 worker is now a mandatory independent code-review
+gate after normal implementation, and also remains the escalation path for
+urgent/high-difficulty implementation or recovery.
 
-Until its current shadow test proves the complete coding/commit/final-SHA-CI
-round trip, it remains escalation-only and must not silently replace the normal
-account Chat worker.
+Review is mandatory; code modification is conditional. When no material defect
+is found, the reviewer must not churn code. When a clear in-scope defect is
+found, it performs the smallest safe repair on the same PR head branch and
+revalidates exact-final-SHA CI before Luna QA.
 
 ## Trust boundaries
 
@@ -66,8 +73,10 @@ account Chat worker.
 - Validator prototype success queues implementation through PR labels; it never
   dispatches the retired API Sol worker.
 - The account Chat scheduled worker consumes the queue automatically.
-- Account Chat completion relabels the PR for QA; `pull_request:labeled`
-  starts OpenAI Validator QA.
+- Account Chat completion relabels the PR for Work code review.
+- The Work review queue consumes `agent:workreview + phase:code-review`.
+- Work completion relabels the PR for QA; `pull_request:labeled` then starts
+  OpenAI Validator QA.
 - The central watchdog is recovery-only.
 
 ## API model constraint

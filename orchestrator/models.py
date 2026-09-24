@@ -4,8 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-AgentName = Literal["codex", "chatgpt", "workbuddy"]
-HandoffTarget = Literal["codex", "chatgpt", "workbuddy", "human"]
+AgentName = Literal["codex", "chatgpt", "workreview", "workbuddy"]
+HandoffTarget = Literal["codex", "chatgpt", "workreview", "workbuddy", "human"]
 
 
 class FileChange(BaseModel):

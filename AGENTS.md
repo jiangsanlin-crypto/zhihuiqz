@@ -12,6 +12,8 @@ OpenAI Validator / prototype validation (OpenAI API Luna)
         ↓
 ChatGPT / formal implementation (owner account Chat 5.6 Sol High)
         ↓
+Work GPT-6 / code review + targeted repair
+        ↓
 OpenAI Validator / QA + UI/UX + classification acceptance
         ↓
 Codex / release review + release notes
@@ -50,14 +52,18 @@ A next phase may start only when:
 
 API-owned phases use GitHub Actions dispatch. Account Chat implementation is
 queued by PR labels and consumed automatically by the account scheduled worker.
-After account Chat finishes, it adds the QA labels with `status:todo` last;
-that label event starts OpenAI Validator QA.
+After Account Chat finishes, it queues `agent:workreview + phase:code-review`.
+Work GPT-6 independently reviews the implementation, performs only targeted
+repairs when necessary, verifies exact-final-SHA CI, then queues
+`agent:workbuddy + phase:qa` with `status:todo` last. That final label event
+starts OpenAI Validator QA.
 
 ## Model and execution policy
 
 - Codex API coordinator: `gpt-6-luna` / high.
 - OpenAI Validator API: `gpt-6-luna` / high.
 - Primary programmer: owner account ChatGPT 5.6 Sol / High.
+- Mandatory senior reviewer/repair engineer: owner account ChatGPT Work GPT-6.
 - Emergency programmer: owner account ChatGPT Work GPT-6, subject to the model
   actually available/configured in Work.
 - API Sol implementation worker: retired; normal workload must be zero.

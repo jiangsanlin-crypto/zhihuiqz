@@ -73,9 +73,9 @@ jobs:
               ;;
             qa)
               EXPECTED_PHASE="phase:qa"
-              PREV_FROM="chatgpt"
+              PREV_FROM="workreview"
               PREV_TO="workbuddy"
-              PREV_HANDOFF_PHASE="implementation"
+              PREV_HANDOFF_PHASE="code_review"
               NEXT_AGENT="codex"
               NEXT_PHASE="phase:release"
               NEXT_EVENT="agent_codex_release"
@@ -459,8 +459,9 @@ jobs:
           fi
 
           # Account-backed ChatGPT handles implementation outside the API workflow.
-          # Its completion relabels the PR to agent:workbuddy + phase:qa +
-          # status:todo; the pull_request:labeled trigger above then starts QA.
+          # Its completion queues agent:workreview + phase:code-review. The
+          # Work reviewer later publishes workreview -> workbuddy / code_review
+          # and adds the QA labels; status:todo then starts this QA workflow.
           if [ "$PHASE" = "prototype" ]; then
             exit 0
           fi

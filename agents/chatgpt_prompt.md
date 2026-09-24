@@ -58,15 +58,16 @@ Validate that the latest successful handoff is:
 After implementation, obtain terminal CI evidence for the exact final head SHA.
 If the implementation is successful, publish <!-- agent-handoff:v1 --> with:
 - from_agent: chatgpt
-- to_agent: workbuddy
+- to_agent: workreview
 - phase: implementation
 - status: success
 - model identifying the account ChatGPT 5.6 Sol worker
 - source_sha equal to the exact final PR head SHA.
 
-Then hand off by removing agent:chatgpt / phase:implementation / status:running or
-status:todo, adding agent:workbuddy and phase:qa, and adding status:todo last.
-Adding status:todo last is intentional: OpenAI Validator QA starts from the
-pull_request:labeled event only after the other QA labels are already present.
+Then hand off to the independent Work code-review stage by removing
+agent:chatgpt / phase:implementation / status:running or status:todo, adding
+agent:workreview and phase:code-review, and adding status:todo last.
+
+Do not hand directly to OpenAI Validator QA. Work review must complete first.
 
 On failure, mark status:blocked and do not advance the PR.
