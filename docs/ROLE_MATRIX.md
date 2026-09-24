@@ -19,6 +19,20 @@ Logical handoff ID: `chatgpt`.
 The API-backed Sol implementation workflow is retired and carries zero normal
 implementation workload.
 
+## Work GPT-6 senior reviewer and repair engineer
+
+Owns mandatory independent review of every normal implementation before Luna QA.
+Reviews correctness, regressions, edge cases, tests, security/privacy,
+idempotency/concurrency where relevant, and task-scope compliance.
+
+Runtime: owner's ChatGPT Work GPT-6 configuration.
+
+Logical handoff ID: `workreview`.
+
+If no material defect exists, it must not churn code. If a clear defect is
+found, it repairs the same PR head branch with the smallest safe change and
+requires exact-final-SHA CI success before handoff.
+
 ## OpenAI Validation Agent
 
 Owns independent prototype validation, data-assumption review, classification
@@ -32,15 +46,15 @@ WorkBuddy OAuth.
 
 ## Emergency Work engineer
 
-Owns explicitly escalated urgent/high-difficulty implementation or recovery
-tasks.
+The same Work GPT-6 execution surface also owns explicitly escalated
+urgent/high-difficulty implementation or recovery tasks.
 
-Runtime: owner's ChatGPT Work GPT-6 configuration. Because the current
-account-event runtime does not expose a trusted machine-readable model identity,
-tests must distinguish execution success from model-identity verification.
+Because the current account-event runtime may not expose a trusted
+machine-readable model identity, execution success and model-identity
+verification must remain separate claims.
 
-When it substitutes for implementation it publishes the logical
-`chatgpt -> workbuddy` implementation handoff and returns to the same QA gate.
+After emergency implementation, the resulting code still passes through the
+Work code-review gate before Luna QA.
 
 ## Automation control plane
 
