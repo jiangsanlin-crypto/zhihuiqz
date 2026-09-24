@@ -291,6 +291,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
+          allow-bot-users: github-actions[bot]
           model: gpt-6-luna
           effort: high
           permission-profile: ":workspace"
@@ -497,6 +498,6 @@ jobs:
         run: |
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
 
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "❌ OpenAI validation agent blocked phase `$PHASE`. No later phase was dispatched."
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "❌ OpenAI validation agent blocked phase $PHASE. No later phase was dispatched."
 
           exit 1
