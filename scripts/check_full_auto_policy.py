@@ -42,4 +42,28 @@ require(
     ],
 )
 
+require(
+    ".github/workflows/deployment-acceptance.yml",
+    [
+        "RUN-REAL-DEPLOY-ACCEPTANCE",
+        "RUN-ROLLBACK-DRILL",
+        "SSH_PASS",
+        "DOCKER_COMPOSE_PREFLIGHT_PASS",
+        'check_ready "0m"',
+        'check_ready "1m"',
+        'check_ready "5m"',
+        'check_ready "15m"',
+        "ROLLBACK_RECOVERY_PASS",
+        "DEPLOYMENT_ACCEPTANCE_PASS",
+    ],
+)
+
+require(
+    "docs/DEPLOYMENT_ACCEPTANCE.md",
+    [
+        "one real normal acceptance run passes",
+        "at least one controlled rollback/recovery drill passes",
+    ],
+)
+
 print("full-auto production policy validated")
