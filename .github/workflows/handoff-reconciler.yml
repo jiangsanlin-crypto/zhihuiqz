@@ -1,0 +1,122 @@
+name: Agent Handoff Reconciler
+
+on:
+  issue_comment:
+    types: [created, edited]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: handoff-reconcile-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (
+        github.event.issue.pull_request != null &&
+        github.event.comment.user.login == github.repository_owner &&
+        contains(github.event.comment.body, '<!-- agent-handoff:v1 -->')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve candidate PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            printf '%s\n' "$EVENT_PR" > "$RUNNER_TEMP/prs.txt"
+          else
+            gh pr list --repo "${{ github.repository }}" --state open --limit 100 \
+              --json number --jq '.[].number' > "$RUNNER_TEMP/prs.txt"
+          fi
+
+      - name: Reconcile validated handoff state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          while read -r PR_NUMBER; do
+            [ -n "$PR_NUMBER" ] || continue
+
+            gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" \
+              > "$RUNNER_TEMP/pr-$PR_NUMBER.json"
+            gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+              --paginate > "$RUNNER_TEMP/comments-$PR_NUMBER.json"
+
+            python scripts/reconcile_handoff_state.py \
+              --pr-json "$RUNNER_TEMP/pr-$PR_NUMBER.json" \
+              --comments-json "$RUNNER_TEMP/comments-$PR_NUMBER.json" \
+              --repository-owner "$REPOSITORY_OWNER" \
+              > "$RUNNER_TEMP/decision-$PR_NUMBER.json"
+
+            ACTION="$(jq -r '.action' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+            if [ "$ACTION" != "reconcile" ]; then
+              continue
+            fi
+
+            EXPECTED_SHA="$(jq -r '.source_sha' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+            LIVE_SHA="$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq '.head.sha')"
+            if [ "$LIVE_SHA" != "$EXPECTED_SHA" ]; then
+              echo "PR #$PR_NUMBER advanced during reconciliation; skip stale decision."
+              continue
+            fi
+
+            TARGET_AGENT="$(jq -r '.target_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+            TARGET_PHASE="$(jq -r '.target_phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+            DESIRED_STATUS="$(jq -r '.desired_status' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+
+            CURRENT_LABELS="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --json labels --jq '.labels[].name')
+
+            for LABEL in \
+              agent:codex agent:chatgpt agent:workreview agent:workbuddy \
+              phase:prototype phase:implementation phase:code-review phase:qa phase:release phase:deploy \
+              status:todo status:running status:blocked
+            do
+              if printf '%s\n' "$CURRENT_LABELS" | grep -Fxq "$LABEL"; then
+                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
+                  --remove-label "$LABEL"
+              fi
+            done
+
+            # Ownership and phase must exist before status:todo is emitted, because
+            # OpenAI Validator uses that final label event as the QA trigger.
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --add-label "$TARGET_AGENT"
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --add-label "$TARGET_PHASE"
+            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --add-label "$DESIRED_STATUS"
+
+            FROM_AGENT="$(jq -r '.from_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+            PHASE="$(jq -r '.phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+            MARKER="<!-- agent-handoff-reconciler:$FROM_AGENT:$PHASE:$EXPECTED_SHA -->"
+            EXISTING="$(gh api \
+              "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+              --paginate \
+              --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" \
+              | head -n1)
+
+            if [ -z "$EXISTING" ]; then
+              gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --body "$MARKER Reconciled the validated handoff to $TARGET_AGENT + $TARGET_PHASE + $DESIRED_STATUS at exact head $EXPECTED_SHA."
+            fi
+          done < "$RUNNER_TEMP/prs.txt"
