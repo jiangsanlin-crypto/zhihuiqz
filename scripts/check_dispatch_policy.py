@@ -40,6 +40,16 @@ require(
         "agent_codex_release",
         "agent_execute_deployment",
         'NEXT_EVENT=""',
+        'PREV_FROM="workreview"',
+        'PREV_HANDOFF_PHASE="code_review"',
+    ],
+)
+
+require(
+    ".github/workflows/bootstrap-labels.yml",
+    [
+        'agent:workreview',
+        'phase:code-review',
     ],
 )
 
