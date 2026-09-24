@@ -63,12 +63,12 @@ jobs:
 
           ## Mandatory workflow
 
-          Codex product planning
-          -> WorkBuddy prototype/data/classification validation
-          -> ChatGPT implementation
-          -> WorkBuddy QA/UIUX/classification acceptance
-          -> Codex release review
-          -> WorkBuddy deployment gate
+          Codex product planning (API Luna)
+          -> OpenAI Validator prototype/data/classification validation (API Luna)
+          -> Account ChatGPT implementation (Chat 5.6 Sol High)
+          -> OpenAI Validator QA/UIUX/classification acceptance
+          -> Codex release review (API Luna)
+          -> OpenAI Validator deployment gate
           -> automatic merge
           -> automatic production deployment
           -> health verification / rollback
@@ -80,6 +80,8 @@ jobs:
           - Automatic merge/deployment is allowed only after every policy gate succeeds.
           - Stop immediately if AUTO_PRODUCTION_ENABLED is not true or EMERGENCY_STOP is true.
           - Preserve the stable task ID and all agent-handoff records.
+          - Normal implementation must not dispatch the retired API Sol workflow.
+          - Urgent/high-difficulty work may be escalated to the account Work GPT-6 path after its shadow gate is proven.
           EOF
 
           ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "$TITLE"             --body-file "$RUNNER_TEMP/body.md")"
