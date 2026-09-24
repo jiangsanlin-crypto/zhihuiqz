@@ -164,7 +164,15 @@ jobs:
           PR_NUMBER="${PR_URL##*/}"
           SHA="$(git rev-parse HEAD)"
 
-          export TASK_ID PR_NUMBER BRANCH SHA
+          ARTIFACTS="$(python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "changed.txt"
+          print(json.dumps([line.strip() for line in p.read_text().splitlines() if line.strip()]))
+          PY
+          )"
+
+          export TASK_ID PR_NUMBER BRANCH SHA ARTIFACTS
           python - <<'PY'
           import json, os
           from pathlib import Path
@@ -175,7 +183,7 @@ jobs:
               "to_agent":"workbuddy",
               "phase":"product_planning",
               "status":"success",
-              "summary":"Product and recruitment-business specification completed.",
+              "summary":"Task-specific product-planning specification completed from the source issue.",
               "model":"gpt-6-luna",
               "effort":"high",
               "required_inputs":["source issue","public repository"],
@@ -186,14 +194,7 @@ jobs:
                   "reports/uiux_prototype.md"
               ],
               "acceptance":["WorkBuddy must validate implementability before ChatGPT development"],
-              "artifacts":[
-                  "docs/PRD.md",
-                  "docs/RECRUITMENT_RULES.md",
-                  "docs/DATA_COLLECTION_PLAN.md",
-                  "docs/CLASSIFICATION_DICTIONARY.md",
-                  "TASKS.md",
-                  "CHANGELOG.md"
-              ],
+              "artifacts":json.loads(os.environ["ARTIFACTS"]),
               "checks":[],
               "blockers":[],
               "source_ref":os.environ["BRANCH"],
