@@ -7,6 +7,7 @@
 | Codex product/release | OpenAI API | `gpt-6-luna` / high | active |
 | OpenAI Validator | OpenAI API | `gpt-6-luna` / high | active |
 | Primary implementation | Owner account ordinary ChatGPT | GPT-5.6 Sol / High | active |
+| Mandatory code review/repair | Owner account ChatGPT Work | GPT-6 configuration | active |
 | Emergency implementation | Owner account ChatGPT Work | GPT-6 configuration | escalation only |
 | API Sol implementation workflow | GitHub Actions + API | retired | **zero** |
 
@@ -33,7 +34,21 @@ The owner's account Chat worker consumes PRs labeled:
 
 It validates the prototype handoff and exact source SHA, implements on that PR
 head branch, obtains final-SHA CI evidence, publishes the implementation handoff
-and automatically relabels the PR for Validator QA.
+to `workreview`, and automatically relabels the PR for mandatory Work code
+review.
+
+## Work review policy
+
+Every normal implementation must pass the account Work review stage before Luna
+QA. The review worker consumes:
+- `agent:workreview`
+- `phase:code-review`
+- `status:todo`
+
+It validates the Chat implementation handoff and exact source SHA, reviews the
+diff independently, fixes only clear in-scope defects, requires exact-final-SHA
+CI success, publishes `workreview -> workbuddy` / `code_review`, and then
+queues Luna QA.
 
 ## Emergency Work policy
 
