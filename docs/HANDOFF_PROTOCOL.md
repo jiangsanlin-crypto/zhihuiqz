@@ -5,7 +5,7 @@
 ```text
 Codex / product_planning
   -> OpenAI Validator / prototype_validation
-  -> ChatGPT / implementation
+  -> Account ChatGPT / implementation
   -> OpenAI Validator / qa_acceptance
   -> Codex / release_review
   -> OpenAI Validator / deployment_plan
@@ -14,16 +14,25 @@ Codex / product_planning
   -> done
 ```
 
-The OpenAI Validator uses compatibility agent ID `workbuddy` in structured
-handoffs and labels so existing gates remain stable. It does not use WorkBuddy
-Cloud.
+OpenAI Validator uses compatibility agent ID `workbuddy` in structured
+handoffs and labels. It does not use WorkBuddy Cloud.
+
+Account ChatGPT uses logical agent ID `chatgpt`. The implementation execution
+surface is the owner's ordinary ChatGPT account using GPT-5.6 Sol High; the
+retired API Sol workflow is not part of the normal chain.
+
+An emergency ChatGPT Work GPT-6 task may substitute for the implementation
+execution surface when explicitly escalated. It still publishes the same
+logical `chatgpt -> workbuddy` implementation handoff so downstream gates stay
+stable.
 
 Every phase publishes `<!-- agent-handoff:v1 -->` with task ID, ownership,
-phase, status, model, artifacts, checks, blockers, source ref/SHA and PR number.
+phase, status, model/execution surface, artifacts, checks, blockers, source
+ref/SHA and PR number.
 
 The next phase starts only when:
 - task ID matches;
-- expected from/to agent matches;
+- expected from/to logical agent matches;
 - phase matches;
 - status is success;
 - blockers are empty;
@@ -40,12 +49,18 @@ QA:
 Deployment:
 - `reports/deployment_gate.json`
 
-Each must report `status: ready` for the chain to advance.
-
-QA also has a deterministic repository-test gate. Production reruns repository
-tests immediately before merge.
+Each must report `status: ready` for the chain to advance. QA also has the
+repository deterministic-test gate. Production reruns repository tests
+immediately before merge.
 
 ## Transport
 
-Primary routing is real-time through GitHub `repository_dispatch`. No agent
-polls GitHub and no persistent Orchestrator is needed for normal handoffs.
+- Codex and OpenAI Validator API phases use GitHub Actions/repository dispatch.
+- Prototype success labels the current PR
+  `agent:chatgpt + phase:implementation + status:todo`; it does not dispatch
+  the retired API Sol implementation workflow.
+- The account Chat scheduled worker automatically consumes those queued PRs.
+- Account Chat publishes the implementation handoff, then adds
+  `agent:workbuddy + phase:qa` and adds `status:todo` last.
+- OpenAI Validator listens to that PR label event and begins QA automatically.
+- The watchdog is recovery/timeout supervision, not the main transport.
