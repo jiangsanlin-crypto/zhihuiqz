@@ -6,12 +6,12 @@ GitHub Issue
   | agent:codex + phase:product-plan
   v
 Codex API coordinator
-gpt-5.6-luna / high
+gpt-6-luna / high
   |
   | product documents + handoff
   v
 OpenAI Validator
-gpt-5.6-luna / high
+gpt-6-luna / high
 prototype/data/classification validation
   |
   | agent:chatgpt + phase:implementation + status:todo
@@ -72,6 +72,4 @@ account Chat worker.
 
 ## API model constraint
 
-The repository currently pins the officially supported API model
-`gpt-5.6-luna` / high. Do not configure invented `gpt-6-luna` or
-`gpt-6-sol` API IDs. Upgrade only after OpenAI publishes a supported API ID.
+The repository pins the officially supported API model `gpt-6-luna` / high for Codex coordination and OpenAI Validator work. `gpt-6-sol` is available in the API, but the API Sol programmer remains retired so normal implementation workload stays at zero.
