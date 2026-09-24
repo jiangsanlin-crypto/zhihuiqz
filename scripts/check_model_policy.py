@@ -88,3 +88,18 @@ require(
 )
 
 print("account-backed implementation and API Luna model policy validated")
+
+
+require(
+    ".github/workflows/handoff-reconciler.yml",
+    [
+        "issue_comment:",
+        'cron: "*/5 * * * *"',
+        "scripts/reconcile_handoff_state.py",
+        "agent:workreview",
+        "phase:code-review",
+        "agent:workbuddy",
+        "phase:qa",
+        '--add-label "$DESIRED_STATUS"',
+    ],
+)
