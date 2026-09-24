@@ -83,3 +83,30 @@ def test_missing_handoff_fails():
             to_agent="chatgpt",
             phase="prototype_validation",
         )
+
+
+def test_valid_work_review_handoff_passes():
+    payload = {
+        "version": "1.0",
+        "task_id": "GH-ISSUE-12",
+        "from_agent": "workreview",
+        "to_agent": "workbuddy",
+        "phase": "code_review",
+        "status": "success",
+        "summary": "reviewed",
+        "artifacts": [],
+        "checks": [
+            {"name": "code_review", "status": "passed", "detail": "no blockers"}
+        ],
+        "blockers": [],
+        "source_sha": "review123",
+    }
+    result = validate_handoff(
+        [comment(payload)],
+        task_id="GH-ISSUE-12",
+        from_agent="workreview",
+        to_agent="workbuddy",
+        phase="code_review",
+        source_sha="review123",
+    )
+    assert result["status"] == "success"
