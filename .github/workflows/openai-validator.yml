@@ -73,9 +73,9 @@ jobs:
               ;;
             qa)
               EXPECTED_PHASE="phase:qa"
-              PREV_FROM="chatgpt"
+              PREV_FROM="workreview"
               PREV_TO="workbuddy"
-              PREV_HANDOFF_PHASE="implementation"
+              PREV_HANDOFF_PHASE="code_review"
               NEXT_AGENT="codex"
               NEXT_PHASE="phase:release"
               NEXT_EVENT="agent_codex_release"
