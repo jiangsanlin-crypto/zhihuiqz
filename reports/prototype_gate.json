@@ -1,0 +1,1 @@
+{"status":"ready","summary":"GH-ISSUE-77 is implementable: the terminal-policy enum, fail-closed owner-wait behavior, exact-SHA QA prerequisite, replay/idempotency rule, and acceptance cases are sufficiently specified. The current QA-to-release path is an implementation gap that must be removed across routing, workflow dispatch, and reconciliation before this task can pass QA."}
