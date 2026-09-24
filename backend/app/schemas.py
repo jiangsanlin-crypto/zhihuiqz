@@ -261,6 +261,14 @@ class CandidateMatchOut(BaseModel):
     candidate_name: str
     score: float
     factors: list[MatchFactor]
+    eligibility: str
+    confidence: float
+    confidence_band: str
+    score_components: dict[str, float]
+    reasons: list[str]
+    missing_information: list[str]
+    policy_version: str
+    dictionary_version: str
 
 
 class ModerationReportCreate(BaseModel):
