@@ -291,7 +291,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
-          model: gpt-5.6-luna
+          model: gpt-6-luna
           effort: high
           permission-profile: ":workspace"
           prompt-file: ${{ runner.temp }}/validator-prompt.md
@@ -424,7 +424,7 @@ jobs:
               "phase":os.environ["HANDOFF_PHASE"],
               "status":"success",
               "summary":os.environ.get("SUMMARY","")[-3000:],
-              "model":"gpt-5.6-luna",
+              "model":"gpt-6-luna",
               "effort":"high",
               "required_inputs":["prior successful handoff","current PR head","phase artifacts"],
               "expected_outputs":[],
