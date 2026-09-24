@@ -66,6 +66,7 @@ jobs:
           Codex product planning (API Luna)
           -> OpenAI Validator prototype/data/classification validation (API Luna)
           -> Account ChatGPT implementation (Chat 5.6 Sol High)
+          -> Work GPT-6 code review / targeted repair
           -> OpenAI Validator QA/UIUX/classification acceptance
           -> Codex release review (API Luna)
           -> OpenAI Validator deployment gate
