@@ -55,16 +55,14 @@ that label event starts OpenAI Validator QA.
 
 ## Model and execution policy
 
-- Codex API coordinator: `gpt-5.6-luna` / high.
-- OpenAI Validator API: `gpt-5.6-luna` / high.
+- Codex API coordinator: `gpt-6-luna` / high.
+- OpenAI Validator API: `gpt-6-luna` / high.
 - Primary programmer: owner account ChatGPT 5.6 Sol / High.
 - Emergency programmer: owner account ChatGPT Work GPT-6, subject to the model
   actually available/configured in Work.
 - API Sol implementation worker: retired; normal workload must be zero.
 
-The public OpenAI API model catalog does not currently expose a GPT-6 Luna or
-GPT-6 Sol API model ID. Do not invent an API model ID. Upgrade the API Luna pin
-only when an official supported GPT-6 Luna API ID exists.
+OpenAI now exposes GPT-6 Luna and GPT-6 Sol in the API as `gpt-6-luna` and `gpt-6-sol`. API coordination/validation uses `gpt-6-luna` / high. The API Sol programmer remains retired because normal implementation is account-backed.
 
 ## Production policy
 
