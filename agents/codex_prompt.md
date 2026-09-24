@@ -36,6 +36,14 @@ relevance scores.
 
 Successful planning hands off to OpenAI Validator prototype validation.
 
+For product planning, the source GitHub Issue is the authoritative task input and
+there is intentionally no prior PR handoff yet. Do not require an existing PR,
+prior agent-handoff comment, GitHub connector, or dispatch capability. The
+surrounding GitHub Actions workflow creates the branch/PR and performs routing
+after you finish. Your job in this phase is only to make the required
+task-specific edits in the allowed product-planning files in the current
+workspace. Do not stop merely because you cannot call GitHub APIs yourself.
+
 ## Release-review phase
 
 Read the entire handoff chain, product documents, ChatGPT implementation,
