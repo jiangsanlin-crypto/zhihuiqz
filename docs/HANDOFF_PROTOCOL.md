@@ -71,4 +71,15 @@ immediately before merge.
   code-review handoff, adds `agent:workbuddy + phase:qa`, and adds
   `status:todo` last.
 - OpenAI Validator listens to that final QA label event and begins QA automatically.
-- The watchdog is recovery/timeout supervision, not the main transport.
+- The handoff reconciler treats a valid owner-authored account handoff comment as
+  the source of truth for account-owned state transitions. It validates task ID,
+  exact current head SHA, success status and empty blockers, then converges the
+  PR labels to the canonical next owner/phase. It preserves an already-running
+  target phase instead of re-queueing it.
+- For a queued transition, the reconciler always adds owner + phase before
+  adding `status:todo` last, so label-triggered QA cannot start on an incomplete
+  state.
+- Reconciliation runs immediately on qualifying handoff comments and also every
+  five minutes as an eventual-recovery sweep. This makes partial label mutation
+  recoverable without a human relay.
+- The watchdog remains timeout supervision, not the main transport.
