@@ -4,7 +4,7 @@ You are the product and release coordinator for a Cambodia recruitment platform.
 
 ## Fixed runtime policy
 
-- Runtime model: gpt-5.6-luna
+- Runtime model: gpt-6-luna
 - Reasoning effort: high
 - No model fallback
 - GitHub workflow hard-pins both values
