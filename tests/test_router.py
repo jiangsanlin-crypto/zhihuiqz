@@ -61,3 +61,15 @@ def test_deploy_routes_to_workbuddy():
 def test_deploy_success_hands_to_execution_state():
     labels=next_labels("workbuddy","pull_request",["agent:workbuddy","phase:deploy","status:running"],"success",[],phase="phase:deploy")
     assert "agent:workbuddy" in labels and "phase:deploy" in labels and "status:running" in labels
+
+
+def test_qa_stop_after_qa_never_routes_release():
+    labels = next_labels("workbuddy","pull_request",["agent:workbuddy","phase:qa","status:running"],"success",[],phase="phase:qa",terminal_policy_text="terminal_policy: stop_after_qa")
+    assert labels == ["approval:production-required", "status:review"]
+    assert "agent:codex" not in labels and "phase:release" not in labels
+
+
+def test_qa_conflicting_policy_fails_closed_without_release():
+    labels = next_labels("workbuddy","pull_request",["agent:workbuddy","phase:qa","status:running"],"success",[],phase="phase:qa",terminal_policy_text="terminal_policy: release_enabled\nterminal_policy: owner_approval_required")
+    assert "status:review" in labels
+    assert "agent:codex" not in labels and "phase:release" not in labels
