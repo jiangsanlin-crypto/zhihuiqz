@@ -1,8 +1,9 @@
 # KhmerHire Recruitment Matching Rules
 
 - Task ID: GH-ISSUE-13
-- Rules version: 1.0
-- Status: Codex product rules complete; WorkBuddy taxonomy review pending
+- Rules version: 1.1
+- Policy version: GH-ISSUE-13-v1.1
+- Status: Human-approved B1–B4 decisions recorded; ready for implementation handoff
 
 This document is normative. When a rule conflicts with a marketing or payment
 requirement, this document wins unless a human-approved policy version changes
@@ -30,8 +31,9 @@ A later stage must not override an earlier hard failure or privacy decision.
   values; source history remains auditable.
 - If a job has conflicting salary, location or schedule values, mark the field
   contradictory and lower confidence.
-- A stale record may remain searchable only with a stale warning and must not
-  be described as a current opportunity.
+- Job records are matchable for 30 days from the latest valid published/retrieved timestamp.
+- Candidate profiles are matchable for 90 days from the latest candidate-confirmed update.
+- Older records may remain visible/searchable with STALE_RECORD, but are not eligible for current matching and must not be described as current opportunities.
 - Source timestamps are preserved in UTC; user display uses the configured
   locale/time zone.
 
@@ -90,6 +92,12 @@ Use the seven components and weights in the PRD:
 - language 10;
 - schedule/employment type 5;
 - salary compatibility 5.
+
+These weights are the human-approved v1 relevance weights (B1). Freshness and completeness remain confidence/evidence-quality inputs and do not add relevance points.
+
+Salary comparison is deterministic (B2): normalize KHR to USD at the policy-pinned rate of **4100 KHR per USD** for scoring; never use live FX inside the scorer. Preserve and display the original amount/currency and record the policy version used.
+
+Khmer normalization/search is deterministic (B3): use versioned alias-dictionary maximum matching first; when no approved segmentation is available, fall back to substring matching against the original text and lower confidence/require review where ambiguity remains.
 
 The scorer must return both the total and every component value. The score is
 not allowed to use:
