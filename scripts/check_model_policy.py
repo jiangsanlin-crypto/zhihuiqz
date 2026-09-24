@@ -67,6 +67,16 @@ require(
 )
 
 require(
+    "agents/workreview_prompt.md",
+    [
+        "Target model: GPT-6 in Work",
+        "Logical handoff ID: `workreview`",
+        "to_agent: `workbuddy`",
+        "phase: `code_review`",
+    ],
+)
+
+require(
     "agents/workbuddy_prompt.md",
     [
         "No WorkBuddy OAuth or WorkBuddy Cloud dependency",
