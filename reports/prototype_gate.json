@@ -1,0 +1,1 @@
+{"status":"ready","summary":"GH-ISSUE-74 is implementable within the stated readiness module and focused test scope. Falsey or missing ok values match existing all_ok semantics, sorted diagnostic names are deterministic, and taxonomy, recruitment data, and multilingual UI changes are not applicable."}
