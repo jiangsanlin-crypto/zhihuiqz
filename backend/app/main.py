@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .database import Base, DATABASE_URL, engine, get_db
 from .geo import haversine_km
 from .locations import DISTRICTS, PROVINCES, PROVINCE_CODES
+from .matching import score_match
 from .models import (
     Application,
     ApplicationEvent,
@@ -976,6 +977,36 @@ def tokenize(value: str) -> set[str]:
     return {token for token in re.split(r"[^\w\u1780-\u17ff]+", value.lower()) if len(token) >= 2}
 
 
+def _matching_job_input(job: Job) -> dict:
+    return {
+        "category": job.category,
+        "required_skills": tokenize(job.description),
+        "required_languages": tokenize(job.languages_required.replace(",", " ")),
+        "languages_mandatory": bool(job.languages_required.strip()),
+        "location": job.location,
+        "employment_type": job.job_type,
+        "schedule": job.shift,
+        "salary_min": job.salary_min,
+        "salary_max": job.salary_max,
+        "currency": job.currency,
+        "status": job.status,
+        "created_at": job.created_at,
+    }
+
+
+def _matching_candidate_input(profile: CandidateProfile) -> dict:
+    return {
+        "skills": tokenize(profile.skills),
+        "desired_roles": [],
+        "location": profile.location,
+        "languages": tokenize(profile.languages.replace(",", " ")),
+        "schedule_availability": None,
+        "salary_expectation": None,
+        "updated_at": profile.updated_at,
+        "consent_status": "active",
+    }
+
+
 @app.get("/jobs/{job_id}/matches", response_model=list[CandidateMatchOut])
 def job_matches(
     job_id: int,
@@ -988,68 +1019,43 @@ def job_matches(
         raise HTTPException(status_code=404, detail="Job not found")
     get_employer_for_user(job.employer_id, user, db)
 
-    job_tokens = tokenize(" ".join([job.title_km, job.title_en, job.title_zh, job.description]))
-    required_languages = tokenize(job.languages_required.replace(",", " "))
-    profiles = list(db.scalars(select(CandidateProfile)).all())
+    job_input = _matching_job_input(job)
     matches = []
-    for profile in profiles:
+    for profile in db.scalars(select(CandidateProfile)).all():
         candidate = profile.user
-        factors = []
-        score = 0.0
-
-        distance_score = 0.0
-        distance_detail = "Location unavailable"
-        if (
-            job.latitude is not None and job.longitude is not None
-            and profile.latitude is not None and profile.longitude is not None
-        ):
-            distance = haversine_km(job.latitude, job.longitude, profile.latitude, profile.longitude)
-            if distance <= 10:
-                distance_score = 30
-            elif distance <= 25:
-                distance_score = 24
-            elif distance <= 50:
-                distance_score = 15
-            else:
-                distance_score = 5
-            distance_detail = f"{distance:.1f} km from job"
-        score += distance_score
-        factors.append({"name":"distance","score":distance_score,"detail":distance_detail})
-
-        candidate_languages = tokenize(profile.languages.replace(",", " "))
-        if required_languages:
-            overlap = len(required_languages & candidate_languages) / max(1, len(required_languages))
-            language_score = round(25 * overlap, 1)
-            language_detail = f"{len(required_languages & candidate_languages)}/{len(required_languages)} required languages matched"
-        else:
-            language_score = 15.0
-            language_detail = "No mandatory language requirement"
-        score += language_score
-        factors.append({"name":"languages","score":language_score,"detail":language_detail})
-
-        skill_tokens = tokenize(profile.skills)
-        overlap_count = len(job_tokens & skill_tokens)
-        skill_score = min(35.0, overlap_count * 12.0)
-        skill_detail = f"{overlap_count} skill keywords matched"
-        score += skill_score
-        factors.append({"name":"skills","score":skill_score,"detail":skill_detail})
-
-        availability_score = 10.0 if profile.available_date else 0.0
-        score += availability_score
-        factors.append({
-            "name":"availability",
-            "score":availability_score,
-            "detail":profile.available_date or "Availability not provided",
-        })
-
+        result = score_match(job_input, _matching_candidate_input(profile))
+        factors = [
+            {
+                "name": name,
+                "score": value,
+                "detail": f"{name} relevance component",
+            }
+            for name, value in result.score_components.items()
+        ]
         matches.append({
             "candidate_user_id": profile.user_id,
             "candidate_name": candidate.display_name if candidate else "",
-            "score": round(min(100.0, score), 1),
+            "score": result.score,
             "factors": factors,
+            "eligibility": result.eligibility,
+            "confidence": result.confidence,
+            "confidence_band": result.confidence_band,
+            "score_components": result.score_components,
+            "reasons": list(result.reasons),
+            "missing_information": list(result.missing_information),
+            "policy_version": result.policy_version,
+            "dictionary_version": result.dictionary_version,
         })
 
-    matches.sort(key=lambda item: item["score"], reverse=True)
+    eligibility_order = {"eligible": 0, "needs_review": 1, "ineligible": 2}
+    matches.sort(
+        key=lambda item: (
+            eligibility_order.get(item["eligibility"], 3),
+            -item["score"],
+            -item["confidence"],
+            item["candidate_user_id"],
+        )
+    )
     return matches[:limit]
 
 
