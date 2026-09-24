@@ -5,7 +5,7 @@
 Owns product management, recruitment rules, taxonomy, collection planning,
 acceptance criteria, release review and release notes.
 
-Runtime: OpenAI API `gpt-5.6-luna` / high.
+Runtime: OpenAI API `gpt-6-luna` / high.
 
 ## Account ChatGPT primary engineer
 
@@ -25,7 +25,7 @@ Owns independent prototype validation, data-assumption review, classification
 validation, deterministic QA, multilingual UI/UX acceptance and
 deployment-readiness review.
 
-Runtime: OpenAI API `gpt-5.6-luna` / high.
+Runtime: OpenAI API `gpt-6-luna` / high.
 
 Compatibility handoff ID: `workbuddy`. It does not use WorkBuddy Cloud or
 WorkBuddy OAuth.
