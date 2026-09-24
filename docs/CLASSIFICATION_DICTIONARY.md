@@ -1,8 +1,8 @@
 # KhmerHire Classification Dictionary
 
 - Task ID: GH-ISSUE-13
-- Dictionary version: 1.0
-- Status: Draft for WorkBuddy Khmer taxonomy review
+- Dictionary version: 1.1
+- Status: Human-approved WorkBuddy classification corrections recorded
 - UI language order: Khmer, English, Chinese
 
 ## 1. Dictionary contract
@@ -40,7 +40,7 @@ approves the distinction.
 | AGRICULTURE | កសិកម្ម | Agriculture | 农业 |
 | SECURITY_FACILITIES | សន្តិសុខ និងថែទាំអគារ | Security and facilities | 安保与设施 |
 | BEAUTY_WELLNESS | សម្រស់ និងសុខុមាលភាព | Beauty and wellness | 美容与健康 |
-| OTHER_REVIEW | ផ្សេងទៀត ត្រូវពិនិត្យ | Other, needs review | 其他，需审核 |
+| OTHER_REVIEW | ផ្សេងៗ | Other | 其他 |
 
 WorkBuddy must verify Khmer wording, local usage and whether any family should
 be split or merged before implementation.
@@ -51,7 +51,7 @@ be split or merged before implementation.
 |---|---|---|---|
 | FULL_TIME | ពេញម៉ោង | Full-time | 全职 |
 | PART_TIME | ក្រៅម៉ោង | Part-time | 兼职 |
-| CONTRACT | កិច្ចសន្យា | Contract | 合同 |
+| CONTRACT | កិច្ចសន្យាការងារ | Contract | 合同 |
 | INTERNSHIP | កម្មសិក្សា | Internship | 实习 |
 | SEASONAL | តាមរដូវកាល | Seasonal | 季节性 |
 | ONSITE | នៅទីតាំងការងារ | Onsite | 到岗 |
@@ -66,9 +66,20 @@ be split or merged before implementation.
 | EN | ភាសាអង់គ្លេស | English | 英语 |
 | ZH | ភាសាចិន | Chinese | 中文 |
 
-Proficiency values are BASIC, WORKING, PROFICIENT and EXPERT. Evidence values
-are SELF_REPORTED, DOCUMENTED, ASSESSED and EMPLOYER_CONFIRMED. The language
-used by the app is never an evidence value.
+### Proficiency and evidence labels
+
+| Code | Khmer | English | Chinese |
+|---|---|---|---|
+| BASIC | កម្រិតមូលដ្ឋាន | Basic | 基础 |
+| WORKING | កម្រិតប្រើប្រាស់ការងារ | Working | 工作可用 |
+| PROFICIENT | កម្រិតជំនាញ | Proficient | 熟练 |
+| EXPERT | កម្រិតជំនាញខ្ពស់ | Expert | 精通 |
+| SELF_REPORTED | ប្រកាសដោយខ្លួនឯង | Self-reported | 自报 |
+| DOCUMENTED | មានឯកសារផ្ទៀងផ្ទាត់ | Documented | 有证明 |
+| ASSESSED | បានធ្វើតេស្ត | Assessed | 已测评 |
+| EMPLOYER_CONFIRMED | បញ្ជាក់ដោយនិយោជក | Employer confirmed | 雇主确认 |
+
+The language used by the app is never an evidence value.
 
 ## 5. Skill normalization examples
 
@@ -83,8 +94,9 @@ used by the app is never an evidence value.
 | SKILL_ACCOUNTING | គណនេយ្យ | Accounting | 会计 | bookkeeping, accountant |
 | SKILL_PROGRAMMING | សរសេរកម្មវិធី | Programming | 编程 | software development, coding |
 
-These examples are seed entries only. WorkBuddy must validate local Khmer
-aliases before they can satisfy a hard requirement.
+Dictionary v1.1 also approves these reviewed aliases: MANUFACTURING → រោងចក្រកាត់ដេរ and កាត់ដេរ; IT_DIGITAL → បច្ចេកវិទ្យា; REMOTE → ធ្វើការពីផ្ទះ. PART_TIME has an explicit anti-alias: ម៉ោងបន្ថែម (overtime) MUST NOT map to PART_TIME. Ambiguous phrases remain REVIEW_REQUIRED and cannot satisfy a hard requirement automatically.
+
+These examples are seed entries only. Expand to at least 30 skills across the top five job families before production ranking goes live; additions still require the normal source/reviewer/version metadata.
 
 ## 6. Reason-code dictionary
 
