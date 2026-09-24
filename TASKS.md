@@ -6,9 +6,9 @@ Owner sequence:
 
 ```text
 Codex / product rules
-  -> WorkBuddy / taxonomy + prototype validation
-  -> ChatGPT / implementation
-  -> WorkBuddy / QA acceptance
+  -> OpenAI Validator / taxonomy + prototype validation
+  -> Account ChatGPT / implementation
+  -> OpenAI Validator / QA acceptance
   -> Codex / release review
   -> Human / merge + production approval
 ```
@@ -23,8 +23,8 @@ Goal:
 
 Acceptance:
 - Codex documents matching/product rules and field definitions;
-- WorkBuddy validates Khmer taxonomy and prototype behavior;
-- ChatGPT implements matching/API/data/tests;
-- WorkBuddy validates algorithm, multilingual UX and test evidence;
+- OpenAI Validator validates Khmer taxonomy and prototype behavior;
+- Account ChatGPT implements matching/API/data/tests;
+- OpenAI Validator validates algorithm, multilingual UX and test evidence;
 - Codex produces the release gate;
 - production remains human-approved.

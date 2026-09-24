@@ -1,6 +1,8 @@
 name: OpenAI Validation Agent
 
 on:
+  pull_request:
+    types: [labeled]
   repository_dispatch:
     types:
       - agent_workbuddy_prototype
@@ -27,6 +29,11 @@ permissions:
 
 jobs:
   validate:
+    if: >
+      github.event_name != 'pull_request' ||
+      (github.event.label.name == 'status:todo' &&
+       contains(github.event.pull_request.labels.*.name, 'agent:workbuddy') &&
+       contains(github.event.pull_request.labels.*.name, 'phase:qa'))
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -37,6 +44,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER_AUTO: ${{ github.event.client_payload.pr_number }}
           PR_NUMBER_MANUAL: ${{ inputs.pr_number }}
+          PR_NUMBER_LABEL: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
           TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
           SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
           PHASE_AUTO: ${{ github.event.client_payload.phase }}
@@ -44,8 +53,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          PR_NUMBER="${PR_NUMBER_AUTO:-$PR_NUMBER_MANUAL}"
+          PR_NUMBER="${PR_NUMBER_AUTO:-${PR_NUMBER_MANUAL:-$PR_NUMBER_LABEL}}"
           PHASE="${PHASE_AUTO:-$PHASE_MANUAL}"
+          if [ -z "$PHASE" ] && [ "$EVENT_NAME" = "pull_request" ]; then
+            PHASE="qa"
+          fi
           test -n "$PR_NUMBER"
 
           case "$PHASE" in
@@ -56,7 +68,7 @@ jobs:
               PREV_HANDOFF_PHASE="product_planning"
               NEXT_AGENT="chatgpt"
               NEXT_PHASE="phase:implementation"
-              NEXT_EVENT="agent_chatgpt_implementation"
+              NEXT_EVENT=""
               HANDOFF_PHASE="prototype_validation"
               ;;
             qa)
@@ -279,7 +291,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
-          model: gpt-5.6-luna
+          model: gpt-6-luna
           effort: high
           permission-profile: ":workspace"
           prompt-file: ${{ runner.temp }}/validator-prompt.md
@@ -412,7 +424,7 @@ jobs:
               "phase":os.environ["HANDOFF_PHASE"],
               "status":"success",
               "summary":os.environ.get("SUMMARY","")[-3000:],
-              "model":"gpt-5.6-luna",
+              "model":"gpt-6-luna",
               "effort":"high",
               "required_inputs":["prior successful handoff","current PR head","phase artifacts"],
               "expected_outputs":[],
@@ -444,6 +456,13 @@ jobs:
           else
             # Deployment executor validates the final compatibility handoff.
             gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "status:todo"               --add-label "status:running"
+          fi
+
+          # Account-backed ChatGPT handles implementation outside the API workflow.
+          # Its completion relabels the PR to agent:workbuddy + phase:qa +
+          # status:todo; the pull_request:labeled trigger above then starts QA.
+          if [ "$PHASE" = "prototype" ]; then
+            exit 0
           fi
 
           jq -n             --argjson pr_number "$PR_NUMBER"             --arg task_id "$TASK_ID"             --arg head_ref "$HEAD_REF"             --arg source_sha "$SHA"             --arg phase "$PHASE"             '{

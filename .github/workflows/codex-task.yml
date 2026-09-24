@@ -102,8 +102,8 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
-          model: gpt-5.6-luna
-          effort: max
+          model: gpt-6-luna
+          effort: high
           permission-profile: ":workspace"
           prompt-file: ${{ runner.temp }}/codex-product.md
           output-file: ${{ runner.temp }}/codex-product-output.md
@@ -176,8 +176,8 @@ jobs:
               "phase":"product_planning",
               "status":"success",
               "summary":"Product and recruitment-business specification completed.",
-              "model":"gpt-5.6-luna",
-              "effort":"max",
+              "model":"gpt-6-luna",
+              "effort":"high",
               "required_inputs":["source issue","public repository"],
               "expected_outputs":[
                   "reports/prototype_review.md",
@@ -371,8 +371,8 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
-          model: gpt-5.6-luna
-          effort: max
+          model: gpt-6-luna
+          effort: high
           permission-profile: ":workspace"
           prompt-file: ${{ runner.temp }}/codex-release.md
           output-file: ${{ runner.temp }}/codex-release-output.md
@@ -447,8 +447,8 @@ jobs:
               "phase":"release_review",
               "status":"success",
               "summary":os.environ.get("SUMMARY",""),
-              "model":"gpt-5.6-luna",
-              "effort":"max",
+              "model":"gpt-6-luna",
+              "effort":"high",
               "required_inputs":["WorkBuddy QA reports","ChatGPT implementation","product specification"],
               "expected_outputs":["WorkBuddy deployment plan","machine-readable deployment gate"],
               "acceptance":["WorkBuddy deployment gate must be ready before automatic merge/deployment"],

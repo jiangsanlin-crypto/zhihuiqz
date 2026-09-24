@@ -23,9 +23,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          THRESHOLD="$(date -u -d '10 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
-
-          for AGENT in codex chatgpt workbuddy; do
+          for SPEC in "codex:10" "workbuddy:10" "chatgpt:70"; do
+            AGENT="${SPEC%%:*}"
+            LIMIT="${SPEC##*:}"
+            THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
 
             gh api --method GET search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
@@ -44,7 +45,7 @@ jobs:
                 continue
               fi
 
-              gh issue comment "$NUMBER"                 --repo "${{ github.repository }}"                 --body "$MARKER ⚠️ Central watchdog: handoff to $AGENT ($PHASE) has remained queued for more than 10 minutes. Normal routing is event-driven; the watchdog will not skip the phase or start a different agent. Check the corresponding GitHub Action/Orchestrator event and retry the same phase if needed."
+              gh issue comment "$NUMBER"                 --repo "${{ github.repository }}"                 --body "$MARKER ⚠️ Central watchdog: handoff to $AGENT ($PHASE) has remained queued for more than $LIMIT minutes. The watchdog will not skip the phase or start another worker. Check the owning API workflow or account worker and retry the same phase if needed."
             done < "$RUNNER_TEMP/queued-$AGENT.txt"
           done
 
@@ -66,7 +67,7 @@ jobs:
             gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: Codex exceeded the 55-minute running limit. The task was blocked instead of advancing. Inspect the latest handoff/workflow logs and retry the same Codex phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
 
-      - name: Block WorkBuddy phases after phase-specific timeout
+      - name: Block OpenAI Validator phases after phase-specific timeout
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -84,7 +85,7 @@ jobs:
               [ -n "$NUMBER" ] || continue
               gh issue edit "$NUMBER" --repo "${{ github.repository }}"                 --remove-label "status:running"                 --add-label "status:blocked"                 --add-label "watchdog:timeout" || true
 
-              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "<!-- agent-watchdog:timeout:workbuddy:$PHASE --> ⏱ Central watchdog: WorkBuddy exceeded the $LIMIT-minute limit for $PHASE. The task was blocked instead of advancing."
+              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "<!-- agent-watchdog:timeout:workbuddy:$PHASE --> ⏱ Central watchdog: OpenAI Validator exceeded the $LIMIT-minute limit for $PHASE. The task was blocked instead of advancing."
             done < "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
           done
 
@@ -93,8 +94,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           AGENT="chatgpt"
-          # 120 minutes > the 110-minute job timeout in chatgpt-dev.yml, so the
-          # watchdog only fires after GitHub itself has had the chance to fail.
+          # Account Chat may need one scheduled follow-up to observe terminal CI.
+          # The running timeout is therefore intentionally longer than one hourly cycle.
           LIMIT="120"
           THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
           QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
@@ -105,5 +106,5 @@ jobs:
             [ -n "$NUMBER" ] || continue
             gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 120-minute running limit. The task was blocked instead of advancing. Inspect the development workflow/test logs and retry the same implementation phase after resolving the cause."
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 120-minute running limit. The task was blocked instead of advancing. Inspect the account worker / PR / CI evidence and retry the same implementation phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"

@@ -10,6 +10,15 @@ def require(path: str, fragments: list[str]) -> None:
             )
 
 
+def forbid(path: str, fragments: list[str]) -> None:
+    text = Path(path).read_text()
+    for fragment in fragments:
+        if fragment in text:
+            raise SystemExit(
+                f"{path}: forbidden dispatch-policy fragment present: {fragment}"
+            )
+
+
 require(
     ".github/workflows/codex-task.yml",
     [
@@ -26,17 +35,36 @@ require(
         "agent_workbuddy_prototype",
         "agent_workbuddy_qa",
         "agent_workbuddy_deploy",
-        "agent_chatgpt_implementation",
+        "pull_request:",
+        "types: [labeled]",
         "agent_codex_release",
         "agent_execute_deployment",
+        'NEXT_EVENT=""',
+    ],
+)
+
+forbid(
+    ".github/workflows/openai-validator.yml",
+    [
+        "agent_chatgpt_implementation",
     ],
 )
 
 require(
     ".github/workflows/chatgpt-dev.yml",
     [
-        "types: [agent_chatgpt_implementation]",
-        'event_type:"agent_workbuddy_qa"',
+        "ChatGPT Implementation (API Retired)",
+        "API Sol worker is retired",
+    ],
+)
+
+forbid(
+    ".github/workflows/chatgpt-dev.yml",
+    [
+        "repository_dispatch:",
+        "agent_chatgpt_implementation",
+        "agent_workbuddy_qa",
+        "openai/codex-action",
     ],
 )
 
@@ -53,4 +81,4 @@ require(
 if Path(".github/workflows/route-task.yml").exists():
     raise SystemExit("legacy persistent WorkBuddy route workflow must be absent")
 
-print("OpenAI-only repository-dispatch chain validated")
+print("account-backed implementation dispatch chain validated")
