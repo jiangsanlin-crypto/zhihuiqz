@@ -1,0 +1,308 @@
+name: Real Server Deployment Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type RUN-REAL-DEPLOY-ACCEPTANCE
+        required: true
+      expected_sha:
+        description: Optional exact main SHA; blank resolves current main
+        required: false
+        default: ""
+      rollback_drill:
+        description: Run controlled rollback/recovery drill after 15m health passes
+        required: true
+        type: choice
+        default: "no"
+        options:
+          - "no"
+          - "yes"
+      rollback_confirm:
+        description: If rollback_drill=yes, type RUN-ROLLBACK-DRILL
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    if: github.event.inputs.confirm == 'RUN-REAL-DEPLOY-ACCEPTANCE'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate production policy and confirmations
+        env:
+          ROLLBACK_DRILL: ${{ inputs.rollback_drill }}
+          ROLLBACK_CONFIRM: ${{ inputs.rollback_confirm }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          policy=json.load(open("config/automation_policy.json"))
+          if policy.get("auto_production_enabled") is not True:
+              raise SystemExit("auto production is disabled")
+          if policy.get("emergency_stop") is True:
+              raise SystemExit("emergency stop is active")
+          if policy.get("require_ci_check") != "test":
+              raise SystemExit("required CI policy is not test")
+          print("PRODUCTION_POLICY_PASS")
+          PY
+
+          if [ "$ROLLBACK_DRILL" = "yes" ] && [ "$ROLLBACK_CONFIRM" != "RUN-ROLLBACK-DRILL" ]; then
+            echo "rollback drill requested without exact rollback confirmation"
+            exit 1
+          fi
+
+      - name: Resolve exact deployment SHA
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')"
+          EXPECTED_SHA="${REQUESTED_SHA:-$MAIN_SHA}"
+
+          if [ "$EXPECTED_SHA" != "$MAIN_SHA" ]; then
+            echo "requested SHA is not current main: requested=$EXPECTED_SHA main=$MAIN_SHA"
+            exit 1
+          fi
+
+          echo "expected_sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "EXPECTED_SHA=$EXPECTED_SHA" >> "$GITHUB_ENV"
+          echo "MAIN_SHA=$MAIN_SHA" >> "$GITHUB_ENV"
+          echo "SHA_RESOLUTION_PASS $EXPECTED_SHA"
+
+      - name: Validate real-server secrets
+        env:
+          HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          USER: ${{ secrets.ORCH_SERVER_USER }}
+          SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          set +x
+          for name in HOST USER SSH_KEY KNOWN_HOSTS; do
+            test -n "${!name:-}"
+          done
+          echo "SERVER_SECRETS_PRESENT"
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          set +x
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: SSH and Docker Compose preflight
+        env:
+          HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          USER: ${{ secrets.ORCH_SERVER_USER }}
+          PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          TARGET: ${{ secrets.ORCH_SERVER_PATH }}
+        run: |
+          set -euo pipefail
+          set +x
+          PORT="${PORT:-22}"
+          TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
+
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            -p "$PORT" "$USER@$HOST" bash -s -- "$TARGET" <<'REMOTE' \
+            | tee "$RUNNER_TEMP/server-preflight.log"
+          set -euo pipefail
+          TARGET="$1"
+
+          echo "SSH_PASS"
+          test -d "$TARGET"
+          cd "$TARGET"
+
+          test "$(git rev-parse --is-inside-work-tree)" = "true"
+          git rev-parse HEAD >/dev/null
+          git remote get-url origin >/dev/null
+
+          docker --version
+          docker compose version
+          docker info >/dev/null
+
+          if [ ! -f docker-compose.yml ] && [ ! -f docker-compose.yaml ] \
+             && [ ! -f compose.yml ] && [ ! -f compose.yaml ]; then
+            echo "compose file missing"
+            exit 1
+          fi
+
+          df -h "$TARGET"
+          docker system df
+          echo "DOCKER_COMPOSE_PREFLIGHT_PASS"
+          REMOTE
+
+      - name: Deploy exact main SHA and verify 0m 1m 5m 15m health
+        env:
+          HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          USER: ${{ secrets.ORCH_SERVER_USER }}
+          PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          TARGET: ${{ secrets.ORCH_SERVER_PATH }}
+          EXPECTED_SHA: ${{ steps.sha.outputs.expected_sha }}
+          ROLLBACK_DRILL: ${{ inputs.rollback_drill }}
+        run: |
+          set -euo pipefail
+          set +x
+          PORT="${PORT:-22}"
+          TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
+
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            -p "$PORT" "$USER@$HOST" bash -s -- \
+            "$TARGET" "$EXPECTED_SHA" "$ROLLBACK_DRILL" <<'REMOTE' \
+            | tee "$RUNNER_TEMP/deployment-acceptance.log"
+          set -euo pipefail
+
+          TARGET="$1"
+          EXPECTED_SHA="$2"
+          ROLLBACK_DRILL="$3"
+          cd "$TARGET"
+
+          PREV_SHA="$(git rev-parse HEAD)"
+          echo "PREV_SHA=$PREV_SHA"
+          echo "EXPECTED_SHA=$EXPECTED_SHA"
+
+          check_ready() {
+            LABEL="$1"
+            curl --fail --silent --show-error --max-time 10 \
+              http://127.0.0.1:8080/readyz \
+              >"/tmp/zhihuiqz-readyz-$LABEL.json"
+
+            python - "$LABEL" <<'PY'
+          import json, sys
+          label=sys.argv[1]
+          path=f"/tmp/zhihuiqz-readyz-{label}.json"
+          data=json.load(open(path))
+          if data.get("ok") is not True:
+              raise SystemExit(f"{label}: readyz ok != true")
+          for name, item in (data.get("checks") or {}).items():
+              if item.get("ok") is not True:
+                  raise SystemExit(f"{label}: readiness failed: {name}")
+          print(f"READYZ_{label}_PASS")
+          PY
+          }
+
+          rollback_to_prev() {
+            echo "ROLLBACK_BEGIN"
+            git reset --hard "$PREV_SHA"
+            test "$(git rev-parse HEAD)" = "$PREV_SHA"
+            docker compose up -d --build
+            check_ready "rollback"
+            echo "ROLLBACK_RECOVERY_PASS"
+          }
+
+          deployment_failed() {
+            rc=$?
+            echo "DEPLOYMENT_FAILURE_DETECTED rc=$rc"
+            rollback_to_prev || true
+            exit "$rc"
+          }
+
+          trap deployment_failed ERR
+
+          git fetch origin main
+          git cat-file -e "$EXPECTED_SHA^{commit}"
+          git reset --hard "$EXPECTED_SHA"
+
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          echo "SERVER_SHA_MATCH_PASS $ACTUAL_SHA"
+
+          docker compose up -d --build
+          docker compose ps
+          echo "DOCKER_COMPOSE_DEPLOY_PASS"
+
+          check_ready "0m"
+          sleep 60
+          check_ready "1m"
+          sleep 240
+          check_ready "5m"
+          sleep 600
+          check_ready "15m"
+
+          echo "STABILITY_0_1_5_15_PASS"
+
+          trap - ERR
+
+          if [ "$ROLLBACK_DRILL" = "yes" ]; then
+            echo "ROLLBACK_DRILL_BEGIN"
+            rollback_to_prev
+
+            git fetch origin main
+            git reset --hard "$EXPECTED_SHA"
+            test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+            docker compose up -d --build
+            check_ready "recovery0m"
+            sleep 60
+            check_ready "recovery1m"
+            echo "ROLLBACK_DRILL_PASS"
+          else
+            echo "ROLLBACK_DRILL_SKIPPED"
+          fi
+
+          FINAL_SHA="$(git rev-parse HEAD)"
+          test "$FINAL_SHA" = "$EXPECTED_SHA"
+          docker compose ps
+          echo "FINAL_SERVER_SHA_PASS $FINAL_SHA"
+          echo "DEPLOYMENT_ACCEPTANCE_PASS"
+          REMOTE
+
+      - name: Write acceptance evidence
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ steps.sha.outputs.expected_sha }}
+          ROLLBACK_DRILL: ${{ inputs.rollback_drill }}
+        run: |
+          {
+            echo "# Real Server Deployment Acceptance"
+            echo
+            echo "- Repository: $GITHUB_REPOSITORY"
+            echo "- Workflow run: $GITHUB_RUN_ID"
+            echo "- Expected/main SHA: ${EXPECTED_SHA:-unresolved}"
+            echo "- Rollback drill requested: $ROLLBACK_DRILL"
+            echo "- UTC completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            echo "## Server preflight"
+            echo '~~~text'
+            cat "$RUNNER_TEMP/server-preflight.log" 2>/dev/null || true
+            echo '~~~'
+            echo
+            echo "## Deployment / health / rollback evidence"
+            echo '~~~text'
+            cat "$RUNNER_TEMP/deployment-acceptance.log" 2>/dev/null || true
+            echo '~~~'
+          } > "$RUNNER_TEMP/deployment-acceptance-report.md"
+
+          cat "$RUNNER_TEMP/deployment-acceptance-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-server-deployment-acceptance-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/deployment-acceptance-report.md
+            ${{ runner.temp }}/server-preflight.log
+            ${{ runner.temp }}/deployment-acceptance.log
+
+      - name: Remove temporary SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
