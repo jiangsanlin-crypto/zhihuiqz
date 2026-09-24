@@ -23,7 +23,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for SPEC in "codex:10" "workbuddy:10" "chatgpt:70"; do
+          for SPEC in "codex:10" "workbuddy:10" "chatgpt:70" "workreview:70"; do
             AGENT="${SPEC%%:*}"
             LIMIT="${SPEC##*:}"
             THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
@@ -88,6 +88,28 @@ jobs:
               gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "<!-- agent-watchdog:timeout:workbuddy:$PHASE --> ⏱ Central watchdog: OpenAI Validator exceeded the $LIMIT-minute limit for $PHASE. The task was blocked instead of advancing."
             done < "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
           done
+
+      - name: Block Work review running longer than 120 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          AGENT="workreview"
+          LIMIT="120"
+          THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
+          QUERY="repo:${{ github.repository }} is:open label:status:running label:agent:$AGENT updated:<$THRESHOLD"
+
+          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/running-$AGENT.txt"
+
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            gh issue edit "$NUMBER" --repo "${{ github.repository }}" \
+              --remove-label "status:running" \
+              --add-label "status:blocked" \
+              --add-label "watchdog:timeout" || true
+
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}" \
+              --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: Work code review exceeded the 120-minute running limit. The task was blocked instead of advancing to Luna QA."
+          done < "$RUNNER_TEMP/running-$AGENT.txt"
 
       - name: Block ChatGPT running longer than 120 minutes
         env:
