@@ -1,13 +1,14 @@
 # Classification validation — GH-ISSUE-74
 
-This task does not classify jobs, candidates, skills, industries, locations,
-or Khmer terms. It reports names of existing readiness checks only. Khmer
-taxonomy, aliases, and recruitment matching behavior are therefore not
-applicable, and no classification dictionary changes are warranted.
+**Decision: Accepted; recruitment classification is not applicable**
 
-Treat check names as opaque string identifiers and return them in deterministic
-sorted order when their `ok` value is falsey or absent. The helper should not
-infer categories from a name or alter the check mapping.
+The helper reports names of existing readiness checks. It does not classify
+jobs, candidates, skills, industries, locations, or Khmer terms, and it does
+not change matching behavior or any taxonomy or alias data.
 
-**Decision:** No classification blocker; recruitment taxonomy review is not
-applicable to this task.
+Check names are treated as opaque identifiers. The helper selects names using
+the same falsey or missing `ok` semantics as `all_ok` and sorts the result
+deterministically. It does not infer categories from names or modify the input
+mapping.
+
+No classification blockers found.
