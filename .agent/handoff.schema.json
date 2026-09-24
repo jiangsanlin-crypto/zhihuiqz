@@ -16,8 +16,8 @@
   "properties": {
     "version": {"const": "1.0"},
     "task_id": {"type": "string", "minLength": 1},
-    "from_agent": {"enum": ["codex", "chatgpt", "workbuddy"]},
-    "to_agent": {"enum": ["codex", "chatgpt", "workbuddy", "human", null]},
+    "from_agent": {"enum": ["codex", "chatgpt", "workreview", "workbuddy"]},
+    "to_agent": {"enum": ["codex", "chatgpt", "workreview", "workbuddy", "human", null]},
     "phase": {"type": "string", "minLength": 1},
     "status": {"enum": ["success", "blocked", "failed"]},
     "summary": {"type": "string"},
