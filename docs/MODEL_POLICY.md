@@ -4,23 +4,21 @@
 
 | Work body | Execution surface | Model / reasoning | Normal workload |
 | --- | --- | --- | --- |
-| Codex product/release | OpenAI API | `gpt-5.6-luna` / high | active |
-| OpenAI Validator | OpenAI API | `gpt-5.6-luna` / high | active |
+| Codex product/release | OpenAI API | `gpt-6-luna` / high | active |
+| OpenAI Validator | OpenAI API | `gpt-6-luna` / high | active |
 | Primary implementation | Owner account ordinary ChatGPT | GPT-5.6 Sol / High | active |
 | Emergency implementation | Owner account ChatGPT Work | GPT-6 configuration | escalation only |
 | API Sol implementation workflow | GitHub Actions + API | retired | **zero** |
 
-## GPT-6 API constraint
+## GPT-6 API policy
 
-As of the current activation policy, the official OpenAI API model catalog used
-by this repository exposes GPT-5.6 Sol/Terra/Luna and does not expose a
-supported `gpt-6-luna` or `gpt-6-sol` API model ID.
+OpenAI now exposes GPT-6 Luna and GPT-6 Sol in the API as `gpt-6-luna` and `gpt-6-sol`.
 
 Therefore:
-- do not hard-code invented GPT-6 API IDs;
-- API Luna workers remain on `gpt-5.6-luna` with `high` reasoning;
-- when OpenAI publishes an official GPT-6 Luna API ID, update the workflow pins
-  and `scripts/check_model_policy.py` together in a reviewed PR.
+- Codex product/release and OpenAI Validator use `gpt-6-luna` with `high` reasoning;
+- `gpt-6-sol` is available for API use but is not used as the normal programmer;
+- the API Sol implementation workflow remains retired so its normal workload is zero;
+- implementation stays on the owner's account ChatGPT 5.6 Sol High worker, with Work GPT-6 as the emergency path.
 
 ## Primary programmer policy
 
