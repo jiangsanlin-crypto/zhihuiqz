@@ -61,7 +61,7 @@ jobs:
             gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
               --paginate > "$RUNNER_TEMP/comments-$PR_NUMBER.json"
 
-            python scripts/reconcile_handoff_state.py \
+            PYTHONPATH=. python scripts/reconcile_handoff_state.py \
               --pr-json "$RUNNER_TEMP/pr-$PR_NUMBER.json" \
               --comments-json "$RUNNER_TEMP/comments-$PR_NUMBER.json" \
               --repository-owner "$REPOSITORY_OWNER" \
