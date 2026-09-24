@@ -1,37 +1,49 @@
-# Strict Model Policy
+# Strict Model and Execution Policy
 
-## Runtime pins
+## Active runtime policy
 
-| Work body | Runtime model | Reasoning / mode | Fallback |
+| Work body | Execution surface | Model / reasoning | Normal workload |
 | --- | --- | --- | --- |
-| ChatGPT development sandbox | `gpt-5.6-sol` | `high` | disabled |
-| Codex product/release | `gpt-5.6-luna` | `max` | disabled |
-| WorkBuddy | `GLM-5.3-Flash` | WorkBuddy configuration | disabled |
+| Codex product/release | OpenAI API | `gpt-5.6-luna` / high | active |
+| OpenAI Validator | OpenAI API | `gpt-5.6-luna` / high | active |
+| Primary implementation | Owner account ordinary ChatGPT | GPT-5.6 Sol / High | active |
+| Emergency implementation | Owner account ChatGPT Work | GPT-6 configuration | escalation only |
+| API Sol implementation workflow | GitHub Actions + API | retired | **zero** |
 
-The OpenAI model IDs are hard-coded in the corresponding GitHub Actions
-workflows and validated by CI.
+## GPT-6 API constraint
 
-The requested future names `gpt-6.5-sol` and `gpt-6.5-luna` are not valid
-OpenAI API model IDs at activation time. The current official API IDs are
-`gpt-5.6-sol` and `gpt-5.6-luna`, so the system uses those exact IDs with
-the requested high/max reasoning levels. No fallback is permitted.
+As of the current activation policy, the official OpenAI API model catalog used
+by this repository exposes GPT-5.6 Sol/Terra/Luna and does not expose a
+supported `gpt-6-luna` or `gpt-6-sol` API model ID.
 
-If OpenAI later publishes the requested GPT-6.5 model IDs, change the two
-workflow pins and `scripts/check_model_policy.py` together in a human-reviewed
-PR.
+Therefore:
+- do not hard-code invented GPT-6 API IDs;
+- API Luna workers remain on `gpt-5.6-luna` with `high` reasoning;
+- when OpenAI publishes an official GPT-6 Luna API ID, update the workflow pins
+  and `scripts/check_model_policy.py` together in a reviewed PR.
 
-## WorkBuddy enforcement
+## Primary programmer policy
 
-WorkBuddy Cloud Task creation does not provide a trusted per-task model lock in
-this integration. Strict selection is therefore enforced at the dedicated
-WorkBuddy/Buddy App configuration layer:
+Normal implementation must not invoke `.github/workflows/chatgpt-dev.yml`,
+must not use the repository `OPENAI_API_KEY` for programmer reasoning, and
+must not dispatch `agent_chatgpt_implementation`.
 
-1. enable GLM-5.3-Flash;
-2. disable/remove alternate models and Auto from that dedicated app;
-3. set GLM-5.3-Flash as default;
-4. set `WORKBUDDY_MODEL=GLM-5.3-Flash`;
-5. only after visually confirming the app model whitelist, set
-   `WORKBUDDY_MODEL_LOCK_CONFIRMED=true`.
+The owner's account Chat worker consumes PRs labeled:
+- `agent:chatgpt`
+- `phase:implementation`
+- `status:todo`
 
-The Orchestrator `/readyz` endpoint remains unhealthy until the confirmation
-flag is enabled.
+It validates the prototype handoff and exact source SHA, implements on that PR
+head branch, obtains final-SHA CI evidence, publishes the implementation handoff
+and automatically relabels the PR for Validator QA.
+
+## Emergency Work policy
+
+ChatGPT Work GPT-6 remains an emergency/high-difficulty execution surface.
+Functional GitHub event/branch/CI behavior must be tested independently from
+model-identity verification. A Work run must never fabricate a model identity
+that the runtime does not expose.
+
+There is no fallback from the account primary programmer to an API Sol
+programmer. Escalation goes to the account Work path or blocks for operator
+attention.
