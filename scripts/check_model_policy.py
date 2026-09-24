@@ -22,7 +22,7 @@ def forbid(path: str, fragments: list[str]) -> None:
 require(
     ".github/workflows/codex-task.yml",
     [
-        "model: gpt-5.6-luna",
+        "model: gpt-6-luna",
         "effort: high",
     ],
 )
@@ -30,7 +30,7 @@ require(
 require(
     ".github/workflows/openai-validator.yml",
     [
-        "model: gpt-5.6-luna",
+        "model: gpt-6-luna",
         "effort: high",
         "pull_request:",
         "types: [labeled]",
@@ -70,7 +70,7 @@ require(
     "agents/workbuddy_prompt.md",
     [
         "No WorkBuddy OAuth or WorkBuddy Cloud dependency",
-        "Runtime model: `gpt-5.6-luna`",
+        "Runtime model: `gpt-6-luna`",
     ],
 )
 
