@@ -30,4 +30,4 @@ def static_checks(settings: Settings) -> dict[str, dict[str, Any]]:
 
 
 def all_ok(checks: dict[str, dict[str, Any]]) -> bool:
-    return all(bool(item.get("ok")) for item in checks.values())
+    return bool(checks) and all(bool(item.get("ok")) for item in checks.values())
