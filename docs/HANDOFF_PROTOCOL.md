@@ -6,6 +6,7 @@
 Codex / product_planning
   -> OpenAI Validator / prototype_validation
   -> Account ChatGPT / implementation
+  -> Work GPT-6 / code_review
   -> OpenAI Validator / qa_acceptance
   -> Codex / release_review
   -> OpenAI Validator / deployment_plan
@@ -21,10 +22,13 @@ Account ChatGPT uses logical agent ID `chatgpt`. The implementation execution
 surface is the owner's ordinary ChatGPT account using GPT-5.6 Sol High; the
 retired API Sol workflow is not part of the normal chain.
 
-An emergency ChatGPT Work GPT-6 task may substitute for the implementation
-execution surface when explicitly escalated. It still publishes the same
-logical `chatgpt -> workbuddy` implementation handoff so downstream gates stay
-stable.
+Work GPT-6 has two distinct duties:
+- mandatory independent code review after every normal ChatGPT implementation;
+- emergency/high-difficulty implementation or recovery when explicitly escalated.
+
+Normal implementation publishes `chatgpt -> workreview` with phase
+`implementation`. Work review publishes `workreview -> workbuddy` with phase
+`code_review` before Luna QA may start.
 
 Every phase publishes `<!-- agent-handoff:v1 -->` with task ID, ownership,
 phase, status, model/execution surface, artifacts, checks, blockers, source
@@ -61,6 +65,10 @@ immediately before merge.
   the retired API Sol implementation workflow.
 - The account Chat scheduled worker automatically consumes those queued PRs.
 - Account Chat publishes the implementation handoff, then adds
-  `agent:workbuddy + phase:qa` and adds `status:todo` last.
-- OpenAI Validator listens to that PR label event and begins QA automatically.
+  `agent:workreview + phase:code-review` and adds `status:todo` last.
+- The Work review worker audits the diff and may repair clear defects on the
+  same PR head branch. After exact-final-SHA CI succeeds it publishes the
+  code-review handoff, adds `agent:workbuddy + phase:qa`, and adds
+  `status:todo` last.
+- OpenAI Validator listens to that final QA label event and begins QA automatically.
 - The watchdog is recovery/timeout supervision, not the main transport.
