@@ -19,7 +19,7 @@ jobs:
         run: |
           gh label create "watchdog:timeout"             --repo "${{ github.repository }}"             --color B60205             --description "Agent exceeded its running-time policy"             --force
 
-      - name: Warn on queued handoffs older than 10 minutes
+      - name: Warn on queued handoffs after agent-specific limits
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
