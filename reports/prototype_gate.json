@@ -1,0 +1,4 @@
+{
+  "status": "ready",
+  "summary": "GH-ISSUE-65 is a scoped, implementable fail-closed readiness-helper change with a clear empty-input regression test. Non-empty semantics are explicitly preserved; recruitment taxonomy and multilingual UI are outside this issue."
+}
