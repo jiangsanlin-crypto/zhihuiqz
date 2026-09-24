@@ -63,6 +63,9 @@ require(
         "GPT-5.6 Sol",
         "Reasoning level: High",
         "repository API-backed Sol workflow is retired",
+        "to_agent: workreview",
+        "agent:workreview",
+        "phase:code-review",
     ],
 )
 
