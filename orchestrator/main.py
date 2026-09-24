@@ -102,9 +102,9 @@ def required_handoff(req):
         }
     if req.phase == "phase:qa":
         return {
-            "from_agent": "chatgpt",
+            "from_agent": "workreview",
             "to_agent": "workbuddy",
-            "phase": "implementation",
+            "phase": "code_review",
         }
     if req.phase == "phase:deploy":
         return {
@@ -212,6 +212,18 @@ async def process(event: dict) -> None:
 
     handoff = ensure_handoff(req, result)
     message = handoff_comment(handoff)
+    terminal_policy_text = None
+    if result.status == "success" and req.phase == "phase:qa":
+        issue_number = None
+        if req.task_id.startswith("GH-ISSUE-"):
+            try:
+                issue_number = int(req.task_id.removeprefix("GH-ISSUE-"))
+            except ValueError:
+                issue_number = None
+        if issue_number is not None:
+            terminal_policy_text = await github.get_issue_body(
+                req.repository, issue_number
+            )
 
     if github.configured:
         await github.comment(
@@ -229,6 +241,7 @@ async def process(event: dict) -> None:
                 result.status,
                 result.next_labels,
                 phase=req.phase,
+                terminal_policy_text=terminal_policy_text,
             ),
         )
 
@@ -236,6 +249,18 @@ async def process(event: dict) -> None:
             if req.phase == "phase:prototype":
                 event_type = "agent_chatgpt_implementation"
             elif req.phase == "phase:qa":
+                labels = next_labels(
+                    req.agent,
+                    req.source_kind,
+                    current_labels,
+                    result.status,
+                    result.next_labels,
+                    phase=req.phase,
+                    terminal_policy_text=terminal_policy_text,
+                )
+                if "agent:codex" not in labels or "phase:release" not in labels:
+                    store.finish(event["delivery_id"], "done")
+                    return
                 event_type = "agent_codex_release"
             elif req.phase == "phase:deploy":
                 event_type = "agent_execute_deployment"
