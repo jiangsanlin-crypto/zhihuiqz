@@ -26,6 +26,7 @@ jobs:
           gh label create "phase:prototype" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:implementation" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:code-review" --repo "${{ github.repository }}" --color C5DEF5 --force
+          gh label create "phase:escalation-repair" --repo "${{ github.repository }}" --color FBCA04 --force
           gh label create "phase:qa" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:release" --repo "${{ github.repository }}" --color C5DEF5 --force
           gh label create "phase:deploy" --repo "${{ github.repository }}" --color C5DEF5 --force
