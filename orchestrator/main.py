@@ -116,6 +116,16 @@ def required_handoff(req):
     raise ValueError(f"unsupported WorkBuddy phase: {req.phase}")
 
 
+async def require_current_head(req, expected_sha: str) -> None:
+    """Fail closed if the PR advanced beyond the revision being processed."""
+    live_sha = await github.get_pr_head_sha(req.repository, req.source_number)
+    if live_sha != expected_sha:
+        raise RuntimeError(
+            "CONCURRENT_BRANCH_ADVANCE: "
+            f"expected={expected_sha} live={live_sha}"
+        )
+
+
 async def process(event: dict) -> None:
     routed = build(
         event["event_name"],
@@ -130,6 +140,9 @@ async def process(event: dict) -> None:
 
     if not github.configured:
         raise RuntimeError("GitHub write-back is required for handoff validation")
+
+    # Webhook payloads are snapshots. Never claim or mutate a stale revision.
+    await require_current_head(req, req.source_sha)
 
     expected = required_handoff(req)
     comments = await github.list_comments(
@@ -198,6 +211,9 @@ async def process(event: dict) -> None:
                 checks=result.checks,
             )
         else:
+            # WorkBuddy may have taken time to run; re-check immediately before
+            # the first branch write so a concurrent advance is never overwritten.
+            await require_current_head(req, req.source_sha)
             new_sha = await github.update_pr_files(
                 req.repository,
                 req.source_number,
@@ -212,6 +228,8 @@ async def process(event: dict) -> None:
                 result.handoff.artifacts = result.artifacts
 
     handoff = ensure_handoff(req, result)
+    transition_sha = handoff.source_sha or req.source_sha
+    await require_current_head(req, transition_sha)
     message = handoff_comment(handoff)
     terminal_policy_text = None
     if result.status == "success" and req.phase == "phase:qa":
@@ -227,6 +245,9 @@ async def process(event: dict) -> None:
             )
 
     if github.configured:
+        # Policy lookup and report generation can race with a new push. Bind
+        # every outward transition to the exact live revision.
+        await require_current_head(req, transition_sha)
         await github.comment(
             req.repository,
             req.source_number,
@@ -244,6 +265,7 @@ async def process(event: dict) -> None:
                 f"release_enabled={str(policy.release_enabled).lower()}\n"
                 f"reason={policy.reason}",
             )
+        await require_current_head(req, transition_sha)
         await github.set_labels(
             req.repository,
             req.source_number,
@@ -282,6 +304,7 @@ async def process(event: dict) -> None:
                     f"no dispatch mapping for WorkBuddy phase {req.phase}"
                 )
 
+            await require_current_head(req, transition_sha)
             await github.repository_dispatch(
                 req.repository,
                 event_type,
