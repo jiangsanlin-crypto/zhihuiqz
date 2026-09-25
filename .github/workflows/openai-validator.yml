@@ -478,12 +478,16 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/validator-handoff.md"
 
           if [ "$PHASE" = "qa" ]; then
-            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"               --body "<!-- terminal-policy:v1 -->
-task_id=$TASK_ID
-source_sha=$SHA
-policy=${QA_TERMINAL_POLICY:-unresolved}
-release_enabled=${QA_RELEASE_ENABLED:-false}
-reason=${QA_TERMINAL_REASON:-missing terminal policy decision}"
+            printf '%s\n' \
+              '<!-- terminal-policy:v1 -->' \
+              "task_id=$TASK_ID" \
+              "source_sha=$SHA" \
+              "policy=${QA_TERMINAL_POLICY:-unresolved}" \
+              "release_enabled=${QA_RELEASE_ENABLED:-false}" \
+              "reason=${QA_TERMINAL_REASON:-missing terminal policy decision}" \
+              > "$RUNNER_TEMP/terminal-policy-comment.md"
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --body-file "$RUNNER_TEMP/terminal-policy-comment.md"
 
             if [ "${QA_RELEASE_ENABLED:-false}" != "true" ]; then
               gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"                 --remove-label "agent:workbuddy"                 --remove-label "phase:qa"                 --remove-label "status:running"                 --remove-label "status:todo"                 --add-label "status:review"                 --add-label "approval:production-required"
