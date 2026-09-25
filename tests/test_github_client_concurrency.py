@@ -133,3 +133,69 @@ def test_update_pr_files_rejects_fork_before_creating_commit(monkeypatch):
         )
 
     assert created == []
+
+
+def test_update_pr_files_recovers_exact_previously_published_commit(monkeypatch):
+    client = GitHubClient("token")
+    created = []
+    ref_updates = []
+
+    async def head_identity(repo, number):
+        return identity(head_sha="commit-1")
+
+    async def matches(repo, live, parent, changes, prefix):
+        assert (live, parent) == ("commit-1", "start")
+        assert [item.path for item in changes] == ["a.txt"]
+        return True
+
+    async def create_commit(*args):
+        created.append(True)
+        return "commit-2"
+
+    async def request(method, url, **kwargs):
+        ref_updates.append((method, url))
+        return SimpleNamespace(json=lambda: {})
+
+    monkeypatch.setattr(client, "get_pr_head_identity", head_identity)
+    monkeypatch.setattr(client, "_matches_published_report", matches)
+    monkeypatch.setattr(client, "_create_tree_commit", create_commit)
+    monkeypatch.setattr(client, "_request", request)
+
+    result = asyncio.run(
+        client.update_pr_files(
+            "owner/repo",
+            78,
+            [change("a.txt")],
+            expected_head_sha="start",
+        )
+    )
+
+    assert result == "commit-1"
+    assert created == []
+    assert ref_updates == []
+
+
+def test_update_pr_files_rejects_nonmatching_advanced_commit(monkeypatch):
+    client = GitHubClient("token")
+
+    async def head_identity(repo, number):
+        return identity(head_sha="foreign")
+
+    async def matches(repo, live, parent, changes, prefix):
+        return False
+
+    monkeypatch.setattr(client, "get_pr_head_identity", head_identity)
+    monkeypatch.setattr(client, "_matches_published_report", matches)
+
+    with pytest.raises(
+        RuntimeError,
+        match="CONCURRENT_BRANCH_ADVANCE: expected=start live=foreign",
+    ):
+        asyncio.run(
+            client.update_pr_files(
+                "owner/repo",
+                78,
+                [change("a.txt")],
+                expected_head_sha="start",
+            )
+        )
