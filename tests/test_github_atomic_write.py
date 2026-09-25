@@ -73,6 +73,25 @@ def test_multiple_report_files_are_one_commit_on_expected_parent(monkeypatch):
     assert not any("/contents/" in x[1] for x in calls)
 
 
+def test_identical_report_tree_does_not_create_another_head(monkeypatch):
+    client, calls = client_with_fake_github(monkeypatch)
+    original = client._request
+
+    async def same_tree(method, url, **kwargs):
+        response = await original(method, url, **kwargs)
+        if method == "POST" and url.endswith("/git/trees"):
+            return SimpleNamespace(json=lambda: {"sha": "old-tree"})
+        return response
+
+    monkeypatch.setattr(client, "_request", same_tree)
+    assert asyncio.run(client.update_pr_files(
+        "owner/repo", 7, [FileChange(path="reports/a.md", content="unchanged")],
+        expected_head_sha="old-head",
+    )) == "old-head"
+    assert not any(method == "PATCH" or (method == "POST" and url.endswith("/git/commits"))
+                   for method, url, _ in calls)
+
+
 @pytest.mark.parametrize("advance_before_ref,reject_ref", [(True, False), (False, True)])
 def test_concurrent_advance_never_partially_writes_pr_branch(
     monkeypatch, advance_before_ref, reject_ref,

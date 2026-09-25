@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.handoff_gate import extract_handoff, independent_review_pass
+from orchestrator.evidence_gate import successful_current_ci as _successful_current_ci
 
 TASK_ID_RE = re.compile(r"<!-- agent-task-id:([A-Za-z0-9._:-]+) -->")
 
@@ -37,30 +38,6 @@ def _labels(pr: dict[str, Any]) -> set[str]:
 def _task_id(pr: dict[str, Any]) -> str:
     match = TASK_ID_RE.search(str(pr.get("body") or ""))
     return match.group(1) if match else ""
-
-
-def _successful_current_ci(
-    ci_runs: dict[str, Any], *, head_sha: str, head_ref: str
-) -> int | None:
-    """Require the latest ordinary pull-request CI for this exact head to pass."""
-    runs = ci_runs.get("workflow_runs")
-    if not isinstance(runs, list):
-        return None
-    candidates = [
-        run for run in runs
-        if isinstance(run, dict)
-        and run.get("head_sha") == head_sha
-        and run.get("head_branch") == head_ref
-        and run.get("event") == "pull_request"
-        and run.get("path") == ".github/workflows/ci.yml"
-        and run.get("name") == "CI"
-    ]
-    if not candidates:
-        return None
-    latest = max(candidates, key=lambda run: (str(run.get("created_at") or ""), int(run.get("id") or 0)))
-    if latest.get("status") != "completed" or latest.get("conclusion") != "success":
-        return None
-    return int(latest["id"])
 
 
 def _owner_wait_evidence(
@@ -251,6 +228,7 @@ def decide_reconciliation(
         key=lambda item: (
             str(item[2].get("source_sha") or "") == head_sha,
             item[0],
+            int(item[1].get("id") or 0),
         ),
         reverse=True,
     )
@@ -278,10 +256,16 @@ def decide_reconciliation(
     ):
         return {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}
 
-    # Only machine timeout blockers may recover from a validated handoff.
+    # Only identified machine evidence/timeout blockers may auto-recover.
     # Policy/content blockers remain under explicit ownership.
+    qa_evidence_recovery = (
+        "recovery:qa-evidence" in labels
+        and target_phase == "phase:qa"
+        and "watchdog:timeout" not in labels
+    )
     if "status:blocked" in labels and (
-        "watchdog:timeout" not in labels
+        ("watchdog:timeout" not in labels and not qa_evidence_recovery)
+        or ("recovery:qa-evidence" in labels and not qa_evidence_recovery)
         or "recovery:technical" in labels
         or any(label.startswith("blocker:") for label in labels)
     ):
@@ -304,6 +288,10 @@ def decide_reconciliation(
     )
     if "status:blocked" in labels:
         desired_status = "status:todo"
+    resolved_labels = (
+        ({"recovery:qa-evidence"} if qa_evidence_recovery else {"watchdog:timeout"})
+        if "status:blocked" in labels else set()
+    )
     canonical = {target_agent, target_phase, desired_status}
     current_state = labels & STATE_LABELS
 
@@ -324,7 +312,9 @@ def decide_reconciliation(
 
     return {
         "action": "reconcile",
-        "reason": "validated_timeout_resolved" if "status:blocked" in labels else "valid_handoff_requires_state_convergence",
+        "reason": ("validated_qa_evidence_resolved" if qa_evidence_recovery
+                   else "validated_timeout_resolved" if "status:blocked" in labels
+                   else "valid_handoff_requires_state_convergence"),
         "task_id": task_id,
         "source_sha": head_sha,
         "from_agent": key[0],
@@ -335,12 +325,8 @@ def decide_reconciliation(
         "desired_status": desired_status,
         "ci_run_id": ci_run_id,
         "labels_before": sorted(labels),
-        "remove_labels": sorted((current_state - canonical) | (
-            {"watchdog:timeout"} if "status:blocked" in labels else set()
-        )),
-        "labels_after": sorted((labels - STATE_LABELS - (
-            {"watchdog:timeout"} if "status:blocked" in labels else set()
-        )) | canonical),
+        "remove_labels": sorted((current_state - canonical) | resolved_labels),
+        "labels_after": sorted((labels - STATE_LABELS - resolved_labels) | canonical),
     }
 
 

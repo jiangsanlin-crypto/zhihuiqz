@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from .adapters import HttpAgentAdapter
 from .config import settings
 from .github_client import GitHubClient
+from .evidence_gate import successful_current_ci, validate_qa_evidence
 from .handoff_gate import HandoffGateError, extract_handoff, validate_handoff
 from .models import AgentRunResult, Handoff
 from .readiness import all_ok, static_checks
@@ -224,9 +225,13 @@ async def require_current_state(
 
 
 async def process(event: dict) -> None:
+    operation_key = None
+
     def require_lease() -> None:
         if event.get("lease_id"):
             store.assert_lease(event["delivery_id"], event["lease_id"])
+            if operation_key is not None:
+                store.assert_operation(operation_key, event["delivery_id"], event["lease_id"])
 
     routed = build(
         event["event_name"],
@@ -242,6 +247,14 @@ async def process(event: dict) -> None:
 
     if not github.configured:
         raise RuntimeError("GitHub write-back is required for handoff validation")
+
+    if event.get("lease_id"):
+        operation_key = json.dumps(
+            [req.repository, req.source_number, req.source_sha, req.phase],
+            separators=(",", ":"),
+        )
+        if not store.claim_operation(operation_key, event["delivery_id"], event["lease_id"]):
+            raise RuntimeError("ANOTHER_WORKER_OWNS_LEASE")
 
     todo_workflow = {"agent:workbuddy", req.phase, "status:todo"}
     running_workflow = {"agent:workbuddy", req.phase, "status:running"}
@@ -293,6 +306,14 @@ async def process(event: dict) -> None:
                 "github-actions[bot]",
             },
         )
+        if req.phase == "phase:qa":
+            validate_qa_evidence(
+                comments, await github.list_workflow_runs(req.repository, req.source_sha),
+                task_id=req.task_id, head_sha=req.source_sha,
+                head_ref=req.source_ref,
+                trusted_login=req.repository.split("/", 1)[0],
+                pr_number=req.source_number,
+            )
     except HandoffGateError as exc:
         await require_current_state(req, req.source_sha, todo_workflow)
         require_lease()
@@ -311,6 +332,10 @@ async def process(event: dict) -> None:
             req, req.source_sha, todo_workflow
         )
         blocked_workflow = {"agent:workbuddy", req.phase, "status:blocked"}
+        if req.phase == "phase:qa":
+            # Reconciliation can clear this machine blocker only after fresh
+            # independent review and ordinary CI both pass for the live HEAD.
+            latest_labels = list(latest_labels) + ["recovery:qa-evidence"]
         require_lease()
         await github.set_labels(
             req.repository,
@@ -419,6 +444,13 @@ async def process(event: dict) -> None:
         req.source_number,
     )
     live_workflow = workflow_label_set(live_labels)
+    # A QA report commit changes the SHA. Its parent review cannot authorize
+    # owner wait or release on the new commit. Queue a fresh independent review
+    # after ordinary CI, persisting the intended transition for crash recovery.
+    post_qa_review_needed = (
+        result.status == "success" and req.phase == "phase:qa"
+        and transition_sha != event_source_sha
+    )
     transition_labels = (
         list(checkpoint["transition_labels"])
         if checkpoint and checkpoint.get("transition_labels")
@@ -433,6 +465,8 @@ async def process(event: dict) -> None:
         )
     )
     transition_workflow = workflow_label_set(transition_labels)
+    if post_qa_review_needed:
+        transition_workflow = {"agent:workreview", "phase:code-review", "status:todo"}
     transition_labels = project_workflow_labels(
         live_labels, transition_workflow
     )
@@ -511,6 +545,37 @@ async def process(event: dict) -> None:
                 f"reason={policy.reason}",
             )
 
+    if result.status == "success" and req.phase == "phase:qa" and not post_qa_review_needed:
+        # CI or review evidence can change while QA runs, even without a push.
+        validate_qa_evidence(
+            await github.list_comments(req.repository, req.source_number),
+            await github.list_workflow_runs(req.repository, transition_sha),
+            task_id=req.task_id, head_sha=transition_sha, head_ref=req.source_ref,
+            trusted_login=req.repository.split("/", 1)[0], pr_number=req.source_number,
+        )
+
+    if post_qa_review_needed:
+        final_runs = await github.list_workflow_runs(req.repository, transition_sha)
+        if successful_current_ci(
+            final_runs, head_sha=transition_sha, head_ref=req.source_ref
+        ) is None:
+            raise RuntimeError("QA_FINAL_SHA_CI_PENDING")
+        comments = await github.list_comments(req.repository, req.source_number)
+        marker_exists = any(
+            _trusted_comment(item, req.repository)
+            and "<!-- qa-postwrite-review:v1 -->" in str(item.get("body") or "")
+            and f"task_id={req.task_id}" in str(item.get("body") or "").splitlines()
+            and f"source_sha={transition_sha}" in str(item.get("body") or "").splitlines()
+            for item in comments
+        )
+        if not marker_exists:
+            await require_current_state(req, transition_sha, running_workflow)
+            require_lease()
+            await github.comment(req.repository, req.source_number,
+                "<!-- qa-postwrite-review:v1 -->\n"
+                f"task_id={req.task_id}\nsource_sha={transition_sha}\n"
+                "next=NEW_INDEPENDENT_WORK_CODE_REVIEW")
+
     if live_workflow == running_workflow:
         latest_labels = await require_current_state(
             req, transition_sha, running_workflow
@@ -529,6 +594,10 @@ async def process(event: dict) -> None:
             transition_sha,
             transition_workflow,
         )
+
+    if post_qa_review_needed:
+        store.finish(event["delivery_id"], "done", lease_id=event.get("lease_id"))
+        return
 
     if result.status == "success":
         if req.phase == "phase:prototype":
@@ -608,6 +677,7 @@ async def worker(stop: asyncio.Event) -> None:
                     "CONCURRENT_BRANCH_ADVANCE", "PR_BRANCH_IDENTITY_CHANGED",
                     "WORKFLOW_STATE_SUPERSEDED", "CHECKPOINT_SOURCE_SHA_MISMATCH",
                     "WORKER_LEASE_LOST",
+                    "WORKER_OPERATION_LEASE_LOST", "ANOTHER_WORKER_OWNS_LEASE",
                 )
             )
             store.finish(

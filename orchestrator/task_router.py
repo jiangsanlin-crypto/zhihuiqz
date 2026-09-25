@@ -41,16 +41,28 @@ def build(event, payload, repo):
     if not obj or not isinstance(payload.get("number"), int) or payload.get("action") != "labeled":
         return None
     labels = label_names(obj.get("labels"))
-    if "status:done" in labels or "status:todo" not in labels or "agent:workbuddy" not in labels:
+    if ({x for x in labels if x.startswith("agent:")} != {"agent:workbuddy"}
+        or {x for x in labels if x.startswith("status:")} != {"status:todo"}
+        or any(x.startswith("approval:") for x in labels)):
         return None
-    added = (payload.get("label") or {}).get("name")
-    if added != "agent:workbuddy":
+    phases = {x for x in labels if x.startswith("phase:")}
+    if len(phases) != 1:
         return None
-    phase = phase_from_labels(labels)
+    phase = next(iter(phases))
     if phase not in {"phase:prototype", "phase:qa", "phase:deploy"}:
+        return None
+    # Any routing label may be the final write that completes READY.
+    added = (payload.get("label") or {}).get("name")
+    if added not in {"agent:workbuddy", phase, "status:todo"}:
+        return None
+    if obj.get("state", "open") != "open" or obj.get("merged_at"):
+        return None
+    if (payload.get("repository") or {}).get("full_name", repo) != repo:
         return None
     number = payload["number"]
     head = obj.get("head") or {}
+    if not head.get("ref") or not head.get("sha"):
+        return None
     req = AgentRunRequest(
         task_id=correlated_task_id("pull_request", obj, number), agent="workbuddy",
         repository=repo, source_kind="pull_request", source_number=number,

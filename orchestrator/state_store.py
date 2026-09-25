@@ -55,6 +55,12 @@ class StateStore:
                   lease_id TEXT,
                   lease_expires_at TEXT,
                   next_retry_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS operation_claims(
+                  operation_key TEXT PRIMARY KEY,
+                  delivery_id TEXT NOT NULL,
+                  lease_id TEXT NOT NULL,
+                  claimed_at TEXT NOT NULL
                 );"""
             )
             columns = {
@@ -177,6 +183,56 @@ class StateStore:
                      AND lease_expires_at>?""",
                 (expires_at, timestamp, delivery_id, lease_id, timestamp),
             ).rowcount == 1
+
+    def claim_operation(self, operation_key: str, delivery_id: str, lease_id: str) -> bool:
+        """Fence duplicate deliveries for one repo/PR/SHA/phase in this DB.
+
+        The owning event's renewable lease is authoritative. A second process
+        sharing this database cannot acquire the operation until that lease
+        expires or the event reaches a terminal state.
+        """
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            timestamp = now()
+            own = connection.execute(
+                """SELECT 1 FROM events WHERE delivery_id=? AND lease_id=?
+                   AND status='running' AND lease_expires_at>?""",
+                (delivery_id, lease_id, timestamp),
+            ).fetchone()
+            if own is None:
+                raise RuntimeError("WORKER_LEASE_LOST")
+            active = connection.execute(
+                """SELECT c.delivery_id, c.lease_id FROM operation_claims c
+                   JOIN events e ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND e.status='running'
+                     AND e.lease_expires_at>?""",
+                (operation_key, timestamp),
+            ).fetchone()
+            if active is not None:
+                owned = active["delivery_id"] == delivery_id and active["lease_id"] == lease_id
+                connection.execute("COMMIT")
+                return owned
+            connection.execute(
+                """INSERT INTO operation_claims(operation_key,delivery_id,lease_id,claimed_at)
+                   VALUES(?,?,?,?) ON CONFLICT(operation_key) DO UPDATE SET
+                     delivery_id=excluded.delivery_id, lease_id=excluded.lease_id,
+                     claimed_at=excluded.claimed_at""",
+                (operation_key, delivery_id, lease_id, timestamp),
+            )
+            connection.execute("COMMIT")
+            return True
+
+    def assert_operation(self, operation_key: str, delivery_id: str, lease_id: str) -> None:
+        with self.lock, self.conn() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM operation_claims c JOIN events e
+                   ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND c.delivery_id=? AND c.lease_id=?
+                     AND e.status='running' AND e.lease_expires_at>?""",
+                (operation_key, delivery_id, lease_id, now()),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("WORKER_OPERATION_LEASE_LOST")
 
     def assert_lease(self, delivery_id: str, lease_id: str) -> None:
         with self.lock, self.conn() as connection:

@@ -93,5 +93,5 @@ def test_handoff_gate_block_keeps_concurrent_unrelated_label(monkeypatch):
         "payload": {},
     }))
     assert written == [[
-        "agent:workbuddy", "keep:concurrent", "phase:qa", "status:blocked",
+        "agent:workbuddy", "keep:concurrent", "phase:qa", "recovery:qa-evidence", "status:blocked",
     ]]

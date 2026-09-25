@@ -122,6 +122,22 @@ class GitHubClient:
         )
         return response.json()
 
+    async def list_workflow_runs(self, repo: str, head_sha: str) -> dict[str, Any]:
+        runs: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = await self._request(
+                "GET", f"{self.base}/repos/{repo}/actions/runs",
+                params={"head_sha": head_sha, "per_page": 100, "page": page},
+            )
+            batch = response.json().get("workflow_runs")
+            if not isinstance(batch, list):
+                raise ValueError("GitHub workflow runs response is not a list")
+            runs.extend(batch)
+            if len(batch) < 100:
+                return {"workflow_runs": runs}
+            page += 1
+
     async def _matches_published_report(
         self, repo: str, live_sha: str, expected_parent: str,
         changes: list[FileChange], message_prefix: str,
@@ -233,6 +249,15 @@ class GitHubClient:
             "POST", f"{url}/git/trees",
             json={"base_tree": parent["tree"]["sha"], "tree": tree_entries},
         )).json()
+        if tree["sha"] == parent["tree"]["sha"]:
+            # Re-running QA with identical reports must not manufacture a new
+            # HEAD and invalidate the completed independent review forever.
+            unchanged = await live_pr()
+            if (unchanged["head"]["sha"] != expected
+                or unchanged["head"]["ref"] != branch
+                or unchanged["base"]["ref"] != original["base"]["ref"]):
+                raise RuntimeError("CONCURRENT_BRANCH_ADVANCE: unchanged reports")
+            return expected
         commit = (await self._request(
             "POST", f"{url}/git/commits",
             json={
