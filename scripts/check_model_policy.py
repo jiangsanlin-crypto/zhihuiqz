@@ -96,10 +96,17 @@ require(
         "issue_comment:",
         'cron: "*/5 * * * *"',
         "scripts/reconcile_handoff_state.py",
-        "agent:workreview",
-        "phase:code-review",
-        "agent:workbuddy",
-        "phase:qa",
-        '--add-label "$DESIRED_STATUS"',
+        "--ci-runs-json",
+        "labels_after",
+        "agent_workbuddy_qa",
+    ],
+)
+
+require(
+    "scripts/reconcile_handoff_state.py",
+    [
+        '("chatgpt", "workreview", "implementation")',
+        '("workreview", "workbuddy", "code_review")',
+        "current_sha_ci_not_success",
     ],
 )
