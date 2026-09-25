@@ -122,6 +122,48 @@ class GitHubClient:
         )
         return response.json()
 
+    async def _matches_published_report(
+        self, repo: str, live_sha: str, expected_parent: str,
+        changes: list[FileChange], message_prefix: str,
+    ) -> bool:
+        """Accept only an exact report commit published before a worker crash."""
+        response = await self._request(
+            "GET", f"{self.base}/repos/{repo}/commits/{live_sha}"
+        )
+        data = response.json()
+        parents = [
+            str(parent.get("sha") or "") for parent in data.get("parents", [])
+            if isinstance(parent, dict)
+        ]
+        paths = [change.path for change in changes]
+        actual = [
+            str(item.get("filename") or "") for item in data.get("files", [])
+            if isinstance(item, dict)
+        ]
+        if (parents != [expected_parent]
+            or not str((data.get("commit") or {}).get("message") or "").startswith(
+                f"{message_prefix}:"
+            )
+            or len(paths) != len(set(paths))
+            or sorted(paths) != sorted(actual)):
+            return False
+        for change in changes:
+            content_response = await self._request(
+                "GET", f"{self.base}/repos/{repo}/contents/{quote(change.path, safe='/')}",
+                params={"ref": live_sha},
+            )
+            content_data = content_response.json()
+            if content_data.get("encoding") != "base64":
+                return False
+            encoded = "".join(str(content_data.get("content") or "").splitlines())
+            try:
+                published = base64.b64decode(encoded, validate=True).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                return False
+            if published != change.content:
+                return False
+        return True
+
     async def update_pr_files(
         self,
         repo: str,
@@ -162,6 +204,11 @@ class GitHubClient:
         branch = original["head"]["ref"]
         expected = expected_head_sha or original["head"]["sha"]
         if original["head"]["sha"] != expected:
+            if expected_head_sha and await self._matches_published_report(
+                repo, str(original["head"]["sha"]), expected, files,
+                message_prefix,
+            ):
+                return str(original["head"]["sha"])
             raise RuntimeError("CONCURRENT_BRANCH_ADVANCE: initial head changed")
         if not files:
             return expected

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -99,4 +100,49 @@ def test_stale_initial_head_and_duplicate_paths_fail_closed(monkeypatch):
             "owner/repo", 7, [FileChange(path="a", content="x"),
                               FileChange(path="a", content="y")],
             expected_head_sha="old-head",
+        ))
+
+
+def test_crash_replay_recognizes_only_exact_wrapped_report_commit(monkeypatch):
+    client = GitHubClient("test-token")
+    calls = []
+
+    async def request(method, url, **kwargs):
+        calls.append((method, url))
+        if url.endswith("/pulls/7"):
+            result = {
+                "state": "open", "merged_at": None,
+                "base": {"ref": "main"},
+                "head": {"sha": "published", "ref": "feature/reports",
+                         "repo": {"full_name": "owner/repo"}},
+            }
+        elif url.endswith("/commits/published"):
+            result = {
+                "parents": [{"sha": "reviewed"}],
+                "commit": {"message": "reports: WorkBuddy: update 1 report file(s)"},
+                "files": [{"filename": "reports/a.md"}],
+            }
+        elif url.endswith("/contents/reports/a.md"):
+            assert kwargs["params"] == {"ref": "published"}
+            result = {
+                "encoding": "base64",
+                "content": base64.encodebytes(b"alpha" * 30).decode(),
+            }
+        else:
+            raise AssertionError(url)
+        return SimpleNamespace(json=lambda: result)
+
+    monkeypatch.setattr(client, "_request", request)
+    changes = [FileChange(path="reports/a.md", content="alpha" * 30)]
+    assert asyncio.run(client.update_pr_files(
+        "owner/repo", 7, changes, message_prefix="reports: WorkBuddy",
+        expected_head_sha="reviewed",
+    )) == "published"
+    assert not any(method in {"POST", "PATCH"} for method, _ in calls)
+    with pytest.raises(RuntimeError, match="CONCURRENT_BRANCH_ADVANCE"):
+        asyncio.run(client.update_pr_files(
+            "owner/repo", 7,
+            [FileChange(path="reports/a.md", content="changed")],
+            message_prefix="reports: WorkBuddy",
+            expected_head_sha="reviewed",
         ))

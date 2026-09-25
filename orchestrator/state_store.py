@@ -48,9 +48,18 @@ class StateStore:
                   attempts INTEGER DEFAULT 0,
                   error TEXT,
                   created_at TEXT,
-                  updated_at TEXT
+                  updated_at TEXT,
+                  checkpoint_json TEXT
                 );"""
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(events)")
+            }
+            if "checkpoint_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE events ADD COLUMN checkpoint_json TEXT"
+                )
 
     def recover_interrupted(self) -> int:
         """Requeue events left running by a previous process instance."""
@@ -114,7 +123,21 @@ class StateStore:
                 "event_name": row["event_name"],
                 "payload": json.loads(row["payload_json"]),
                 "attempts": row["attempts"] + 1,
+                "checkpoint": (
+                    json.loads(row["checkpoint_json"])
+                    if row["checkpoint_json"] else None
+                ),
             }
+
+    def checkpoint(self, delivery_id: str, payload: dict) -> None:
+        """Persist replay data before an external branch mutation."""
+        with self.lock, self.conn() as connection:
+            connection.execute(
+                """UPDATE events
+                   SET checkpoint_json=?, updated_at=?
+                   WHERE delivery_id=?""",
+                (json.dumps(payload), now(), delivery_id),
+            )
 
     def finish(
         self,

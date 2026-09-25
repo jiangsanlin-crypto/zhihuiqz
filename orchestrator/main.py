@@ -174,9 +174,30 @@ async def process(event: dict) -> None:
 
     todo_workflow = {"agent:workbuddy", req.phase, "status:todo"}
     running_workflow = {"agent:workbuddy", req.phase, "status:running"}
-    current_labels = await require_current_state(
-        req, req.source_sha, todo_workflow
-    )
+    checkpoint = event.get("checkpoint")
+    if checkpoint:
+        if checkpoint.get("source_sha") != req.source_sha:
+            raise RuntimeError("CHECKPOINT_SOURCE_SHA_MISMATCH")
+        snapshot = await github.get_pr_snapshot(
+            req.repository, req.source_number
+        )
+        head = snapshot.get("head") or {}
+        base = snapshot.get("base") or {}
+        if (snapshot.get("state") != "open" or snapshot.get("merged_at")
+            or (head.get("repo") or {}).get("full_name") != req.repository
+            or not head.get("ref")
+            or head.get("ref") in {"main", base.get("ref")}
+            or head.get("ref") != req.source_ref):
+            raise RuntimeError("CHECKPOINT_PR_BRANCH_IDENTITY_CHANGED")
+        current_labels = await github.get_issue_labels(
+            req.repository, req.source_number
+        )
+        if workflow_label_set(current_labels) != running_workflow:
+            raise RuntimeError("CHECKPOINT_WORKFLOW_STATE_SUPERSEDED")
+    else:
+        current_labels = await require_current_state(
+            req, req.source_sha, todo_workflow
+        )
     expected = required_handoff(req)
     comments = await github.list_comments(
         req.repository,
@@ -227,7 +248,7 @@ async def process(event: dict) -> None:
         store.finish(event["delivery_id"], "done")
         return
 
-    if github.configured:
+    if github.configured and not checkpoint:
         current_labels = await require_current_state(
             req, req.source_sha, todo_workflow
         )
@@ -244,7 +265,16 @@ async def process(event: dict) -> None:
         )
         await require_current_state(req, req.source_sha, running_workflow)
 
-    result = await workbuddy.run(req)
+    if checkpoint:
+        result = AgentRunResult.model_validate(checkpoint["result"])
+    else:
+        result = await workbuddy.run(req)
+        if result.status == "success" and result.changes:
+            store.checkpoint(
+                event["delivery_id"],
+                {"source_sha": req.source_sha,
+                 "result": result.model_dump(mode="json")},
+            )
 
     if result.status == "success" and result.changes:
         if not github.configured:
@@ -256,7 +286,11 @@ async def process(event: dict) -> None:
                 checks=result.checks,
             )
         else:
-            await require_current_state(req, req.source_sha, running_workflow)
+            if not checkpoint:
+                await require_current_state(
+                    req, req.source_sha, running_workflow
+                )
+            checkpoint_source_sha = req.source_sha
             new_sha = await github.update_pr_files(
                 req.repository,
                 req.source_number,
@@ -273,6 +307,11 @@ async def process(event: dict) -> None:
             if result.handoff:
                 result.handoff.source_sha = new_sha
                 result.handoff.artifacts = result.artifacts
+            store.checkpoint(
+                event["delivery_id"],
+                {"source_sha": checkpoint_source_sha, "published_sha": new_sha,
+                 "result": result.model_dump(mode="json")},
+            )
 
     handoff = ensure_handoff(req, result)
     transition_sha = handoff.source_sha or req.source_sha
