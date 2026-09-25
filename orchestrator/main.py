@@ -73,12 +73,17 @@ def ensure_handoff(req, result: AgentRunResult) -> Handoff:
     )
 
 
-def handoff_comment(handoff: Handoff) -> str:
-    data = handoff.model_dump()
+def canonical_handoff_payload(handoff: Handoff) -> dict:
+    data = handoff.model_dump(mode="json")
     for check in data.get("checks", []):
         check["detail"] = str(check.get("detail") or "")[-2000:]
+    return data
 
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
+
+def handoff_comment(handoff: Handoff) -> str:
+    payload = json.dumps(
+        canonical_handoff_payload(handoff), ensure_ascii=False, indent=2
+    )
     return (
         "<!-- agent-handoff:v1 -->\n"
         f"### Agent handoff: {handoff.from_agent} → "
@@ -102,11 +107,7 @@ def _trusted_comment(comment: dict, repository: str) -> bool:
 def handoff_comment_exists(
     comments: list[dict], handoff: Handoff, repository: str
 ) -> bool:
-    expected = handoff.model_dump(mode="json")
-    keys = (
-        "task_id", "from_agent", "to_agent", "phase", "status",
-        "source_sha", "blockers",
-    )
+    expected = canonical_handoff_payload(handoff)
     for comment in comments:
         if not _trusted_comment(comment, repository):
             continue
@@ -114,7 +115,7 @@ def handoff_comment_exists(
             payload = extract_handoff(str(comment.get("body") or ""))
         except HandoffGateError:
             continue
-        if payload and all(payload.get(key) == expected.get(key) for key in keys):
+        if payload == expected:
             return True
     return False
 
