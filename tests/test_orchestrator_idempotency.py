@@ -38,6 +38,20 @@ def test_handoff_comment_is_deduplicated_only_for_exact_trusted_payload():
         "owner/repo",
     )
 
+    changed_summary = value.model_copy(update={"summary": "different"})
+    assert not main.handoff_comment_exists(
+        [comment(body)],
+        changed_summary,
+        "owner/repo",
+    )
+
+    changed_artifacts = value.model_copy(update={"artifacts": ["other.json"]})
+    assert not main.handoff_comment_exists(
+        [comment(body)],
+        changed_artifacts,
+        "owner/repo",
+    )
+
 
 def test_terminal_policy_comment_is_deduplicated_by_task_and_sha():
     body = (
