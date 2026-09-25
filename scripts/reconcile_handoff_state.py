@@ -182,8 +182,13 @@ def decide_reconciliation(
     ):
         return {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}
 
-    # A previously valid handoff must not resurrect a blocked PR.
-    if "status:blocked" in labels:
+    # Only machine timeout blockers may recover from a validated handoff.
+    # Policy/content blockers remain under explicit ownership.
+    if "status:blocked" in labels and (
+        "watchdog:timeout" not in labels
+        or "recovery:technical" in labels
+        or any(label.startswith("blocker:") for label in labels)
+    ):
         return {"action": "noop", "reason": "blocked_requires_recovery"}
 
     # A success handoff is not a substitute for GitHub's current-head CI.
@@ -201,6 +206,8 @@ def decide_reconciliation(
         if {target_agent, target_phase, "status:running"}.issubset(labels)
         else "status:todo"
     )
+    if "status:blocked" in labels:
+        desired_status = "status:todo"
     canonical = {target_agent, target_phase, desired_status}
     current_state = labels & STATE_LABELS
 
@@ -221,7 +228,7 @@ def decide_reconciliation(
 
     return {
         "action": "reconcile",
-        "reason": "valid_handoff_requires_state_convergence",
+        "reason": "validated_timeout_resolved" if "status:blocked" in labels else "valid_handoff_requires_state_convergence",
         "task_id": task_id,
         "source_sha": head_sha,
         "from_agent": key[0],
@@ -232,8 +239,12 @@ def decide_reconciliation(
         "desired_status": desired_status,
         "ci_run_id": ci_run_id,
         "labels_before": sorted(labels),
-        "remove_labels": sorted(current_state - canonical),
-        "labels_after": sorted((labels - STATE_LABELS) | canonical),
+        "remove_labels": sorted((current_state - canonical) | (
+            {"watchdog:timeout"} if "status:blocked" in labels else set()
+        )),
+        "labels_after": sorted((labels - STATE_LABELS - (
+            {"watchdog:timeout"} if "status:blocked" in labels else set()
+        )) | canonical),
     }
 
 

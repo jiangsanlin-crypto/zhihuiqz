@@ -183,6 +183,26 @@ def test_blocked_review_is_never_resurrected_by_old_handoff():
     assert decision == {"action": "noop", "reason": "blocked_requires_recovery"}
 
 
+def test_machine_timeout_resolves_from_exact_sha_success_handoff_and_ci():
+    state = pr(["agent:chatgpt", "phase:implementation", "status:blocked",
+                "watchdog:timeout", "priority:high"])
+    decision = decide_reconciliation(
+        state, [comment(handoff())], repository_owner=OWNER, ci_runs=ci(),
+    )
+    assert decision["action"] == "reconcile"
+    assert decision["reason"] == "validated_timeout_resolved"
+    assert decision["labels_after"] == [
+        "agent:workreview", "phase:code-review", "priority:high", "status:todo"
+    ]
+    assert "watchdog:timeout" in decision["remove_labels"]
+    assert decide_reconciliation(
+        state, [comment(handoff(sha="old"))], repository_owner=OWNER, ci_runs=ci()
+    ) == {"action": "noop", "reason": "source_sha_mismatch"}
+    assert decide_reconciliation(
+        state, [comment(handoff())], repository_owner=OWNER, ci_runs=ci(conclusion="failure")
+    ) == {"action": "noop", "reason": "current_sha_ci_not_success"}
+
+
 def test_successful_handoff_cannot_advance_qa_without_current_sha_ci():
     payload = handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review")
     state = pr(["agent:workreview", "phase:code-review", "status:running"])

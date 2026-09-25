@@ -114,6 +114,7 @@ require(
         "canonical_qa_may_need_dispatch",
         "converge_owner_wait",
         "missing_independent_current_sha_review_pass",
+        "validated_timeout_resolved",
     ],
 )
 
@@ -124,5 +125,7 @@ require(
         '--paginate --jq',
         'head_sha == $sha',
         "steps.context.outputs.source_sha",
+        "Pin trusted gate code from the default branch",
+        "PYTHONPATH=\"$RUNNER_TEMP/trusted\"",
     ],
 )

@@ -144,6 +144,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Pin trusted gate code from the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CONTROL_SHA="$(gh api "repos/${{ github.repository }}/branches/${{ github.event.repository.default_branch }}" --jq '.commit.sha')"
+          test -n "$CONTROL_SHA"
+          mkdir -p "$RUNNER_TEMP/trusted/scripts" "$RUNNER_TEMP/trusted/orchestrator"
+          for PATH_IN_REPO in scripts/validate_handoff.py scripts/runtime_secret.py \
+            orchestrator/__init__.py orchestrator/handoff_gate.py orchestrator/terminal_policy.py; do
+            gh api "repos/${{ github.repository }}/contents/$PATH_IN_REPO?ref=$CONTROL_SHA" \
+              --jq '.content' | base64 -d > "$RUNNER_TEMP/trusted/$PATH_IN_REPO"
+          done
+          echo "Trusted gate revision: $CONTROL_SHA"
+
       - name: Validate previous handoff
         id: handoff_gate
         env:
@@ -180,7 +195,7 @@ jobs:
               '[.[] | select(.head_sha == $sha and .head_branch == $branch and .name == "CI" and .path == ".github/workflows/ci.yml" and .event == "pull_request")] | sort_by(.created_at, .id) | last | .status == "completed" and .conclusion == "success"' \
               "$RUNNER_TEMP/ci-runs.json" >/dev/null
           fi
-          PYTHONPATH=. python scripts/validate_handoff.py \
+          PYTHONPATH="$RUNNER_TEMP/trusted" python "$RUNNER_TEMP/trusted/scripts/validate_handoff.py" \
             --comments "$RUNNER_TEMP/comments.json" --task-id "$TASK_ID" \
             --from-agent "$PREV_FROM" --to-agent "$PREV_TO" \
             --phase "$PREV_PHASE" --source-sha "$SOURCE_SHA" \
@@ -188,14 +203,6 @@ jobs:
             --trusted-login "github-actions[bot]" "${REVIEW_GATE[@]}"
 
           jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
-
-      - name: Resolve OpenAI API key
-        id: openai_key
-        env:
-          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
-          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
 
       - name: Mark validation running
         env:
@@ -314,6 +321,14 @@ jobs:
             fi
           } > "$RUNNER_TEMP/validator-prompt.md"
 
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python "$RUNNER_TEMP/trusted/scripts/runtime_secret.py" OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
       - name: Run OpenAI validation agent
         id: validator
         continue-on-error: true
@@ -416,7 +431,7 @@ jobs:
             BODY="$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json body --jq '.body // ""')"
           fi
           export BODY
-          PYTHONPATH=. python - <<'PY' > "$RUNNER_TEMP/terminal-policy.env"
+          PYTHONPATH="$RUNNER_TEMP/trusted" python - <<'PY' > "$RUNNER_TEMP/terminal-policy.env"
           import os
           from orchestrator.terminal_policy import resolve_terminal_policy
           decision = resolve_terminal_policy(os.environ.get("BODY", ""))
