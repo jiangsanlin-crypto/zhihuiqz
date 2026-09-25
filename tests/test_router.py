@@ -73,3 +73,28 @@ def test_qa_conflicting_policy_fails_closed_without_release():
     labels = next_labels("workbuddy","pull_request",["agent:workbuddy","phase:qa","status:running"],"success",[],phase="phase:qa",terminal_policy_text="terminal_policy: release_enabled\nterminal_policy: owner_approval_required")
     assert "status:review" in labels
     assert "agent:codex" not in labels and "phase:release" not in labels
+
+
+def test_qa_explicit_release_labels_cannot_bypass_owner_approval():
+    labels = next_labels(
+        "workbuddy",
+        "pull_request",
+        ["agent:workbuddy", "phase:qa", "status:running"],
+        "success",
+        ["agent:codex", "phase:release", "status:todo"],
+        phase="phase:qa",
+        terminal_policy_text="terminal_policy: owner_approval_required",
+    )
+    assert labels == ["approval:production-required", "status:review"]
+
+
+def test_qa_explicit_release_labels_cannot_bypass_missing_policy():
+    labels = next_labels(
+        "workbuddy",
+        "pull_request",
+        ["agent:workbuddy", "phase:qa", "status:running"],
+        "success",
+        ["agent:codex", "phase:release", "status:todo"],
+        phase="phase:qa",
+    )
+    assert labels == ["approval:production-required", "status:review"]
