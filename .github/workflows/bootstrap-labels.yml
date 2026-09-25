@@ -37,6 +37,7 @@ jobs:
           gh label create "status:todo" --repo "${{ github.repository }}" --color D4C5F9 --force
           gh label create "status:running" --repo "${{ github.repository }}" --color FBCA04 --force
           gh label create "status:blocked" --repo "${{ github.repository }}" --color B60205 --force
+          gh label create "recovery:technical" --repo "${{ github.repository }}" --color FEF2C0 --description "Retryable technical workflow failure" --force
           gh label create "status:review" --repo "${{ github.repository }}" --color FEF2C0 --force
           gh label create "status:done" --repo "${{ github.repository }}" --color 0E8A16 --force
           gh label create "status:deployed" --repo "${{ github.repository }}" --color 0E8A16 --force
