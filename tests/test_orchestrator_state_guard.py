@@ -60,3 +60,41 @@ def test_current_state_rejects_mixed_status_or_owner(monkeypatch):
                 ],
             )
         )
+
+
+def test_project_workflow_labels_preserves_latest_unrelated_labels():
+    result = main.project_workflow_labels(
+        [
+            "agent:workbuddy",
+            "phase:qa",
+            "status:running",
+            "priority:p1",
+            "domain:billing",
+        ],
+        {"status:review", "approval:production-required"},
+    )
+    assert result == [
+        "approval:production-required",
+        "domain:billing",
+        "priority:p1",
+        "status:review",
+    ]
+
+
+def test_project_workflow_labels_drops_superseded_workflow_labels():
+    result = main.project_workflow_labels(
+        [
+            "agent:workbuddy",
+            "phase:qa",
+            "status:running",
+            "status:todo",
+            "keep:me",
+        ],
+        {"agent:codex", "phase:release", "status:todo"},
+    )
+    assert result == [
+        "agent:codex",
+        "keep:me",
+        "phase:release",
+        "status:todo",
+    ]
