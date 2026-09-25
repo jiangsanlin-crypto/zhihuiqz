@@ -194,6 +194,19 @@ def test_independent_review_requires_fresh_claim_and_explicit_pass():
         "body": "<!-- work-review-requeue:v1 -->\ntask_id=GH-ISSUE-12\nsource_sha=review123",
     }
     assert not independent_review_pass([claim, requeue, pass_comment], **kwargs)
+    qa_marker = {
+        "created_at": "2026-09-23T01:00:00Z",
+        "user": {"login": "github-actions[bot]"},
+        "body": "<!-- qa-postwrite-review:v1 -->\ntask_id=GH-ISSUE-12\n"
+                "source_sha=review123\nnext=NEW_INDEPENDENT_WORK_CODE_REVIEW",
+    }
+    assert not independent_review_pass(
+        [claim, qa_marker, pass_comment], **kwargs
+    )
+    post_qa_claim = dict(claim, created_at="2026-09-23T01:30:00Z")
+    assert independent_review_pass(
+        [claim, qa_marker, post_qa_claim, pass_comment], **kwargs
+    )
     assert not independent_review_pass(
         [dict(claim, user={"login": "attacker"}), pass_comment], **kwargs
     )

@@ -66,12 +66,19 @@ def independent_review_pass(
     claims: list[tuple[str, int]] = []
     invalidated: list[tuple[str, int]] = []
     for comment in comments:
-        if _comment_login(comment) != trusted_login:
+        login = _comment_login(comment)
+        if login not in {trusted_login, "github-actions[bot]"}:
             continue
         body = str(comment.get("body") or "")
         if f"task_id={task_id}" not in body or f"source_sha={source_sha}" not in body:
             continue
         position = order(comment)
+        if (login == "github-actions[bot]"
+            and "<!-- qa-postwrite-review:v1 -->" in body):
+            invalidated.append(position)
+            continue
+        if login != trusted_login:
+            continue
         if (
             "<!-- agent-claim:v1 -->" in body
             and "agent=workreview" in body
