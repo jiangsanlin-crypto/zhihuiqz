@@ -271,7 +271,7 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Deploy main and verify 0m 1m 5m 15m health
+      - name: Deploy exact merge commit and verify 0m 1m 5m 15m health
         if: steps.context.outputs.dry_run != 'true'
         env:
           HOST: ${{ secrets.ORCH_SERVER_HOST }}
