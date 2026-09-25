@@ -33,7 +33,7 @@ def decide_repair_recovery(
         or {label for label in labels if label.startswith("agent:")} != {"agent:workreview"}
         or {label for label in labels if label.startswith("phase:")} != {"phase:escalation-repair"}
         or {label for label in labels if label.startswith("status:")} not in (
-            {"status:running"}, {"status:blocked"}
+            {"status:todo"}, {"status:running"}, {"status:blocked"}
         ) or labels & {"status:review", "approval:production-required"}):
         return {"action": "noop", "reason": "not_repair_waiting_for_ci"}
 
@@ -76,7 +76,8 @@ def decide_repair_recovery(
             "source_sha": sha, "ci_run_id": ci_id,
             "labels_before": sorted(labels),
             "labels_after": sorted((labels - {
-                "status:running", "status:blocked", "phase:escalation-repair", BLOCKER_LABEL,
+                "status:todo", "status:running", "status:blocked",
+                "phase:escalation-repair", BLOCKER_LABEL,
             }) | {"status:todo", "phase:code-review"}),
         }
 
@@ -102,7 +103,7 @@ def decide_repair_recovery(
     return {
         "action": "block", "rule_id": "R05_REPAIR_CI_BLOCKER", "reason": reason,
         "source_sha": sha, "labels_before": sorted(labels),
-        "labels_after": sorted((labels - {"status:running"}) | {
+        "labels_after": sorted((labels - {"status:todo", "status:running"}) | {
             "status:blocked", BLOCKER_LABEL,
         }),
     }

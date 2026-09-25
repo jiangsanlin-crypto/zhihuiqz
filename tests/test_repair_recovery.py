@@ -40,16 +40,17 @@ def decide(state, comments=None, runs=None):
 
 
 def test_merge_conflict_is_a_recoverable_machine_blocker():
-    outcome = decide(pr())
-    assert outcome["action"] == "block"
-    assert outcome["reason"] == "REVIEW_REPAIR_MERGE_CONFLICT"
-    assert "status:blocked" in outcome["labels_after"]
-    assert "phase:escalation-repair" in outcome["labels_after"]
+    for status in ("todo", "running"):
+        outcome = decide(pr(status=status))
+        assert outcome["action"] == "block"
+        assert outcome["reason"] == "REVIEW_REPAIR_MERGE_CONFLICT"
+        assert "status:blocked" in outcome["labels_after"]
+        assert "phase:escalation-repair" in outcome["labels_after"]
     assert decide(pr(status="blocked"))["action"] == "noop"
 
 
 def test_current_sha_ci_requeues_independent_review_after_repair():
-    for status in ("running", "blocked"):
+    for status in ("todo", "running", "blocked"):
         result = decide(pr(status=status, mergeable="clean"), runs=ci())
         assert result["action"] == "requeue_review"
         assert result["ci_run_id"] == 99
