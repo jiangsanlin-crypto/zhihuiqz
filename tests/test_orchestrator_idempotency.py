@@ -64,20 +64,33 @@ def test_terminal_policy_comment_is_deduplicated_by_task_and_sha():
 
 def test_repository_dispatch_uses_stable_payload_idempotency_key():
     payload = {
+        "action": "agent_codex_release",
         "client_payload": {
             "dispatch_key": "delivery:event:abc123",
-        }
+        },
     }
-    assert main.dispatch_delivery_id(payload, "github-delivery-a") == (
+    assert main.dispatch_delivery_id(
+        "repository_dispatch",
+        payload,
+        "github-delivery-a",
+    ) == (
         "repository-dispatch:delivery:event:abc123"
     )
-    assert main.dispatch_delivery_id(payload, "github-delivery-b") == (
+    assert main.dispatch_delivery_id(
+        "repository_dispatch",
+        payload,
+        "github-delivery-b",
+    ) == (
         "repository-dispatch:delivery:event:abc123"
     )
 
 
 def test_non_dispatch_event_keeps_github_delivery_id():
     payload = {"action": "opened", "client_payload": {"dispatch_key": "ignored"}}
-    assert main.dispatch_delivery_id(payload, "github-delivery") == (
+    assert main.dispatch_delivery_id(
+        "pull_request",
+        payload,
+        "github-delivery",
+    ) == (
         "github-delivery"
     )
