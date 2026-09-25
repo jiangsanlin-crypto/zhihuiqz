@@ -150,14 +150,18 @@ def decide_reconciliation(
     current_state = labels & STATE_LABELS
 
     if current_state == canonical:
+        # A successful label projection is not proof that the downstream
+        # dispatch succeeded. Revisit an idle QA handoff on the next scan.
         return {
-            "action": "noop",
-            "reason": "already_canonical",
+            "action": "ensure_qa_dispatch" if target_phase == "phase:qa" and desired_status == "status:todo" else "noop",
+            "reason": "canonical_qa_may_need_dispatch" if target_phase == "phase:qa" and desired_status == "status:todo" else "already_canonical",
+            "task_id": task_id,
             "source_sha": head_sha,
             "target_agent": target_agent,
             "target_phase": target_phase,
             "desired_status": desired_status,
             "ci_run_id": ci_run_id,
+            "labels_before": sorted(labels),
         }
 
     return {

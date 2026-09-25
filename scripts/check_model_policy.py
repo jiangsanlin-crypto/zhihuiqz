@@ -99,6 +99,8 @@ require(
         "--ci-runs-json",
         "labels_after",
         "agent_workbuddy_qa",
+        "ensure_qa_dispatch",
+        "agent-handoff-qa-dispatch:v1",
     ],
 )
 
@@ -108,5 +110,6 @@ require(
         '("chatgpt", "workreview", "implementation")',
         '("workreview", "workbuddy", "code_review")',
         "current_sha_ci_not_success",
+        "canonical_qa_may_need_dispatch",
     ],
 )

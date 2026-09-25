@@ -75,7 +75,7 @@ jobs:
               > "$RUNNER_TEMP/decision-$PR_NUMBER.json"
 
             ACTION="$(jq -r '.action' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            if [ "$ACTION" != "reconcile" ]; then
+            if [ "$ACTION" != "reconcile" ] && [ "$ACTION" != "ensure_qa_dispatch" ]; then
               continue
             fi
 
@@ -95,36 +95,50 @@ jobs:
               echo "PR #$PR_NUMBER labels changed; retry at next reconciliation."
               continue
             fi
-            jq '{labels: .labels_after}' "$RUNNER_TEMP/decision-$PR_NUMBER.json" \
-              | gh api --method PUT \
-                  "repos/${{ github.repository }}/issues/$PR_NUMBER/labels" --input - >/dev/null
+            if [ "$ACTION" = "reconcile" ]; then
+              jq '{labels: .labels_after}' "$RUNNER_TEMP/decision-$PR_NUMBER.json" \
+                | gh api --method PUT \
+                    "repos/${{ github.repository }}/issues/$PR_NUMBER/labels" --input - >/dev/null
+            fi
 
             TARGET_AGENT="$(jq -r '.target_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
             TARGET_PHASE="$(jq -r '.target_phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
             DESIRED_STATUS="$(jq -r '.desired_status' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
 
-            FROM_AGENT="$(jq -r '.from_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            PHASE="$(jq -r '.phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            MARKER="<!-- agent-handoff-reconciler:$FROM_AGENT:$PHASE:$EXPECTED_SHA -->"
-            EXISTING="$(gh api \
-              "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
-              --paginate \
-              --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" \
-              | head -n1)"
+            if [ "$ACTION" = "reconcile" ]; then
+              FROM_AGENT="$(jq -r '.from_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              PHASE="$(jq -r '.phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              MARKER="<!-- agent-handoff-reconciler:$FROM_AGENT:$PHASE:$EXPECTED_SHA -->"
+              EXISTING="$(gh api \
+                "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+                --paginate \
+                --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" \
+                | head -n1)"
 
-            if [ -z "$EXISTING" ]; then
-              gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
-                --body "$MARKER Reconciled the validated handoff to $TARGET_AGENT + $TARGET_PHASE + $DESIRED_STATUS at exact head $EXPECTED_SHA."
+              if [ -z "$EXISTING" ]; then
+                gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                  --body "$MARKER Reconciled the validated handoff to $TARGET_AGENT + $TARGET_PHASE + $DESIRED_STATUS at exact head $EXPECTED_SHA."
+              fi
             fi
 
             # GITHUB_TOKEN-created label events do not wake ordinary Actions
             # pull_request:labeled consumers. repository_dispatch is explicit
             # and Validator revalidates the live exact-SHA handoff itself.
             if [ "$TARGET_PHASE" = "phase:qa" ] && [ "$DESIRED_STATUS" = "status:todo" ]; then
+              DISPATCH_MARKER="<!-- agent-handoff-qa-dispatch:v1:$EXPECTED_SHA -->"
+              DISPATCHED="$(gh api \
+                "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+                --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$DISPATCH_MARKER\"))) | .id" \
+                | head -n1)"
+              if [ -n "$DISPATCHED" ]; then
+                continue
+              fi
               TASK_ID="$(jq -r '.task_id' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
               jq -n --argjson pr_number "$PR_NUMBER" --arg task_id "$TASK_ID" \
                 --arg source_sha "$EXPECTED_SHA" \
                 '{event_type:"agent_workbuddy_qa",client_payload:{pr_number:$pr_number,task_id:$task_id,source_sha:$source_sha,phase:"qa"}}' \
                 | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+              gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --body "$DISPATCH_MARKER Requested Validator QA for task $TASK_ID at exact head $EXPECTED_SHA."
             fi
           done < "$RUNNER_TEMP/prs.txt"

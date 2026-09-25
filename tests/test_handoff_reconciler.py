@@ -208,3 +208,23 @@ def test_reconcile_projects_one_legal_state_preserving_other_labels():
         "agent:workreview", "phase:code-review", "priority:high", "status:running"
     ]
     assert "phase:escalation-repair" in decision["remove_labels"]
+
+
+def test_canonical_qa_todo_retries_missing_dispatch():
+    decision = decide_reconciliation(
+        pr(["agent:workbuddy", "phase:qa", "status:todo"]),
+        [comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
+        repository_owner=OWNER, ci_runs=ci(),
+    )
+    assert decision["action"] == "ensure_qa_dispatch"
+    assert decision["task_id"] == "GH-ISSUE-1"
+    assert decision["labels_before"] == ["agent:workbuddy", "phase:qa", "status:todo"]
+
+
+def test_running_qa_is_not_redispatched():
+    decision = decide_reconciliation(
+        pr(["agent:workbuddy", "phase:qa", "status:running"]),
+        [comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
+        repository_owner=OWNER, ci_runs=ci(),
+    )
+    assert decision["action"] == "noop"
