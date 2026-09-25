@@ -49,3 +49,49 @@ def test_projection_preserves_latest_unrelated_labels_and_removes_old_state():
         "approval:production-required", "domain:billing", "priority:p1",
         "status:review",
     ]
+
+
+def test_handoff_gate_block_keeps_concurrent_unrelated_label(monkeypatch):
+    req = SimpleNamespace(
+        task_id="GH-ISSUE-77", agent="workbuddy", repository="owner/repo",
+        source_kind="pull_request", source_number=78,
+        phase="phase:qa", source_sha="abc123",
+    )
+    snapshots = iter([
+        ["agent:workbuddy", "phase:qa", "status:todo"],
+        ["agent:workbuddy", "phase:qa", "status:todo"],
+        ["agent:workbuddy", "phase:qa", "status:todo", "keep:concurrent"],
+    ])
+    written = []
+
+    async def current_state(req, source_sha, workflow):
+        return next(snapshots)
+
+    async def list_comments(repository, source_number):
+        return []
+
+    async def comment(repository, source_number, body):
+        return None
+
+    async def set_labels(repository, source_number, labels):
+        written.append(labels)
+
+    monkeypatch.setattr(main, "github", SimpleNamespace(
+        configured=True, list_comments=list_comments,
+        comment=comment, set_labels=set_labels,
+    ))
+    monkeypatch.setattr(main, "store", SimpleNamespace(
+        finish=lambda *args, **kwargs: None,
+    ))
+    monkeypatch.setattr(main, "require_current_state", current_state)
+    monkeypatch.setattr(main, "build", lambda *args: (
+        req, ["agent:workbuddy", "phase:qa", "status:todo"],
+    ))
+
+    asyncio.run(main.process({
+        "delivery_id": "delivery-1", "event_name": "pull_request",
+        "payload": {},
+    }))
+    assert written == [[
+        "agent:workbuddy", "keep:concurrent", "phase:qa", "status:blocked",
+    ]]
