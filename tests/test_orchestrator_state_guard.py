@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from orchestrator import main
+
+
+def run_state_guard(monkeypatch, labels):
+    async def safe_head(req, expected_sha):
+        assert expected_sha == "abc123"
+
+    async def live_labels(repository, source_number):
+        return labels
+
+    monkeypatch.setattr(main, "require_current_head", safe_head)
+    monkeypatch.setattr(main.github, "get_issue_labels", live_labels)
+    req = SimpleNamespace(repository="owner/repo", source_number=78)
+    expected = {"agent:workbuddy", "phase:qa", "status:running"}
+    return main.require_current_state(req, "abc123", expected)
+
+
+def test_current_state_accepts_exact_workflow_and_preserves_unrelated(monkeypatch):
+    labels = asyncio.run(
+        run_state_guard(
+            monkeypatch,
+            [
+                "agent:workbuddy",
+                "phase:qa",
+                "status:running",
+                "keep:me",
+            ],
+        )
+    )
+    assert "keep:me" in labels
+
+
+def test_current_state_rejects_owner_wait_override(monkeypatch):
+    with pytest.raises(RuntimeError, match="WORKFLOW_STATE_SUPERSEDED"):
+        asyncio.run(
+            run_state_guard(
+                monkeypatch,
+                ["status:review", "approval:production-required"],
+            )
+        )
+
+
+def test_current_state_rejects_mixed_status_or_owner(monkeypatch):
+    with pytest.raises(RuntimeError, match="WORKFLOW_STATE_SUPERSEDED"):
+        asyncio.run(
+            run_state_guard(
+                monkeypatch,
+                [
+                    "agent:workbuddy",
+                    "phase:qa",
+                    "status:running",
+                    "status:todo",
+                ],
+            )
+        )
+
+
+def test_project_workflow_labels_preserves_latest_unrelated_labels():
+    result = main.project_workflow_labels(
+        [
+            "agent:workbuddy",
+            "phase:qa",
+            "status:running",
+            "priority:p1",
+            "domain:billing",
+        ],
+        {"status:review", "approval:production-required"},
+    )
+    assert result == [
+        "approval:production-required",
+        "domain:billing",
+        "priority:p1",
+        "status:review",
+    ]
+
+
+def test_project_workflow_labels_drops_superseded_workflow_labels():
+    result = main.project_workflow_labels(
+        [
+            "agent:workbuddy",
+            "phase:qa",
+            "status:running",
+            "status:todo",
+            "keep:me",
+        ],
+        {"agent:codex", "phase:release", "status:todo"},
+    )
+    assert result == [
+        "agent:codex",
+        "keep:me",
+        "phase:release",
+        "status:todo",
+    ]
+
+
+
+def test_handoff_gate_block_projects_onto_latest_labels(monkeypatch):
+    req = SimpleNamespace(
+        task_id="GH-ISSUE-77",
+        agent="workbuddy",
+        repository="owner/repo",
+        source_kind="pull_request",
+        source_number=78,
+        phase="phase:qa",
+        source_sha="abc123",
+    )
+    snapshots = iter(
+        [
+            ["agent:workbuddy", "phase:qa", "status:todo"],
+            ["agent:workbuddy", "phase:qa", "status:todo"],
+            [
+                "agent:workbuddy",
+                "phase:qa",
+                "status:todo",
+                "keep:concurrent",
+            ],
+        ]
+    )
+    written = []
+
+    async def current_state(req, source_sha, workflow):
+        return next(snapshots)
+
+    async def list_comments(repository, source_number):
+        return []
+
+    async def comment(repository, source_number, body):
+        return None
+
+    async def set_labels(repository, source_number, labels):
+        written.append(labels)
+
+    fake_github = SimpleNamespace(
+        configured=True,
+        list_comments=list_comments,
+        comment=comment,
+        set_labels=set_labels,
+    )
+    fake_store = SimpleNamespace(finish=lambda *args: None)
+    monkeypatch.setattr(main, "github", fake_github)
+    monkeypatch.setattr(main, "store", fake_store)
+    monkeypatch.setattr(main, "require_current_state", current_state)
+    monkeypatch.setattr(
+        main,
+        "build",
+        lambda *args: (
+            req,
+            ["agent:workbuddy", "phase:qa", "status:todo"],
+        ),
+    )
+
+    asyncio.run(
+        main.process(
+            {
+                "delivery_id": "delivery-1",
+                "event_name": "pull_request",
+                "payload": {},
+            }
+        )
+    )
+
+    assert written == [
+        [
+            "agent:workbuddy",
+            "keep:concurrent",
+            "phase:qa",
+            "status:blocked",
+        ]
+    ]

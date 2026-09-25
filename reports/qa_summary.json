@@ -1,0 +1,1 @@
+{"status":"ready","summary":"QA passed for exact PR head 485c87e25c17b4f11ed33fd7a959fcd43c17d32a. Supplied deterministic evidence reports 70 passed; policy routing, exact-SHA guards, replay/reconciliation behavior, and UI scope meet acceptance. The task's owner_approval_required policy leaves the PR in owner review and does not authorize release or deployment."}
