@@ -41,8 +41,8 @@ def decide_repair_recovery(
     if blocked and BLOCKER_LABEL not in labels:
         return {"action": "noop", "reason": "unrelated_blocker"}
 
-    # An owner-authored repair/resume record proves this phase actually wrote
-    # a repair. Bot comments and an old implementation handoff cannot do that.
+    # An owner-authored repair or recovery observation binds the waiting phase
+    # to the current commit. It is never an independent review PASS.
     repair_at: datetime | None = None
     for comment in comments:
         user = comment.get("user") or {}
@@ -52,7 +52,8 @@ def decide_repair_recovery(
             continue
         body = str(comment.get("body") or "")
         if not any(marker in body for marker in (
-            "<!-- agent-repair:v1 -->", "<!-- agent-resume:v1 -->"
+            "<!-- agent-repair:v1 -->", "<!-- agent-resume:v1 -->",
+            "<!-- repair-ci-wait:v1 -->",
         )) or "phase=escalation-repair" not in body or not any(
             marker in body for marker in (
                 "status=waiting_ci", "status=waiting_exact_sha_ci"

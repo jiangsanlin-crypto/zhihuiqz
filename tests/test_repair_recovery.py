@@ -74,3 +74,10 @@ def test_no_untrusted_repair_and_human_wait_is_untouched():
     state = pr()
     state["labels"].append({"name": "status:review"})
     assert decide(state)["action"] == "noop"
+
+
+def test_owner_recovery_observation_is_never_a_review_pass():
+    observation = dict(repair(), body=repair()["body"].replace(
+        "<!-- agent-repair:v1 -->", "<!-- repair-ci-wait:v1 -->"
+    ))
+    assert decide(pr(status="todo"), [observation])["reason"] == "REVIEW_REPAIR_MERGE_CONFLICT"
