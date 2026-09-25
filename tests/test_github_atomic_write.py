@@ -97,7 +97,8 @@ def test_stale_initial_head_and_duplicate_paths_fail_closed(monkeypatch):
             "owner/repo", 7, [FileChange(path="a", content="x")],
             expected_head_sha="stale",
         ))
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert all(method == "GET" for method, _, _ in calls)
     with pytest.raises(ValueError, match="duplicate"):
         asyncio.run(client.update_pr_files(
             "owner/repo", 7, [FileChange(path="a", content="x"),
