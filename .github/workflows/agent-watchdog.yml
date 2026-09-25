@@ -245,7 +245,7 @@ jobs:
 
             if [ "$COUNT" -eq 0 ]; then
               gh issue edit "$NUMBER" --repo "${{ github.repository }}"                 --remove-label "status:blocked"                 --remove-label "watchdog:timeout"                 --add-label "status:todo"
-              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "$PREFIX1 --> 🔁 Watchdog automatically requeued the same owner/phase once after timeout at exact revision $REV. No phase was skipped."
+              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "${PREFIX}1 --> 🔁 Watchdog automatically requeued the same owner/phase once after timeout at exact revision $REV. No phase was skipped."
               continue
             fi
 
