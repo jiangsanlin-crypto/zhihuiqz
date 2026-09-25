@@ -222,6 +222,7 @@ async def process(event: dict) -> None:
                 req.source_number,
                 result.changes,
                 message_prefix="reports: WorkBuddy",
+                expected_head_sha=req.source_sha,
             )
             result.artifacts = [
                 change.path for change in result.changes
