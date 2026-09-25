@@ -117,12 +117,25 @@ def required_handoff(req):
 
 
 async def require_current_head(req, expected_sha: str) -> None:
-    """Fail closed if the PR advanced beyond the revision being processed."""
-    live_sha = await github.get_pr_head_sha(req.repository, req.source_number)
-    if live_sha != expected_sha:
+    """Fail closed unless the live PR head is the exact safe source revision."""
+    identity = await github.get_pr_head_identity(
+        req.repository,
+        req.source_number,
+    )
+    if identity["head_repo_full_name"] != req.repository:
+        raise RuntimeError(
+            "UNSAFE_PR_HEAD_REPOSITORY: "
+            f"expected={req.repository} live={identity['head_repo_full_name']}"
+        )
+    protected = {identity["base_ref"], identity["default_branch"]} - {""}
+    if not identity["head_ref"] or identity["head_ref"] in protected:
+        raise RuntimeError(
+            f"UNSAFE_PR_HEAD_BRANCH: {identity['head_ref'] or '<empty>'}"
+        )
+    if identity["head_sha"] != expected_sha:
         raise RuntimeError(
             "CONCURRENT_BRANCH_ADVANCE: "
-            f"expected={expected_sha} live={live_sha}"
+            f"expected={expected_sha} live={identity['head_sha']}"
         )
 
 
