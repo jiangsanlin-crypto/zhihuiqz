@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  contents: write
   issues: write
   pull-requests: write
 
@@ -37,7 +38,13 @@ jobs:
               LABELS="$(gh issue view "$NUMBER"                 --repo "${{ github.repository }}"                 --json labels                 --jq '.labels[].name')"
 
               PHASE="$(echo "$LABELS" | grep '^phase:' | head -n1 || true)"
-              MARKER="<!-- agent-watchdog:queued:$AGENT:$PHASE -->"
+              IS_PR="$(gh api "repos/${{ github.repository }}/issues/$NUMBER" --jq 'has("pull_request")')"
+              if [ "$IS_PR" = "true" ]; then
+                REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
+              else
+                REV="issue-$NUMBER"
+              fi
+              MARKER="<!-- agent-watchdog:queued:$AGENT:$PHASE:$REV -->"
 
               ALREADY="$(gh api                 "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100"                 --paginate                 --jq ".[] | select(.body | contains(\"$MARKER\")) | .id"                 | head -n1)"
 
@@ -47,6 +54,74 @@ jobs:
 
               gh issue comment "$NUMBER"                 --repo "${{ github.repository }}"                 --body "$MARKER ⚠️ Central watchdog: handoff to $AGENT ($PHASE) has remained queued for more than $LIMIT minutes. The watchdog will not skip the phase or start another worker. Check the owning API workflow or account worker and retry the same phase if needed."
             done < "$RUNNER_TEMP/queued-$AGENT.txt"
+          done
+
+      - name: Redispatch queued API-owned phases with bounded idempotency
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          THRESHOLD="$(date -u -d '10 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')"
+
+          for AGENT in codex workbuddy; do
+            QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
+            gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/redispatch-$AGENT.txt"
+
+            while read -r NUMBER; do
+              [ -n "$NUMBER" ] || continue
+              ISSUE_JSON="$RUNNER_TEMP/issue-$NUMBER.json"
+              gh api "repos/${{ github.repository }}/issues/$NUMBER" > "$ISSUE_JSON"
+              IS_PR="$(jq -r 'has("pull_request")' "$ISSUE_JSON")"
+              LABELS="$(jq -r '.labels[].name' "$ISSUE_JSON")"
+              PHASE="$(printf '%s\n' "$LABELS" | grep '^phase:' | head -n1 || true)"
+
+              EVENT=""
+              PAYLOAD=""
+              REV="issue-$NUMBER"
+
+              if [ "$AGENT" = "codex" ] && [ "$PHASE" = "phase:product-plan" ] && [ "$IS_PR" != "true" ]; then
+                EVENT="agent_codex_product"
+                PAYLOAD="$(jq -n --argjson issue_number "$NUMBER" '{issue_number:$issue_number}')"
+              elif [ "$IS_PR" = "true" ]; then
+                PR_JSON="$RUNNER_TEMP/pr-$NUMBER.json"
+                gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$PR_JSON"
+                HEAD_REF="$(jq -r '.head.ref' "$PR_JSON")"
+                REV="$(jq -r '.head.sha' "$PR_JSON")"
+                BODY="$(jq -r '.body // ""' "$PR_JSON")"
+                TASK_ID="$(printf '%s' "$BODY" | sed -n 's/.*<!-- agent-task-id:\([A-Za-z0-9._:-]*\) -->.*/\1/p' | head -n1)"
+                [ -n "$TASK_ID" ] || continue
+
+                if [ "$AGENT" = "codex" ] && [ "$PHASE" = "phase:release" ]; then
+                  EVENT="agent_codex_release"
+                  PHASE_VALUE="release"
+                elif [ "$AGENT" = "workbuddy" ] && [ "$PHASE" = "phase:prototype" ]; then
+                  EVENT="agent_workbuddy_prototype"
+                  PHASE_VALUE="prototype"
+                elif [ "$AGENT" = "workbuddy" ] && [ "$PHASE" = "phase:qa" ]; then
+                  EVENT="agent_workbuddy_qa"
+                  PHASE_VALUE="qa"
+                elif [ "$AGENT" = "workbuddy" ] && [ "$PHASE" = "phase:deploy" ]; then
+                  EVENT="agent_workbuddy_deploy"
+                  PHASE_VALUE="deploy"
+                fi
+
+                if [ -n "$EVENT" ]; then
+                  PAYLOAD="$(jq -n --argjson pr_number "$NUMBER" --arg task_id "$TASK_ID" --arg head_ref "$HEAD_REF" --arg source_sha "$REV" --arg phase "$PHASE_VALUE" '{pr_number:$pr_number,task_id:$task_id,head_ref:$head_ref,source_sha:$source_sha,phase:$phase}')"
+                fi
+              fi
+
+              [ -n "$EVENT" ] || continue
+              PREFIX="<!-- agent-watchdog:redispatch:$AGENT:$PHASE:$REV:"
+              COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+              if [ "$COUNT" -ge 2 ]; then
+                continue
+              fi
+              ATTEMPT=$((COUNT + 1))
+
+              jq -n --arg event_type "$EVENT" --argjson client_payload "$PAYLOAD" '{event_type:$event_type,client_payload:$client_payload}'               | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+
+              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "$PREFIX$ATTEMPT --> 🔁 Watchdog redispatched $EVENT for exact revision $REV (attempt $ATTEMPT/2)."
+            done < "$RUNNER_TEMP/redispatch-$AGENT.txt"
           done
 
       - name: Block Codex running longer than 55 minutes
@@ -130,3 +205,56 @@ jobs:
 
             gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 120-minute running limit. The task was blocked instead of advancing. Inspect the account worker / PR / CI evidence and retry the same implementation phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
+
+
+      - name: Recover watchdog timeout blockers with bounded retry and escalation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          QUERY="repo:${{ github.repository }} is:open label:status:blocked label:watchdog:timeout"
+          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/timeout-blocked.txt"
+
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            ISSUE_JSON="$RUNNER_TEMP/timeout-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/issues/$NUMBER" > "$ISSUE_JSON"
+            LABELS="$(jq -r '.labels[].name' "$ISSUE_JSON")"
+
+            if printf '%s\n' "$LABELS" | grep -Eq '^(status:review|approval:production-required)$'; then
+              continue
+            fi
+
+            AGENT_LABEL="$(printf '%s\n' "$LABELS" | grep '^agent:' | head -n1 || true)"
+            PHASE="$(printf '%s\n' "$LABELS" | grep '^phase:' | head -n1 || true)"
+            [ -n "$AGENT_LABEL" ] || continue
+            AGENT="${AGENT_LABEL#agent:}"
+
+            IS_PR="$(jq -r 'has("pull_request")' "$ISSUE_JSON")"
+            if [ "$IS_PR" = "true" ]; then
+              REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
+              BODY="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json body --jq '.body // ""')"
+              TASK_ID="$(printf '%s' "$BODY" | sed -n 's/.*<!-- agent-task-id:\([A-Za-z0-9._:-]*\) -->.*/\1/p' | head -n1)"
+            else
+              REV="issue-$NUMBER"
+              TASK_ID="GH-ISSUE-$NUMBER"
+            fi
+
+            PREFIX="<!-- agent-watchdog:auto-retry:$AGENT:$PHASE:$REV:"
+            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+
+            if [ "$COUNT" -eq 0 ]; then
+              gh issue edit "$NUMBER" --repo "${{ github.repository }}"                 --remove-label "status:blocked"                 --remove-label "watchdog:timeout"                 --add-label "status:todo"
+              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "$PREFIX1 --> 🔁 Watchdog automatically requeued the same owner/phase once after timeout at exact revision $REV. No phase was skipped."
+              continue
+            fi
+
+            if [ "$AGENT" = "chatgpt" ] && [ "$PHASE" = "phase:implementation" ]; then
+              ESC="<!-- agent-escalation:v1:$REV -->"
+              EXISTING="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.body | contains(\"$ESC\")) | .id" | head -n1)"
+              if [ -z "$EXISTING" ]; then
+                gh issue edit "$NUMBER" --repo "${{ github.repository }}"                   --remove-label "agent:chatgpt"                   --remove-label "phase:implementation"                   --remove-label "status:blocked"                   --remove-label "watchdog:timeout"                   --add-label "agent:workreview"                   --add-label "phase:escalation-repair"                   --add-label "status:todo"
+                gh issue comment "$NUMBER" --repo "${{ github.repository }}"                   --body "$ESC task_id=$TASK_ID source_sha=$REV blocker_code=IMPLEMENTATION_TIMEOUT status=todo reason=Chat implementation timed out after its bounded automatic retry; routed to Work escalation-repair. This is technical recovery only and cannot self-approve."
+              fi
+            fi
+          done < "$RUNNER_TEMP/timeout-blocked.txt"
