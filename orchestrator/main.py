@@ -136,6 +136,27 @@ async def require_current_head(req, expected_sha: str) -> None:
         )
 
 
+def workflow_label_set(labels: list[str]) -> set[str]:
+    return {
+        label for label in labels
+        if label.startswith(("agent:", "phase:", "status:", "approval:"))
+    }
+
+
+async def require_current_state(
+    req, expected_sha: str, expected_workflow: set[str]
+) -> list[str]:
+    await require_current_head(req, expected_sha)
+    labels = await github.get_issue_labels(req.repository, req.source_number)
+    live_workflow = workflow_label_set(labels)
+    if live_workflow != expected_workflow:
+        raise RuntimeError(
+            "WORKFLOW_STATE_SUPERSEDED: "
+            f"expected={sorted(expected_workflow)} live={sorted(live_workflow)}"
+        )
+    return labels
+
+
 async def process(event: dict) -> None:
     routed = build(
         event["event_name"],
@@ -146,12 +167,16 @@ async def process(event: dict) -> None:
         store.finish(event["delivery_id"], "ignored")
         return
 
-    req, current_labels = routed
+    req, _webhook_labels = routed
 
     if not github.configured:
         raise RuntimeError("GitHub write-back is required for handoff validation")
 
-    await require_current_head(req, req.source_sha)
+    todo_workflow = {"agent:workbuddy", req.phase, "status:todo"}
+    running_workflow = {"agent:workbuddy", req.phase, "status:running"}
+    current_labels = await require_current_state(
+        req, req.source_sha, todo_workflow
+    )
     expected = required_handoff(req)
     comments = await github.list_comments(
         req.repository,
@@ -172,7 +197,7 @@ async def process(event: dict) -> None:
             },
         )
     except HandoffGateError as exc:
-        await require_current_head(req, req.source_sha)
+        await require_current_state(req, req.source_sha, todo_workflow)
         await github.comment(
             req.repository,
             req.source_number,
@@ -184,7 +209,9 @@ async def process(event: dict) -> None:
                 "Fix the previous handoff and retry the same phase."
             ),
         )
-        await require_current_head(req, req.source_sha)
+        current_labels = await require_current_state(
+            req, req.source_sha, todo_workflow
+        )
         await github.set_labels(
             req.repository,
             req.source_number,
@@ -201,18 +228,21 @@ async def process(event: dict) -> None:
         return
 
     if github.configured:
+        current_labels = await require_current_state(
+            req, req.source_sha, todo_workflow
+        )
         running_labels = [
             label
             for label in current_labels
             if not label.startswith("status:")
         ]
         running_labels.append("status:running")
-        await require_current_head(req, req.source_sha)
         await github.set_labels(
             req.repository,
             req.source_number,
             sorted(set(running_labels)),
         )
+        await require_current_state(req, req.source_sha, running_workflow)
 
     result = await workbuddy.run(req)
 
@@ -226,7 +256,7 @@ async def process(event: dict) -> None:
                 checks=result.checks,
             )
         else:
-            await require_current_head(req, req.source_sha)
+            await require_current_state(req, req.source_sha, running_workflow)
             new_sha = await github.update_pr_files(
                 req.repository,
                 req.source_number,
@@ -246,7 +276,7 @@ async def process(event: dict) -> None:
 
     handoff = ensure_handoff(req, result)
     transition_sha = handoff.source_sha or req.source_sha
-    await require_current_head(req, transition_sha)
+    await require_current_state(req, transition_sha, running_workflow)
     message = handoff_comment(handoff)
     terminal_policy_text = None
     if result.status == "success" and req.phase == "phase:qa":
@@ -262,7 +292,7 @@ async def process(event: dict) -> None:
             )
 
     if github.configured:
-        await require_current_head(req, transition_sha)
+        await require_current_state(req, transition_sha, running_workflow)
         await github.comment(
             req.repository,
             req.source_number,
@@ -270,6 +300,7 @@ async def process(event: dict) -> None:
         )
         if result.status == "success" and req.phase == "phase:qa":
             policy = resolve_terminal_policy(terminal_policy_text or "")
+            await require_current_state(req, transition_sha, running_workflow)
             await github.comment(
                 req.repository,
                 req.source_number,
@@ -280,35 +311,29 @@ async def process(event: dict) -> None:
                 f"release_enabled={str(policy.release_enabled).lower()}\n"
                 f"reason={policy.reason}",
             )
-        await require_current_head(req, transition_sha)
+        current_labels = await require_current_state(
+            req, transition_sha, running_workflow
+        )
+        transition_labels = next_labels(
+            req.agent, req.source_kind, current_labels,
+            result.status, result.next_labels, phase=req.phase,
+            terminal_policy_text=terminal_policy_text,
+        )
         await github.set_labels(
             req.repository,
             req.source_number,
-            next_labels(
-                req.agent,
-                req.source_kind,
-                current_labels,
-                result.status,
-                result.next_labels,
-                phase=req.phase,
-                terminal_policy_text=terminal_policy_text,
-            ),
+            transition_labels,
+        )
+        await require_current_state(
+            req, transition_sha, workflow_label_set(transition_labels)
         )
 
         if result.status == "success":
             if req.phase == "phase:prototype":
                 event_type = "agent_chatgpt_implementation"
             elif req.phase == "phase:qa":
-                labels = next_labels(
-                    req.agent,
-                    req.source_kind,
-                    current_labels,
-                    result.status,
-                    result.next_labels,
-                    phase=req.phase,
-                    terminal_policy_text=terminal_policy_text,
-                )
-                if "agent:codex" not in labels or "phase:release" not in labels:
+                if ("agent:codex" not in transition_labels
+                    or "phase:release" not in transition_labels):
                     store.finish(event["delivery_id"], "done")
                     return
                 event_type = "agent_codex_release"
@@ -319,7 +344,9 @@ async def process(event: dict) -> None:
                     f"no dispatch mapping for WorkBuddy phase {req.phase}"
                 )
 
-            await require_current_head(req, transition_sha)
+            await require_current_state(
+                req, transition_sha, workflow_label_set(transition_labels)
+            )
             await github.repository_dispatch(
                 req.repository,
                 event_type,
