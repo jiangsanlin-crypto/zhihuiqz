@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -199,3 +200,34 @@ def test_update_pr_files_rejects_nonmatching_advanced_commit(monkeypatch):
                 expected_head_sha="start",
             )
         )
+
+
+def test_recovered_report_accepts_wrapped_github_base64(monkeypatch):
+    client = GitHubClient("token")
+    calls = []
+
+    async def request(method, url, **kwargs):
+        calls.append((method, url))
+        if url.endswith("/commits/commit-1"):
+            payload = {
+                "parents": [{"sha": "start"}],
+                "commit": {"message": "reports: WorkBuddy handoff: a.txt"},
+                "files": [{"filename": "a.txt"}],
+            }
+        elif url.endswith("/contents/a.txt"):
+            assert kwargs["params"] == {"ref": "commit-1"}
+            payload = {
+                "encoding": "base64",
+                "content": base64.encodebytes(b"new content").decode(),
+            }
+        else:
+            raise AssertionError(url)
+        return SimpleNamespace(json=lambda: payload)
+
+    monkeypatch.setattr(client, "_request", request)
+    matched = asyncio.run(client._matches_published_report(
+        "owner/repo", "commit-1", "start", [change("a.txt")],
+        "reports: WorkBuddy handoff",
+    ))
+    assert matched is True
+    assert len(calls) == 2

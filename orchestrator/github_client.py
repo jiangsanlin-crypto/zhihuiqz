@@ -218,7 +218,7 @@ class GitHubClient:
             content_data = content_response.json()
             if content_data.get("encoding") != "base64":
                 return False
-            encoded = str(content_data.get("content") or "").replace("\\n", "")
+            encoded = "".join(str(content_data.get("content") or "").splitlines())
             try:
                 published = base64.b64decode(encoded, validate=True).decode()
             except (ValueError, UnicodeDecodeError):
