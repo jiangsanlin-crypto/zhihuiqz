@@ -373,6 +373,30 @@ jobs:
 
           echo "status=ready" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve QA terminal policy
+        if: steps.validator.outcome == 'success' && steps.gate.outcome == 'success' && steps.context.outputs.phase == 'qa'
+        id: terminal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+        run: |
+          set -euo pipefail
+          ISSUE_NUMBER="$(printf '%s' "$TASK_ID" | sed -n 's/^GH-ISSUE-\([0-9][0-9]*\)$/\1/p')"
+          BODY=""
+          if [ -n "$ISSUE_NUMBER" ]; then
+            BODY="$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json body --jq '.body // ""')"
+          fi
+          export BODY
+          PYTHONPATH=. python - <<'PY' > "$RUNNER_TEMP/terminal-policy.env"
+          import os
+          from orchestrator.terminal_policy import resolve_terminal_policy
+          decision = resolve_terminal_policy(os.environ.get("BODY", ""))
+          print(f"release_enabled={'true' if decision.release_enabled else 'false'}")
+          print(f"policy={decision.policy or 'unresolved'}")
+          print("reason=" + decision.reason.replace("\n", " ").replace("\r", " "))
+          PY
+          cat "$RUNNER_TEMP/terminal-policy.env" >> "$GITHUB_OUTPUT"
+
       - name: Commit validation artifacts
         if: steps.validator.outcome == 'success' && steps.gate.outcome == 'success'
         env:
@@ -399,6 +423,9 @@ jobs:
           NEXT_AGENT: ${{ steps.context.outputs.next_agent }}
           NEXT_PHASE: ${{ steps.context.outputs.next_phase }}
           NEXT_EVENT: ${{ steps.context.outputs.next_event }}
+          QA_RELEASE_ENABLED: ${{ steps.terminal.outputs.release_enabled }}
+          QA_TERMINAL_POLICY: ${{ steps.terminal.outputs.policy }}
+          QA_TERMINAL_REASON: ${{ steps.terminal.outputs.reason }}
         run: |
           set -euo pipefail
 
@@ -449,6 +476,20 @@ jobs:
           PY
 
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/validator-handoff.md"
+
+          if [ "$PHASE" = "qa" ]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"               --body "<!-- terminal-policy:v1 -->
+task_id=$TASK_ID
+source_sha=$SHA
+policy=${QA_TERMINAL_POLICY:-unresolved}
+release_enabled=${QA_RELEASE_ENABLED:-false}
+reason=${QA_TERMINAL_REASON:-missing terminal policy decision}"
+
+            if [ "${QA_RELEASE_ENABLED:-false}" != "true" ]; then
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"                 --remove-label "agent:workbuddy"                 --remove-label "phase:qa"                 --remove-label "status:running"                 --remove-label "status:todo"                 --add-label "status:review"                 --add-label "approval:production-required"
+              exit 0
+            fi
+          fi
 
           if [ "$PHASE" = "prototype" ]; then
             gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "agent:workbuddy"               --remove-label "phase:prototype"               --remove-label "status:running"               --add-label "agent:chatgpt"               --add-label "phase:implementation"               --add-label "status:todo"
