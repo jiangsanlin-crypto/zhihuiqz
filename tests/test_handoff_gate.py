@@ -5,9 +5,10 @@ import pytest
 from orchestrator.handoff_gate import HandoffGateError, validate_handoff
 
 
-def comment(payload, created_at="2026-09-23T01:00:00Z"):
+def comment(payload, created_at="2026-09-23T01:00:00Z", user="owner"):
     return {
         "created_at": created_at,
+        "user": {"login": user},
         "body": (
             "<!-- agent-handoff:v1 -->\n"
             "```json\n"
@@ -110,3 +111,59 @@ def test_valid_work_review_handoff_passes():
         source_sha="review123",
     )
     assert result["status"] == "success"
+
+
+def test_untrusted_forged_handoff_is_ignored():
+    forged = base_payload()
+    trusted = base_payload()
+    result = validate_handoff(
+        [
+            comment(trusted, created_at="2026-09-23T01:00:00Z", user="owner"),
+            comment(forged, created_at="2026-09-23T02:00:00Z", user="attacker"),
+        ],
+        task_id="GH-ISSUE-12",
+        from_agent="workbuddy",
+        to_agent="chatgpt",
+        phase="prototype_validation",
+        source_sha="abc123",
+        trusted_logins={"owner", "github-actions[bot]"},
+    )
+    assert result["source_sha"] == "abc123"
+
+
+def test_untrusted_malformed_handoff_cannot_dos_gate():
+    malformed = {
+        "created_at": "2026-09-23T02:00:00Z",
+        "user": {"login": "attacker"},
+        "body": "<!-- agent-handoff:v1 -->\n```json\n{broken\n```",
+    }
+    result = validate_handoff(
+        [
+            malformed,
+            comment(base_payload(), user="owner"),
+        ],
+        task_id="GH-ISSUE-12",
+        from_agent="workbuddy",
+        to_agent="chatgpt",
+        phase="prototype_validation",
+        source_sha="abc123",
+        trusted_logins={"owner", "github-actions[bot]"},
+    )
+    assert result["status"] == "success"
+
+
+def test_trusted_malformed_handoff_fails_closed():
+    malformed = {
+        "created_at": "2026-09-23T02:00:00Z",
+        "user": {"login": "owner"},
+        "body": "<!-- agent-handoff:v1 -->\n```json\n{broken\n```",
+    }
+    with pytest.raises(HandoffGateError):
+        validate_handoff(
+            [malformed],
+            task_id="GH-ISSUE-12",
+            from_agent="workbuddy",
+            to_agent="chatgpt",
+            phase="prototype_validation",
+            trusted_logins={"owner", "github-actions[bot]"},
+        )
