@@ -94,6 +94,9 @@ require(
         "agent-watchdog:redispatch",
         "agent-watchdog:auto-retry",
         "phase:escalation-repair",
+        "Requeue exact-SHA technical failures with bounded budget",
+        "recovery:technical",
+        "agent-watchdog:technical-retry",
     ],
 )
 
@@ -101,6 +104,16 @@ require(
     ".github/workflows/bootstrap-labels.yml",
     [
         'phase:escalation-repair',
+        'recovery:technical',
+    ],
+)
+
+require(
+    "orchestrator/state_store.py",
+    [
+        "recover_interrupted",
+        "recovered after orchestrator restart",
+        "WHERE status='running'",
     ],
 )
 
