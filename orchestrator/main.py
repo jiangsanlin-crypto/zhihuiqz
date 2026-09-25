@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from .adapters import HttpAgentAdapter
 from .config import settings
+from .claim_api import create_claim_router
 from .github_client import GitHubClient
 from .evidence_gate import successful_current_ci, validate_qa_evidence
 from .handoff_gate import HandoffGateError, extract_handoff, validate_handoff
@@ -713,6 +714,7 @@ app = FastAPI(
     version="4.0.0",
     lifespan=lifespan,
 )
+app.include_router(create_claim_router(store, github, settings))
 
 
 @app.get("/healthz")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import threading
@@ -97,7 +98,7 @@ class StateStore:
                        updated_at=?,
                        lease_id=NULL, lease_expires_at=NULL,
                        next_retry_at=NULL
-                   WHERE status='running'
+                   WHERE status='running' AND event_name!='external_claim'
                      AND (lease_expires_at IS NULL OR lease_expires_at<=?)""",
                 (timestamp, timestamp),
             )
@@ -130,7 +131,7 @@ class StateStore:
                 """UPDATE events SET status='retry', lease_id=NULL,
                        lease_expires_at=NULL, next_retry_at=NULL, updated_at=?,
                        error='worker lease expired'
-                   WHERE status='running'
+                   WHERE status='running' AND event_name!='external_claim'
                      AND (lease_expires_at IS NULL OR lease_expires_at<=?)""",
                 (timestamp, timestamp),
             )
@@ -233,6 +234,58 @@ class StateStore:
             ).fetchone()
         if row is None:
             raise RuntimeError("WORKER_OPERATION_LEASE_LOST")
+
+    @staticmethod
+    def external_delivery_id(worker_id: str, request_id: str) -> str:
+        value = json.dumps([worker_id, request_id], separators=(",", ":"))
+        return "external:" + hashlib.sha256(value.encode()).hexdigest()
+
+    def claim_external(self, binding: dict, worker_id: str, request_id: str) -> dict:
+        """Acquire the same operation lock without enqueueing a runner event."""
+        delivery_id = self.external_delivery_id(worker_id, request_id)
+        payload = dict(binding, worker_id=worker_id)
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            timestamp = now()
+            existing = connection.execute(
+                "SELECT * FROM events WHERE delivery_id=?", (delivery_id,),
+            ).fetchone()
+            active = connection.execute(
+                """SELECT c.delivery_id,c.lease_id FROM operation_claims c JOIN events e
+                   ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND e.status='running' AND e.lease_expires_at>?""",
+                (binding["operation_key"], timestamp),
+            ).fetchone()
+            if existing:
+                if json.loads(existing["payload_json"]) != payload:
+                    raise RuntimeError("CLAIM_REQUEST_REUSED")
+                if (existing["status"] != "running" or not existing["lease_expires_at"]
+                    or existing["lease_expires_at"] <= timestamp or active is None
+                    or active["delivery_id"] != delivery_id
+                    or active["lease_id"] != existing["lease_id"]):
+                    raise RuntimeError("WORKER_LEASE_LOST")
+                connection.execute("COMMIT")
+                return dict(existing)
+            if active is not None:
+                raise RuntimeError("ANOTHER_WORKER_OWNS_LEASE")
+            lease_id = str(uuid.uuid4())
+            expires_at = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+            connection.execute(
+                """INSERT INTO events(delivery_id,event_name,payload_json,status,attempts,
+                   created_at,updated_at,lease_id,lease_expires_at)
+                   VALUES(?,'external_claim',?,'running',1,?,?,?,?)""",
+                (delivery_id, json.dumps(payload), timestamp, timestamp, lease_id, expires_at),
+            )
+            connection.execute(
+                """INSERT INTO operation_claims(operation_key,delivery_id,lease_id,claimed_at)
+                   VALUES(?,?,?,?) ON CONFLICT(operation_key) DO UPDATE SET
+                   delivery_id=excluded.delivery_id,lease_id=excluded.lease_id,
+                   claimed_at=excluded.claimed_at""",
+                (binding["operation_key"], delivery_id, lease_id, timestamp),
+            )
+            row = connection.execute("SELECT * FROM events WHERE delivery_id=?", (delivery_id,)).fetchone()
+            connection.execute("COMMIT")
+            return dict(row)
 
     def assert_lease(self, delivery_id: str, lease_id: str) -> None:
         with self.lock, self.conn() as connection:

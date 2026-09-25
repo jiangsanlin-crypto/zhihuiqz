@@ -39,6 +39,9 @@ These are requirements, not claims of implementation:
 1. Account workers and Actions must use the same authoritative claim and lease
    store before changing labels or starting work. SQLite protections do not
    coordinate actors that never access that database, or independent databases.
+   The authenticated API and client contract now exist in
+   [shared-claim-protocol.md](shared-claim-protocol.md); live clients still need
+   an authorized rollout and integration with that service.
 2. New issue discovery, scheduled queue scanning and every machine-blocker type
    require live end-to-end acceptance. A labeled-PR event router alone does not
    establish reliable issue ingestion.
