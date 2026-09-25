@@ -62,6 +62,12 @@ class StateStore:
                   delivery_id TEXT NOT NULL,
                   lease_id TEXT NOT NULL,
                   claimed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS recovery_audit(
+                  event_id TEXT PRIMARY KEY,
+                  delivery_id TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL
                 );"""
             )
             columns = {
@@ -345,3 +351,12 @@ class StateStore:
                 (delivery_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def record_recovery_audit(self, delivery_id: str, audit: dict) -> None:
+        identity = [delivery_id, audit["lease_id"], audit["evidence_generation"], audit["status"]]
+        event_id = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        with self.lock, self.conn() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO recovery_audit(event_id,delivery_id,payload_json,created_at)
+                   VALUES(?,?,?,?)""", (event_id, delivery_id, json.dumps(audit), now()),
+            )

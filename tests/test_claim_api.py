@@ -1,4 +1,5 @@
 import copy
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -126,3 +127,175 @@ def test_push_during_claim_acquisition_cannot_return_a_live_lease(setup):
     assert result.status_code == 409
     delivery = store.external_delivery_id("account-worker", "request-1")
     assert store.get(delivery)["status"] == "superseded"
+
+
+@pytest.fixture
+def projection_setup(setup):
+    client, store, pr, github = setup
+    comments = [
+        {"id": 1, "created_at": "2026-09-25T01:00:00Z", "user": {"login": "owner"},
+         "body": "<!-- agent-claim:v1 -->\ntask_id=GH-ISSUE-77\n"
+                 f"agent=workreview\nphase=code-review\nsource_sha={SHA}"},
+        {"id": 2, "created_at": "2026-09-25T02:00:00Z", "user": {"login": "owner"},
+         "body": "<!-- agent-handoff:v1 -->\n```json\n" + json.dumps({
+             "task_id": "GH-ISSUE-77", "from_agent": "workreview", "to_agent": "workbuddy",
+             "phase": "code_review", "source_sha": SHA, "status": "success", "blockers": [],
+             "checks": [{"name": "independent_code_review", "status": "passed"}], "pr_number": 78,
+         }) + "\n```"},
+    ]
+    runs = {"workflow_runs": [{"id": 10, "name": "CI", "path": ".github/workflows/ci.yml",
+        "head_sha": SHA, "head_branch": "feature", "event": "pull_request",
+        "status": "completed", "conclusion": "success"}]}
+    writes = []
+
+    async def list_comments(*args):
+        return copy.deepcopy(comments)
+
+    async def list_runs(*args):
+        return copy.deepcopy(runs)
+
+    async def set_labels(repo, number, values):
+        writes.append(values)
+        pr["labels"] = values
+
+    github.list_comments, github.list_workflow_runs, github.set_labels = list_comments, list_runs, set_labels
+    return client, store, pr, github, comments, runs, writes
+
+
+def test_verified_advance_is_audited_and_retry_does_not_write_twice(projection_setup):
+    client, store, pr, _, _, _, writes = projection_setup
+    pr["labels"].append("keep:me")
+    claim = client.post("/claims/acquire", json=payload(), headers=AUTH).json()
+    result = client.post("/claims/advance", json=owned(claim), headers=AUTH)
+    assert result.status_code == 200
+    assert result.json()["status"] == "applied"
+    assert pr["labels"] == ["agent:workbuddy", "keep:me", "phase:qa", "status:todo"]
+    assert store.get(claim["delivery_id"])["status"] == "done"
+    assert len(result.json()["audit"]["evidence_generation"]) == 64
+    again = client.post("/claims/advance", json=owned(claim), headers=AUTH)
+    assert again.json()["status"] == "already_applied"
+    assert len(writes) == 1
+    with sqlite3.connect(store.path) as connection:
+        audits = connection.execute("SELECT payload_json FROM recovery_audit WHERE delivery_id=?",
+                                    (claim["delivery_id"],)).fetchall()
+    assert sorted(json.loads(x[0])["status"] for x in audits) == ["applied", "planned"]
+
+
+def test_failed_ci_and_missing_independent_review_do_not_write(projection_setup):
+    client, _, _, _, comments, runs, writes = projection_setup
+    claim = client.post("/claims/acquire", json=payload(), headers=AUTH).json()
+    runs["workflow_runs"][0]["conclusion"] = "action_required"
+    assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 409
+    runs["workflow_runs"][0]["conclusion"] = "success"
+    old_claim = comments.pop(0)
+    assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 409
+    assert writes == []
+    comments.insert(0, old_claim)
+    assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 200
+
+
+def test_retry_recovers_labels_written_before_network_failure(projection_setup):
+    client, store, pr, github, _, _, writes = projection_setup
+    claim = client.post("/claims/acquire", json=payload(), headers=AUTH).json()
+    original = github.set_labels
+
+    async def interrupted(*args):
+        await original(*args)
+        raise RuntimeError("simulated response loss")
+
+    github.set_labels = interrupted
+    with pytest.raises(RuntimeError, match="simulated response loss"):
+        client.post("/claims/advance", json=owned(claim), headers=AUTH)
+    assert "phase:qa" in pr["labels"]
+    assert store.get(claim["delivery_id"])["status"] == "running"
+    assert client.post("/claims/heartbeat", json=owned(claim), headers=AUTH).status_code == 200
+    github.set_labels = original
+    retry = client.post("/claims/advance", json=owned(claim), headers=AUTH)
+    assert retry.status_code == 200
+    assert len(writes) == 1
+
+
+def test_human_wait_during_evidence_read_is_never_overwritten(projection_setup):
+    client, _, pr, github, _, runs, writes = projection_setup
+    claim = client.post("/claims/acquire", json=payload(), headers=AUTH).json()
+
+    async def human_wait(*args):
+        pr["labels"] = ["status:review", "approval:production-required"]
+        return runs
+
+    github.list_workflow_runs = human_wait
+    result = client.post("/claims/advance", json=owned(claim), headers=AUTH)
+    assert result.status_code == 409
+    assert writes == []
+    assert pr["labels"] == ["status:review", "approval:production-required"]
+
+
+def test_qa_requires_terminal_policy_before_human_wait(projection_setup):
+    client, store, pr, _, comments, _, writes = projection_setup
+    pr["labels"] = ["agent:workbuddy", "phase:qa", "status:todo"]
+    claim = client.post("/claims/acquire", json=dict(payload(), phase="phase:qa"), headers=AUTH).json()
+    assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 409
+    comments.extend([
+        {"user": {"login": "github-actions[bot]"}, "body": "<!-- terminal-policy:v1 -->\n"
+         f"task_id=GH-ISSUE-77\nsource_sha={SHA}\npolicy=stop_after_qa\nrelease_enabled=false"},
+        {"user": {"login": "github-actions[bot]"}, "body": "<!-- agent-handoff:v1 -->\n```json\n" + json.dumps({
+            "task_id": "GH-ISSUE-77", "source_sha": SHA, "from_agent": "workbuddy",
+            "phase": "qa_acceptance", "status": "success", "blockers": [],
+        }) + "\n```"},
+    ])
+    assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 200
+    assert pr["labels"] == ["approval:production-required", "status:review"]
+    assert store.get(claim["delivery_id"])["status"] == "done"
+    assert len(writes) == 1
+
+
+def test_callers_cannot_supply_arbitrary_target_labels(projection_setup):
+    client, _, _, _, _, _, writes = projection_setup
+    claim = client.post("/claims/acquire", json=payload(), headers=AUTH).json()
+    result = client.post("/claims/advance", json=dict(owned(claim), labels=["status:done"]), headers=AUTH)
+    assert result.status_code == 422
+    assert writes == []
+
+
+def test_one_pr_projection_lock_serializes_different_phase_writers(projection_setup):
+    client, store, _, _, _, _, writes = projection_setup
+    claim = client.post("/claims/acquire", json=payload(), headers=AUTH).json()
+    store.enqueue("other-stage", "pull_request", {})
+    competitor = store.claim_next()
+    key = json.dumps(["owner/repo", 78, "state-projection"])
+    assert store.claim_operation(key, competitor["delivery_id"], competitor["lease_id"])
+    result = client.post("/claims/advance", json=owned(claim), headers=AUTH)
+    assert result.status_code == 409
+    assert result.json()["detail"] == "ANOTHER_WORKER_OWNS_PROJECTION"
+    assert writes == []
+
+
+@pytest.mark.parametrize("phase,agent,target", [
+    ("phase:implementation", "chatgpt", "phase:code-review"),
+    ("phase:prototype", "workbuddy", "phase:implementation"),
+    ("phase:escalation-repair", "workreview", "phase:code-review"),
+])
+def test_other_phase_transitions_do_not_skip_independent_review(projection_setup, phase, agent, target):
+    client, _, pr, _, comments, _, _ = projection_setup
+    pr["labels"] = [f"agent:{agent}", phase, "status:todo"]
+    if phase == "phase:escalation-repair":
+        body = ("<!-- agent-repair:v1 -->\ntask_id=GH-ISSUE-77\n"
+                f"source_sha={SHA}\nagent=workreview\nphase=escalation-repair\nstatus=waiting_ci")
+    else:
+        body = "<!-- agent-handoff:v1 -->\n```json\n" + json.dumps({
+            "task_id": "GH-ISSUE-77", "from_agent": agent,
+            "to_agent": "workreview" if agent == "chatgpt" else "chatgpt",
+            "phase": "implementation" if agent == "chatgpt" else "prototype_validation",
+            "source_sha": SHA, "status": "success", "blockers": [], "pr_number": 78,
+        }) + "\n```"
+    comments[:] = [{"user": {"login": "owner"}, "body": body}]
+    claim = client.post("/claims/acquire", json=dict(payload(), phase=phase), headers=AUTH).json()
+    if phase == "phase:escalation-repair":
+        comments.append({"user": {"login": "owner"}, "id": 2,
+                         "body": body.replace("status=waiting_ci", "status=blocked")})
+        assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 409
+        comments.pop()
+    result = client.post("/claims/advance", json=owned(claim), headers=AUTH)
+    assert result.status_code == 200
+    assert target in pr["labels"]
+    assert "phase:qa" not in pr["labels"]

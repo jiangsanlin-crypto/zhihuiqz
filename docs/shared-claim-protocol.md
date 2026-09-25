@@ -1,8 +1,10 @@
 # Shared claim protocol
 
-The Orchestrator exposes `/claims/acquire`, `/claims/heartbeat`, and
-`/claims/release`. All three require the existing Orchestrator bearer token.
-They never start an agent, edit GitHub labels, dispatch Actions or deploy.
+The Orchestrator exposes `/claims/acquire`, `/claims/heartbeat`,
+`/claims/release`, and `/claims/advance`. All require its existing bearer token.
+The three lease endpoints never edit GitHub labels. The advance endpoint
+projects only a verified next phase; none starts an agent, dispatches Actions
+or deploys.
 The lease grants exclusive ownership, not permission to bypass CI or handoffs.
 
 ## Acquire
@@ -51,6 +53,33 @@ and stop execution before the last confirmed expiry if renewal is unavailable.
 Before every write, workers must also re-fetch the PR and verify its head/state;
 a successful heartbeat is not an atomic GitHub write authorization.
 
+## Verified advancement
+
+After publishing the required trusted handoff, call `POST /claims/advance`
+with the same three ownership fields as heartbeat. Arbitrary labels are not
+accepted. The service derives the next route from current-SHA CI and evidence:
+
+- Prototype success -> implementation READY.
+- Implementation success -> independent Work Review READY.
+- Repair with a trusted waiting-CI record -> independent Work Review READY.
+- Independent Work Review PASS -> QA READY.
+- QA PASS plus independent Review and a resolved stop-after-QA/owner-approval
+  policy -> Human Approval. There is no release/deploy transition here.
+
+Review workers must still publish their authenticated GitHub review claim and
+independent PASS handoff. The service lease alone is not that review evidence.
+
+Participating phase writers share a per-PR projection lock. The service saves
+the intended projection before one label PUT, checks the live state again,
+and verifies the result. Planned/applied records with worker, lease, SHA,
+evidence generation and before/after labels are durably retained in SQLite.
+If the network response is lost after the PUT, retry `/claims/advance` while
+the lease remains valid; it can verify the existing target without another PUT.
+After completion, the phase lease is released. An exact retry returns the
+historical `already_applied` result without writing or exiting Human Approval.
+Stop phase execution/heartbeats after advancement; the next phase acquires its
+own lease and independently validates its gates.
+
 ## Required integration before repository-wide acceptance
 
 - Deploy one authoritative service backed by persistent storage, or replicas
@@ -62,8 +91,10 @@ a successful heartbeat is not an atomic GitHub write authorization.
 - Native Orchestrator operations already use the same operation lock table.
   External claim rows are never put into its agent-execution queue on expiry.
 - Keep phase-specific CI, independent review, handoff and terminal-policy gates.
-  This protocol does not implement the sole global label writer or complete
-  issue ingestion. Those remain separate acceptance requirements in issue #80.
+  The projection endpoint exists, but existing workflows still bypass it.
+  Until every writer adopts it, it is not the sole global writer. GitHub label
+  PUT has no conditional CAS; pre/post checks cannot prevent every race with
+  nonparticipating actors. Complete issue ingestion also remains open in #80.
 - Validate competing real workers, restart, network loss and current-SHA
   invalidation after an authorized rollout. No rollout is performed by these
   tests or by adding this interface.

@@ -47,6 +47,9 @@ These are requirements, not claims of implementation:
    establish reliable issue ingestion.
 3. Multiple workflows still write labels. Read-before-write guards are not an
    atomic GitHub label CAS and cannot establish a unique global state writer.
+   `/claims/advance` now computes verified transitions, serializes participating
+   phase writers, retains audit records and resumes interrupted projections.
+   Existing actors must adopt it before this requirement can be accepted.
 4. The tested PR branch must pass independent review and an authorized rollout
    before its fixes become active on the default-branch workflow/server.
 5. PR #78 at `da921abe5a413aca53af3193645108a66724c07a` was last observed with

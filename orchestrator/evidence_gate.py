@@ -63,3 +63,43 @@ def validate_qa_evidence(
     if successful_current_ci(ci_runs, head_sha=head_sha, head_ref=head_ref) is None:
         raise HandoffGateError("current-SHA ordinary CI has not passed")
     return payload
+
+
+def owner_wait_evidence(
+    comments: list[dict[str, Any]], *, task_id: str, head_sha: str
+) -> bool:
+    """A label alone cannot authorize cleanup into the human terminal state."""
+    terminal: tuple[tuple[str, int], dict[str, str]] | None = None
+    qa: tuple[tuple[str, int], dict[str, Any]] | None = None
+    for comment in comments:
+        if (comment.get("user") or {}).get("login") != "github-actions[bot]":
+            continue
+        body = str(comment.get("body") or "")
+        order = (str(comment.get("created_at") or ""), int(comment.get("id") or 0))
+        if "<!-- terminal-policy:v1 -->" in body:
+            fields = dict(
+                line.split("=", 1) for line in body.splitlines()
+                if "=" in line and line.split("=", 1)[0] in {
+                    "task_id", "source_sha", "policy", "release_enabled"
+                }
+            )
+            if fields.get("task_id") == task_id and fields.get("source_sha") == head_sha:
+                if terminal is None or order > terminal[0]:
+                    terminal = (order, fields)
+        try:
+            payload = extract_handoff(body)
+        except Exception:
+            continue
+        if (payload and payload.get("task_id") == task_id
+            and payload.get("source_sha") == head_sha
+            and payload.get("from_agent") == "workbuddy"
+            and payload.get("phase") in {"qa", "qa_acceptance"}
+            and (qa is None or order > qa[0])):
+            qa = (order, payload)
+    return bool(
+        terminal and qa
+        and terminal[1].get("policy") in {"owner_approval_required", "stop_after_qa"}
+        and terminal[1].get("release_enabled") == "false"
+        and qa[1].get("status") == "success"
+        and not qa[1].get("blockers")
+    )

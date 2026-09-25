@@ -1,15 +1,20 @@
 """Authenticated shared leases. A lease is not a CI/review/production approval."""
 
 import json
+import hashlib
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .security import verify_bearer
+from .handoff_gate import HandoffGateError
+from .state_projection import verified_next_workflow
+from .state_store import now
 
 
 class AcquireClaim(BaseModel):
+    model_config = {"extra": "forbid"}
     repository: str = Field(min_length=3, max_length=200)
     pr_number: int = Field(gt=0)
     source_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -21,6 +26,7 @@ class AcquireClaim(BaseModel):
 
 
 class OwnedClaim(BaseModel):
+    model_config = {"extra": "forbid"}
     delivery_id: str
     lease_id: str
     worker_id: str
@@ -46,7 +52,7 @@ def create_claim_router(store, github, settings):
             raise HTTPException(409, str(exc)) from exc
         return row, binding
 
-    async def current(binding, *, resumed=False):
+    async def current(binding, *, resumed=False, projected_route=None):
         if not settings.github_repository or binding["repository"] != settings.github_repository:
             raise HTTPException(409, "REPOSITORY_MISMATCH")
         pr = await github.get_pr_snapshot(binding["repository"], binding["pr_number"])
@@ -64,10 +70,12 @@ def create_claim_router(store, github, settings):
         route = {x for x in labels if x.startswith(("agent:", "phase:", "status:", "approval:"))}
         expected = {binding["agent"], binding["phase"], "status:todo"}
         running = {binding["agent"], binding["phase"], "status:running"}
-        if (route != expected and not (resumed and route == running)) or any(
+        if (route != expected and not (resumed and route == running)
+            and route != projected_route) or any(
             x.startswith(("blocker:", "recovery:", "watchdog:")) for x in labels
         ):
             raise HTTPException(409, "STATE_CHANGED")
+        return pr
 
     def response(row):
         return {key: row[key] for key in ("delivery_id", "lease_id", "lease_expires_at")}
@@ -100,8 +108,11 @@ def create_claim_router(store, github, settings):
     @router.post("/heartbeat")
     async def heartbeat(value: OwnedClaim):
         row, binding = owned(value)
+        projection = json.loads(row.get("checkpoint_json") or "{}").get("projection") or {}
+        target = (set(projection["workflow_after"])
+                  if projection.get("lease_id") == value.lease_id else None)
         try:
-            await current(binding, resumed=True)
+            await current(binding, resumed=True, projected_route=target)
         except HTTPException:
             store.finish(row["delivery_id"], "superseded", lease_id=row["lease_id"])
             raise
@@ -115,5 +126,70 @@ def create_claim_router(store, github, settings):
         if not store.finish(value.delivery_id, "done", lease_id=value.lease_id):
             raise HTTPException(409, "WORKER_LEASE_LOST")
         return {"released": True}
+
+    @router.post("/advance")
+    async def advance(value: OwnedClaim):
+        row = store.get(value.delivery_id)
+        checkpoint = json.loads(row.get("checkpoint_json") or "{}") if row else {}
+        projection = checkpoint.get("projection") or {}
+        if (row and row["event_name"] == "external_claim" and row["status"] == "done"
+            and projection.get("lease_id") == value.lease_id
+            and projection.get("status") == "applied"
+            and json.loads(row["payload_json"]).get("worker_id") == value.worker_id):
+            binding = json.loads(row["payload_json"])
+            live = await current(binding, projected_route=set(projection["workflow_after"]))
+            if sorted(labels(live)) != projection["labels_after"]:
+                raise HTTPException(409, "STATE_CHANGED")
+            return {"status": "already_applied", "audit": projection}
+
+        row, binding = owned(value)
+        projection_key = json.dumps([binding["repository"], binding["pr_number"], "state-projection"])
+        if not store.claim_operation(projection_key, value.delivery_id, value.lease_id):
+            raise HTTPException(409, "ANOTHER_WORKER_OWNS_PROJECTION")
+        previous_target = (set(projection["workflow_after"])
+                           if projection.get("lease_id") == value.lease_id else None)
+        pr = await current(binding, resumed=True, projected_route=previous_target)
+        comments = await github.list_comments(binding["repository"], binding["pr_number"])
+        runs = await github.list_workflow_runs(binding["repository"], binding["source_sha"])
+        try:
+            target = verified_next_workflow(binding, comments, runs)
+        except HandoffGateError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        before = labels(pr)
+        after = (before - {x for x in before if x.startswith(("agent:", "phase:", "status:", "approval:"))}) | target
+        audit = {
+            "rule_id": "VERIFIED_PHASE_ADVANCE", "lease_id": value.lease_id,
+            "repository": binding["repository"], "pr_number": binding["pr_number"],
+            "task_id": binding["task_id"], "phase": binding["phase"],
+            "action_type": "advance", "reason": "verified current-SHA phase evidence",
+            "worker_id": value.worker_id, "source_sha": binding["source_sha"],
+            "operation_key": binding["operation_key"], "status": "planned",
+            "workflow_after": sorted(target), "labels_before": sorted(before),
+            "labels_after": sorted(after), "created_at": now(),
+            "evidence_generation": hashlib.sha256(json.dumps(
+                [binding["source_sha"], comments, runs], sort_keys=True).encode()).hexdigest(),
+        }
+        store.checkpoint(value.delivery_id, {"projection": audit}, value.lease_id)
+        store.record_recovery_audit(value.delivery_id, audit)
+        live = await current(binding, resumed=True, projected_route=previous_target)
+        if labels(live) != before:
+            raise HTTPException(409, "STATE_CHANGED")
+        owned(value)  # Fence an expired lease immediately before the write.
+        store.assert_operation(projection_key, value.delivery_id, value.lease_id)
+        if before != after:
+            await github.set_labels(binding["repository"], binding["pr_number"], sorted(after))
+        verified = await current(binding, resumed=True, projected_route=target)
+        if labels(verified) != after:
+            raise HTTPException(409, "PROJECTION_UNVERIFIED")
+        audit["status"] = "applied"
+        audit["applied_at"] = now()
+        store.record_recovery_audit(value.delivery_id, audit)
+        store.checkpoint(value.delivery_id, {"projection": audit}, value.lease_id)
+        if not store.finish(value.delivery_id, "done", lease_id=value.lease_id):
+            raise HTTPException(409, "WORKER_LEASE_LOST")
+        return {"status": "applied", "audit": audit}
+
+    def labels(pr):
+        return {x["name"] if isinstance(x, dict) else x for x in pr.get("labels", [])}
 
     return router
