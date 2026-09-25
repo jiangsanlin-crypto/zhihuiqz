@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -55,3 +56,29 @@ def test_completed_and_failed_events_do_not_requeue_on_restart(tmp_path):
 
     restarted = StateStore(str(path))
     assert restarted.claim_next() is None
+
+
+def test_retry_backoff_is_durable_and_new_events_are_not_starved(tmp_path):
+    path = tmp_path / "orchestrator.db"
+    worker = StateStore(str(path))
+    worker.enqueue("bad", "pull_request", {"number": 7})
+    first = worker.claim_next()
+    assert worker.finish("bad", "retry", "temporary outage", first["lease_id"])
+    second = worker.claim_next()
+    assert second["attempts"] == 2
+    assert worker.finish("bad", "retry", "temporary outage", second["lease_id"])
+
+    retry_at = datetime.fromisoformat(worker.get("bad")["next_retry_at"])
+    assert (retry_at - datetime.now(timezone.utc)).total_seconds() > 110
+    worker.enqueue("ready", "pull_request", {"number": 8})
+    ready = worker.claim_next()
+    assert ready["delivery_id"] == "ready"
+    worker.finish("ready", "done", lease_id=ready["lease_id"])
+    assert worker.claim_next() is None
+
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE events SET next_retry_at=? WHERE delivery_id='bad'",
+            ("2000-01-01T00:00:00+00:00",),
+        )
+    assert StateStore(str(path)).claim_next()["attempts"] == 3

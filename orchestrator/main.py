@@ -601,11 +601,20 @@ async def worker(stop: asyncio.Event) -> None:
             if stop.is_set():
                 raise
         except Exception as exc:
+            # Retrying a stale branch/phase can only reproduce the same unsafe
+            # operation; leave it for reconciliation against fresh evidence.
+            stale_state = any(
+                code in str(exc) for code in (
+                    "CONCURRENT_BRANCH_ADVANCE", "PR_BRANCH_IDENTITY_CHANGED",
+                    "WORKFLOW_STATE_SUPERSEDED", "CHECKPOINT_SOURCE_SHA_MISMATCH",
+                    "WORKER_LEASE_LOST",
+                )
+            )
             store.finish(
                 event["delivery_id"],
                 (
                     "retry"
-                    if event["attempts"] < settings.max_retries
+                    if not stale_state and event["attempts"] < settings.max_retries
                     else "failed"
                 ),
                 str(exc),

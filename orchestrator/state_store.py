@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 
 LEASE_SECONDS = 180
+RETRY_DELAYS_SECONDS = (0, 120, 300, 600, 1200)
 
 
 def now() -> str:
@@ -52,7 +53,8 @@ class StateStore:
                   updated_at TEXT,
                   checkpoint_json TEXT,
                   lease_id TEXT,
-                  lease_expires_at TEXT
+                  lease_expires_at TEXT,
+                  next_retry_at TEXT
                 );"""
             )
             columns = {
@@ -69,6 +71,10 @@ class StateStore:
                 connection.execute(
                     "ALTER TABLE events ADD COLUMN lease_expires_at TEXT"
                 )
+            if "next_retry_at" not in columns:
+                connection.execute(
+                    "ALTER TABLE events ADD COLUMN next_retry_at TEXT"
+                )
 
     def recover_interrupted(self) -> int:
         """Requeue only expired (or pre-migration unleased) events."""
@@ -83,7 +89,8 @@ class StateStore:
                          ELSE error || '; recovered after orchestrator restart'
                        END,
                        updated_at=?,
-                       lease_id=NULL, lease_expires_at=NULL
+                       lease_id=NULL, lease_expires_at=NULL,
+                       next_retry_at=NULL
                    WHERE status='running'
                      AND (lease_expires_at IS NULL OR lease_expires_at<=?)""",
                 (timestamp, timestamp),
@@ -115,7 +122,7 @@ class StateStore:
             timestamp = now()
             connection.execute(
                 """UPDATE events SET status='retry', lease_id=NULL,
-                       lease_expires_at=NULL, updated_at=?,
+                       lease_expires_at=NULL, next_retry_at=NULL, updated_at=?,
                        error='worker lease expired'
                    WHERE status='running'
                      AND (lease_expires_at IS NULL OR lease_expires_at<=?)""",
@@ -123,9 +130,12 @@ class StateStore:
             )
             row = connection.execute(
                 """SELECT * FROM events
-                   WHERE status IN ('queued','retry')
+                   WHERE status='queued'
+                      OR (status='retry'
+                          AND (next_retry_at IS NULL OR next_retry_at<=?))
                    ORDER BY created_at
-                   LIMIT 1"""
+                   LIMIT 1""",
+                (timestamp,),
             ).fetchone()
             if not row:
                 connection.execute("COMMIT")
@@ -199,14 +209,22 @@ class StateStore:
         lease_id: str | None = None,
     ) -> bool:
         with self.lock, self.conn() as connection:
+            row = connection.execute(
+                "SELECT attempts FROM events WHERE delivery_id=?",
+                (delivery_id,),
+            ).fetchone()
+            delay = RETRY_DELAYS_SECONDS[min(max((row["attempts"] if row else 1) - 1, 0), 4)]
+            next_retry_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=delay)
+            ).isoformat() if status == "retry" else None
             cursor = connection.execute(
                 """UPDATE events
                    SET status=?, error=?, updated_at=?,
-                       lease_id=NULL, lease_expires_at=NULL
+                       lease_id=NULL, lease_expires_at=NULL, next_retry_at=?
                    WHERE delivery_id=?
                      AND (? IS NULL OR (lease_id=? AND status='running'
                                        AND lease_expires_at>?))""",
-                (status, error, now(), delivery_id,
+                (status, error, now(), next_retry_at, delivery_id,
                  lease_id, lease_id, now()),
             )
             return cursor.rowcount == 1
