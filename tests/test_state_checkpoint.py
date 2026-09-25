@@ -26,6 +26,12 @@ def test_existing_database_migrates_and_retries_with_report_checkpoint(tmp_path)
     }
     store.checkpoint("delivery-1", checkpoint)
 
+    # A live lease must survive process startup; expire it to model a crash.
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE events SET lease_expires_at=? WHERE delivery_id=?",
+            ("2000-01-01T00:00:00+00:00", "delivery-1"),
+        )
     restarted = StateStore(str(path))
     resumed = restarted.claim_next()
     assert resumed["attempts"] == 2

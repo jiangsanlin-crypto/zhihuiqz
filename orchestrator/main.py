@@ -210,13 +210,17 @@ async def require_current_state(
 
 
 async def process(event: dict) -> None:
+    def require_lease() -> None:
+        if event.get("lease_id"):
+            store.assert_lease(event["delivery_id"], event["lease_id"])
+
     routed = build(
         event["event_name"],
         event["payload"],
         settings.github_repository,
     )
     if not routed:
-        store.finish(event["delivery_id"], "ignored")
+        store.finish(event["delivery_id"], "ignored", lease_id=event.get("lease_id"))
         return
 
     req, _webhook_labels = routed
@@ -277,6 +281,7 @@ async def process(event: dict) -> None:
         )
     except HandoffGateError as exc:
         await require_current_state(req, req.source_sha, todo_workflow)
+        require_lease()
         await github.comment(
             req.repository,
             req.source_number,
@@ -291,6 +296,7 @@ async def process(event: dict) -> None:
         current_labels = await require_current_state(
             req, req.source_sha, todo_workflow
         )
+        require_lease()
         await github.set_labels(
             req.repository,
             req.source_number,
@@ -303,7 +309,7 @@ async def process(event: dict) -> None:
                 phase=req.phase,
             ),
         )
-        store.finish(event["delivery_id"], "done")
+        store.finish(event["delivery_id"], "done", lease_id=event.get("lease_id"))
         return
 
     if github.configured and not checkpoint:
@@ -316,6 +322,7 @@ async def process(event: dict) -> None:
             if not label.startswith("status:")
         ]
         running_labels.append("status:running")
+        require_lease()
         await github.set_labels(
             req.repository,
             req.source_number,
@@ -326,12 +333,14 @@ async def process(event: dict) -> None:
     if checkpoint:
         result = AgentRunResult.model_validate(checkpoint["result"])
     else:
+        require_lease()
         result = await workbuddy.run(req)
         if result.status == "success" and result.changes:
             store.checkpoint(
                 event["delivery_id"],
                 {"source_sha": req.source_sha,
                  "result": result.model_dump(mode="json")},
+                lease_id=event.get("lease_id"),
             )
 
     if result.status == "success" and result.changes:
@@ -349,6 +358,7 @@ async def process(event: dict) -> None:
                     req, req.source_sha, running_workflow
                 )
             checkpoint_source_sha = req.source_sha
+            require_lease()
             new_sha = await github.update_pr_files(
                 req.repository,
                 req.source_number,
@@ -369,6 +379,7 @@ async def process(event: dict) -> None:
                 event["delivery_id"],
                 {"source_sha": checkpoint_source_sha, "published_sha": new_sha,
                  "result": result.model_dump(mode="json")},
+                lease_id=event.get("lease_id"),
             )
 
     handoff = ensure_handoff(req, result)
@@ -428,7 +439,10 @@ async def process(event: dict) -> None:
         "transition_labels": transition_labels,
         "terminal_policy_text": terminal_policy_text,
     }
-    store.checkpoint(event["delivery_id"], checkpoint_payload)
+    store.checkpoint(
+        event["delivery_id"], checkpoint_payload,
+        lease_id=event.get("lease_id"),
+    )
 
     comments = await github.list_comments(
         req.repository,
@@ -444,6 +458,7 @@ async def process(event: dict) -> None:
 
     if not already_handed_off:
         await require_current_state(req, transition_sha, running_workflow)
+        require_lease()
         await github.comment(
             req.repository,
             req.source_number,
@@ -471,6 +486,7 @@ async def process(event: dict) -> None:
                 transition_sha,
                 running_workflow,
             )
+            require_lease()
             await github.comment(
                 req.repository,
                 req.source_number,
@@ -484,6 +500,7 @@ async def process(event: dict) -> None:
 
     if live_workflow == running_workflow:
         await require_current_state(req, transition_sha, running_workflow)
+        require_lease()
         await github.set_labels(
             req.repository,
             req.source_number,
@@ -503,7 +520,7 @@ async def process(event: dict) -> None:
                 "agent:codex" not in transition_labels
                 or "phase:release" not in transition_labels
             ):
-                store.finish(event["delivery_id"], "done")
+                store.finish(event["delivery_id"], "done", lease_id=event.get("lease_id"))
                 return
             event_type = "agent_codex_release"
         elif req.phase == "phase:deploy":
@@ -521,6 +538,7 @@ async def process(event: dict) -> None:
         dispatch_key = (
             f"{event['delivery_id']}:{event_type}:{transition_sha}"
         )
+        require_lease()
         await github.repository_dispatch(
             req.repository,
             event_type,
@@ -536,7 +554,15 @@ async def process(event: dict) -> None:
     if result.status == "failed":
         raise RuntimeError(result.summary)
 
-    store.finish(event["delivery_id"], "done")
+    store.finish(event["delivery_id"], "done", lease_id=event.get("lease_id"))
+
+
+async def keep_lease(event: dict, owner: asyncio.Task) -> None:
+    while True:
+        await asyncio.sleep(30)
+        if not store.heartbeat(event["delivery_id"], event["lease_id"]):
+            owner.cancel()
+            return
 
 
 async def worker(stop: asyncio.Event) -> None:
@@ -546,8 +572,16 @@ async def worker(stop: asyncio.Event) -> None:
             await asyncio.sleep(2)
             continue
 
+        heartbeat = asyncio.create_task(keep_lease(event, asyncio.current_task()))
         try:
             await process(event)
+        except asyncio.CancelledError:
+            store.finish(
+                event["delivery_id"], "retry", "worker lease lost",
+                lease_id=event["lease_id"],
+            )
+            if stop.is_set():
+                raise
         except Exception as exc:
             store.finish(
                 event["delivery_id"],
@@ -557,8 +591,15 @@ async def worker(stop: asyncio.Event) -> None:
                     else "failed"
                 ),
                 str(exc),
+                lease_id=event["lease_id"],
             )
             await asyncio.sleep(2)
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
 
 
 @asynccontextmanager
