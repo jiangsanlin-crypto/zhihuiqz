@@ -81,3 +81,16 @@ def test_owner_recovery_observation_is_never_a_review_pass():
         "<!-- agent-repair:v1 -->", "<!-- repair-ci-wait:v1 -->"
     ))
     assert decide(pr(status="todo"), [observation])["reason"] == "REVIEW_REPAIR_MERGE_CONFLICT"
+
+
+def test_preexisting_conflict_blocker_recovers_only_from_its_exact_observation():
+    state = pr(status="blocked", mergeable="clean")
+    state["labels"] = [x for x in state["labels"] if x["name"] != "recovery:repair-ci"]
+    observation = dict(repair(), body=repair()["body"].replace(
+        "<!-- agent-repair:v1 -->",
+        "<!-- repair-ci-wait:v1 -->\nblocker_code=REVIEW_REPAIR_MERGE_CONFLICT",
+    ))
+    assert decide(state, [observation], ci())["action"] == "requeue_review"
+    assert decide(state, [repair()], ci())["reason"] == "unrelated_blocker"
+    state["labels"].append({"name": "blocker:content"})
+    assert decide(state, [observation], ci())["reason"] == "unrelated_blocker"

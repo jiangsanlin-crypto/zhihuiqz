@@ -38,7 +38,9 @@ def decide_repair_recovery(
         return {"action": "noop", "reason": "not_repair_waiting_for_ci"}
 
     blocked = "status:blocked" in labels
-    if blocked and BLOCKER_LABEL not in labels:
+    legacy_blocked = blocked and BLOCKER_LABEL not in labels
+    if legacy_blocked and any(label.startswith("blocker:") or label == "watchdog:timeout"
+                              for label in labels):
         return {"action": "noop", "reason": "unrelated_blocker"}
 
     # An owner-authored repair or recovery observation binds the waiting phase
@@ -60,13 +62,21 @@ def decide_repair_recovery(
             )
         ):
             continue
+        if legacy_blocked and not (
+            "<!-- repair-ci-wait:v1 -->" in body
+            and "blocker_code=REVIEW_REPAIR_MERGE_CONFLICT" in body
+            and f"source_sha={sha}" in body
+        ):
+            continue
         if f"source_sha={sha}" not in body and not blocked:
             continue
         when = timestamp(comment.get("created_at"))
         if when and (repair_at is None or when > repair_at):
             repair_at = when
     if repair_at is None:
-        return {"action": "noop", "reason": "missing_trusted_repair_record"}
+        return {"action": "noop", "reason": (
+            "unrelated_blocker" if legacy_blocked else "missing_trusted_repair_record"
+        )}
 
     ci_id = _successful_current_ci(
         ci_runs, head_sha=sha, head_ref=str(head.get("ref") or "")
