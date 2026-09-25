@@ -65,7 +65,7 @@ def decide_repair_recovery(
         if legacy_blocked and not (
             "<!-- repair-ci-wait:v1 -->" in body
             and "blocker_code=REVIEW_REPAIR_MERGE_CONFLICT" in body
-            and f"source_sha={sha}" in body
+            and "source_sha=" in body
         ):
             continue
         if f"source_sha={sha}" not in body and not blocked:

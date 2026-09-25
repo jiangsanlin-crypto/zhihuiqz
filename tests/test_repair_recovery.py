@@ -91,6 +91,11 @@ def test_preexisting_conflict_blocker_recovers_only_from_its_exact_observation()
         "<!-- repair-ci-wait:v1 -->\nblocker_code=REVIEW_REPAIR_MERGE_CONFLICT",
     ))
     assert decide(state, [observation], ci())["action"] == "requeue_review"
+    # Resolving a conflict advances HEAD; the old observation identifies the
+    # machine blocker, while only the new SHA's CI may restart independent review.
+    assert decide(pr(status="blocked", sha="new-head", mergeable="clean") | {
+        "labels": state["labels"]
+    }, [observation], ci(sha="new-head"))["action"] == "requeue_review"
     assert decide(state, [repair()], ci())["reason"] == "unrelated_blocker"
     state["labels"].append({"name": "blocker:content"})
     assert decide(state, [observation], ci())["reason"] == "unrelated_blocker"
