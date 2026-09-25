@@ -164,7 +164,7 @@ jobs:
         run: |
           gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
 
-          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent "$PREV_FROM"             --to-agent "$PREV_TO"             --phase "$PREV_PHASE"             --source-sha "$SOURCE_SHA"
+          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent "$PREV_FROM"             --to-agent "$PREV_TO"             --phase "$PREV_PHASE"             --source-sha "$SOURCE_SHA"             --trusted-login "${{ github.repository_owner }}"             --trusted-login "github-actions[bot]"
 
           jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
 
