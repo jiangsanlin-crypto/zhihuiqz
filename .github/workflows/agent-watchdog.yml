@@ -111,6 +111,21 @@ jobs:
               fi
 
               [ -n "$EVENT" ] || continue
+
+              # Old ad-hoc E2E tasks are archival noise. Only new synthetic tests
+              # carrying the machine-readable marker may be redispatched.
+              if [ "$IS_PR" = "true" ]; then
+                BODY_PR="$(jq -r '.body // ""' "$PR_JSON")"
+                ROOT_ISSUE="$(printf '%s' "$BODY_PR" | sed -n 's/.*agent-task-id:GH-ISSUE-\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                if [ -n "$ROOT_ISSUE" ]; then
+                  ROOT_TITLE="$(gh issue view "$ROOT_ISSUE" --repo "${{ github.repository }}" --json title --jq '.title' 2>/dev/null || true)"
+                  ROOT_BODY="$(gh issue view "$ROOT_ISSUE" --repo "${{ github.repository }}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                  if [[ "$ROOT_TITLE" == "[E2E]"* ]] && ! printf '%s' "$ROOT_BODY" | grep -Fq '<!-- synthetic-e2e:true -->'; then
+                    continue
+                  fi
+                fi
+              fi
+
               PREFIX="<!-- agent-watchdog:redispatch:$AGENT:$PHASE:$REV:"
               COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
               if [ "$COUNT" -ge 2 ]; then
@@ -137,9 +152,15 @@ jobs:
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
+            IS_PR="$(gh api "repos/${{ github.repository }}/issues/$NUMBER" --jq 'has("pull_request")')"
+            if [ "$IS_PR" = "true" ]; then
+              REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
+            else
+              REV="issue-$NUMBER"
+            fi
             gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: Codex exceeded the 55-minute running limit. The task was blocked instead of advancing. Inspect the latest handoff/workflow logs and retry the same Codex phase after resolving the cause."
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT:$REV --> ⏱ Central watchdog: Codex exceeded the 55-minute running limit. The task was blocked instead of advancing. Inspect the latest handoff/workflow logs and retry the same Codex phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
 
       - name: Block OpenAI Validator phases after phase-specific timeout
@@ -158,9 +179,10 @@ jobs:
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
+              REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
               gh issue edit "$NUMBER" --repo "${{ github.repository }}"                 --remove-label "status:running"                 --add-label "status:blocked"                 --add-label "watchdog:timeout" || true
 
-              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "<!-- agent-watchdog:timeout:workbuddy:$PHASE --> ⏱ Central watchdog: OpenAI Validator exceeded the $LIMIT-minute limit for $PHASE. The task was blocked instead of advancing."
+              gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "<!-- agent-watchdog:timeout:workbuddy:$PHASE:$REV --> ⏱ Central watchdog: OpenAI Validator exceeded the $LIMIT-minute limit for $PHASE. The task was blocked instead of advancing."
             done < "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
           done
 
@@ -177,13 +199,14 @@ jobs:
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
+            REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
             gh issue edit "$NUMBER" --repo "${{ github.repository }}" \
               --remove-label "status:running" \
               --add-label "status:blocked" \
               --add-label "watchdog:timeout" || true
 
             gh issue comment "$NUMBER" --repo "${{ github.repository }}" \
-              --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: Work code review exceeded the 120-minute running limit. The task was blocked instead of advancing to Luna QA."
+              --body "<!-- agent-watchdog:timeout:$AGENT:$REV --> ⏱ Central watchdog: Work code review exceeded the 120-minute running limit. The task was blocked instead of advancing to Luna QA."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
 
       - name: Block ChatGPT running longer than 120 minutes
@@ -201,9 +224,10 @@ jobs:
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
+            REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
             gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:running"               --add-label "status:blocked"               --add-label "watchdog:timeout" || true
 
-            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT --> ⏱ Central watchdog: ChatGPT exceeded the 120-minute running limit. The task was blocked instead of advancing. Inspect the account worker / PR / CI evidence and retry the same implementation phase after resolving the cause."
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "<!-- agent-watchdog:timeout:$AGENT:$REV --> ⏱ Central watchdog: ChatGPT exceeded the 120-minute running limit. The task was blocked instead of advancing. Inspect the account worker / PR / CI evidence and retry the same implementation phase after resolving the cause."
           done < "$RUNNER_TEMP/running-$AGENT.txt"
 
 
@@ -238,6 +262,18 @@ jobs:
             else
               REV="issue-$NUMBER"
               TASK_ID="GH-ISSUE-$NUMBER"
+            fi
+
+            TIMEOUT_MARKER=""
+            if [ "$AGENT" = "workbuddy" ]; then
+              TIMEOUT_MARKER="<!-- agent-watchdog:timeout:$AGENT:$PHASE:$REV -->"
+            else
+              TIMEOUT_MARKER="<!-- agent-watchdog:timeout:$AGENT:$REV -->"
+            fi
+            HAS_CURRENT_TIMEOUT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.body | contains(\"$TIMEOUT_MARKER\")) | .id" | head -n1)"
+            if [ -z "$HAS_CURRENT_TIMEOUT" ]; then
+              echo "PR/issue #$NUMBER has only a legacy/stale timeout marker; do not auto-revive it."
+              continue
             fi
 
             PREFIX="<!-- agent-watchdog:auto-retry:$AGENT:$PHASE:$REV:"
