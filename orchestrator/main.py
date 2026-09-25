@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from .adapters import HttpAgentAdapter
 from .config import settings
 from .github_client import GitHubClient
-from .handoff_gate import HandoffGateError, validate_handoff
+from .handoff_gate import HandoffGateError, extract_handoff, validate_handoff
 from .models import AgentRunResult, Handoff
 from .readiness import all_ok, static_checks
 from .security import verify_bearer, verify_github_signature
@@ -94,6 +94,56 @@ def handoff_comment(handoff: Handoff) -> str:
     )
 
 
+def _trusted_comment(comment: dict, repository: str) -> bool:
+    login = str((comment.get("user") or {}).get("login") or "")
+    return login in {repository.split("/", 1)[0], "github-actions[bot]"}
+
+
+def handoff_comment_exists(
+    comments: list[dict], handoff: Handoff, repository: str
+) -> bool:
+    expected = handoff.model_dump(mode="json")
+    keys = (
+        "task_id", "from_agent", "to_agent", "phase", "status",
+        "source_sha", "blockers",
+    )
+    for comment in comments:
+        if not _trusted_comment(comment, repository):
+            continue
+        try:
+            payload = extract_handoff(str(comment.get("body") or ""))
+        except HandoffGateError:
+            continue
+        if payload and all(payload.get(key) == expected.get(key) for key in keys):
+            return True
+    return False
+
+
+def terminal_policy_comment_exists(
+    comments: list[dict], repository: str, task_id: str, source_sha: str
+) -> bool:
+    for comment in comments:
+        if not _trusted_comment(comment, repository):
+            continue
+        body = str(comment.get("body") or "")
+        if (
+            "<!-- terminal-policy:v1 -->" in body
+            and f"task_id={task_id}" in body.splitlines()
+            and f"source_sha={source_sha}" in body.splitlines()
+        ):
+            return True
+    return False
+
+
+def dispatch_delivery_id(payload: dict, header_delivery_id: str | None) -> str:
+    if payload.get("action") is None:
+        client_payload = payload.get("client_payload") or {}
+        dispatch_key = str(client_payload.get("dispatch_key") or "")
+        if dispatch_key:
+            return f"repository-dispatch:{dispatch_key}"
+    return header_delivery_id or str(uuid.uuid4())
+
+
 def required_handoff(req):
     if req.phase == "phase:prototype":
         return {
@@ -168,6 +218,7 @@ async def process(event: dict) -> None:
         return
 
     req, _webhook_labels = routed
+    event_source_sha = req.source_sha
 
     if not github.configured:
         raise RuntimeError("GitHub write-back is required for handoff validation")
@@ -192,7 +243,12 @@ async def process(event: dict) -> None:
         current_labels = await github.get_issue_labels(
             req.repository, req.source_number
         )
-        if workflow_label_set(current_labels) != running_workflow:
+        allowed_workflows = [running_workflow]
+        if checkpoint.get("transition_labels"):
+            allowed_workflows.append(
+                workflow_label_set(checkpoint["transition_labels"])
+            )
+        if workflow_label_set(current_labels) not in allowed_workflows:
             raise RuntimeError("CHECKPOINT_WORKFLOW_STATE_SUPERSEDED")
     else:
         current_labels = await require_current_state(
@@ -315,10 +371,16 @@ async def process(event: dict) -> None:
 
     handoff = ensure_handoff(req, result)
     transition_sha = handoff.source_sha or req.source_sha
-    await require_current_state(req, transition_sha, running_workflow)
-    message = handoff_comment(handoff)
-    terminal_policy_text = None
-    if result.status == "success" and req.phase == "phase:qa":
+    terminal_policy_text = (
+        checkpoint.get("terminal_policy_text")
+        if checkpoint
+        else None
+    )
+    if (
+        terminal_policy_text is None
+        and result.status == "success"
+        and req.phase == "phase:qa"
+    ):
         issue_number = None
         if req.task_id.startswith("GH-ISSUE-"):
             try:
@@ -330,72 +392,144 @@ async def process(event: dict) -> None:
                 req.repository, issue_number
             )
 
-    if github.configured:
+    await require_current_head(req, transition_sha)
+    live_labels = await github.get_issue_labels(
+        req.repository,
+        req.source_number,
+    )
+    live_workflow = workflow_label_set(live_labels)
+    transition_labels = (
+        list(checkpoint["transition_labels"])
+        if checkpoint and checkpoint.get("transition_labels")
+        else next_labels(
+            req.agent,
+            req.source_kind,
+            live_labels,
+            result.status,
+            result.next_labels,
+            phase=req.phase,
+            terminal_policy_text=terminal_policy_text,
+        )
+    )
+    transition_workflow = workflow_label_set(transition_labels)
+    if live_workflow not in (running_workflow, transition_workflow):
+        raise RuntimeError(
+            "WORKFLOW_STATE_SUPERSEDED: "
+            f"live={sorted(live_workflow)} "
+            f"allowed={[sorted(running_workflow), sorted(transition_workflow)]}"
+        )
+
+    checkpoint_payload = {
+        "source_sha": event_source_sha,
+        "published_sha": transition_sha,
+        "result": result.model_dump(mode="json"),
+        "transition_labels": transition_labels,
+        "terminal_policy_text": terminal_policy_text,
+    }
+    store.checkpoint(event["delivery_id"], checkpoint_payload)
+
+    comments = await github.list_comments(
+        req.repository,
+        req.source_number,
+    )
+    already_handed_off = handoff_comment_exists(
+        comments,
+        handoff,
+        req.repository,
+    )
+    if live_workflow == transition_workflow and not already_handed_off:
+        raise RuntimeError("TRANSITION_WITHOUT_EXACT_HANDOFF")
+
+    if not already_handed_off:
         await require_current_state(req, transition_sha, running_workflow)
         await github.comment(
             req.repository,
             req.source_number,
-            message,
+            handoff_comment(handoff),
         )
-        if result.status == "success" and req.phase == "phase:qa":
-            policy = resolve_terminal_policy(terminal_policy_text or "")
-            await require_current_state(req, transition_sha, running_workflow)
+
+    policy = None
+    if result.status == "success" and req.phase == "phase:qa":
+        policy = resolve_terminal_policy(terminal_policy_text or "")
+        comments = await github.list_comments(
+            req.repository,
+            req.source_number,
+        )
+        already_recorded = terminal_policy_comment_exists(
+            comments,
+            req.repository,
+            req.task_id,
+            transition_sha,
+        )
+        if live_workflow == transition_workflow and not already_recorded:
+            raise RuntimeError("TRANSITION_WITHOUT_TERMINAL_POLICY")
+        if not already_recorded:
+            await require_current_state(
+                req,
+                transition_sha,
+                running_workflow,
+            )
             await github.comment(
                 req.repository,
                 req.source_number,
                 "<!-- terminal-policy:v1 -->\n"
                 f"task_id={req.task_id}\n"
-                f"source_sha={handoff.source_sha or req.source_sha}\n"
+                f"source_sha={transition_sha}\n"
                 f"policy={policy.policy or 'unresolved'}\n"
                 f"release_enabled={str(policy.release_enabled).lower()}\n"
                 f"reason={policy.reason}",
             )
-        current_labels = await require_current_state(
-            req, transition_sha, running_workflow
-        )
-        transition_labels = next_labels(
-            req.agent, req.source_kind, current_labels,
-            result.status, result.next_labels, phase=req.phase,
-            terminal_policy_text=terminal_policy_text,
-        )
+
+    if live_workflow == running_workflow:
+        await require_current_state(req, transition_sha, running_workflow)
         await github.set_labels(
             req.repository,
             req.source_number,
             transition_labels,
         )
         await require_current_state(
-            req, transition_sha, workflow_label_set(transition_labels)
+            req,
+            transition_sha,
+            transition_workflow,
         )
 
-        if result.status == "success":
-            if req.phase == "phase:prototype":
-                event_type = "agent_chatgpt_implementation"
-            elif req.phase == "phase:qa":
-                if ("agent:codex" not in transition_labels
-                    or "phase:release" not in transition_labels):
-                    store.finish(event["delivery_id"], "done")
-                    return
-                event_type = "agent_codex_release"
-            elif req.phase == "phase:deploy":
-                event_type = "agent_execute_deployment"
-            else:
-                raise RuntimeError(
-                    f"no dispatch mapping for WorkBuddy phase {req.phase}"
-                )
+    if result.status == "success":
+        if req.phase == "phase:prototype":
+            event_type = "agent_chatgpt_implementation"
+        elif req.phase == "phase:qa":
+            if (
+                "agent:codex" not in transition_labels
+                or "phase:release" not in transition_labels
+            ):
+                store.finish(event["delivery_id"], "done")
+                return
+            event_type = "agent_codex_release"
+        elif req.phase == "phase:deploy":
+            event_type = "agent_execute_deployment"
+        else:
+            raise RuntimeError(
+                f"no dispatch mapping for WorkBuddy phase {req.phase}"
+            )
 
-            await require_current_state(
-                req, transition_sha, workflow_label_set(transition_labels)
-            )
-            await github.repository_dispatch(
-                req.repository,
-                event_type,
-                {
-                    "pr_number": req.source_number,
-                    "task_id": handoff.task_id,
-                    "head_ref": handoff.source_ref or req.source_ref,
-                    "source_sha": handoff.source_sha or req.source_sha,
-                },
-            )
+        await require_current_state(
+            req,
+            transition_sha,
+            transition_workflow,
+        )
+        dispatch_key = (
+            f"{event['delivery_id']}:{event_type}:{transition_sha}"
+        )
+        await github.repository_dispatch(
+            req.repository,
+            event_type,
+            {
+                "pr_number": req.source_number,
+                "task_id": handoff.task_id,
+                "head_ref": handoff.source_ref or req.source_ref,
+                "source_sha": transition_sha,
+                "dispatch_key": dispatch_key,
+            },
+        )
 
     if result.status == "failed":
         raise RuntimeError(result.summary)
@@ -491,7 +625,7 @@ async def events(
     except json.JSONDecodeError:
         raise HTTPException(400, "invalid JSON")
 
-    delivery_id = x_github_delivery or str(uuid.uuid4())
+    delivery_id = dispatch_delivery_id(payload, x_github_delivery)
     return {
         "queued": store.enqueue(
             delivery_id,
