@@ -343,7 +343,64 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "Codex release review was not started because the required successful WorkBuddy QA handoff was invalid."
           exit 1
 
+      - name: Require release-enabled terminal policy or exact owner release approval
+        id: terminal_gate
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          ISSUE_NUMBER="$(printf '%s' "$TASK_ID" | sed -n 's/^GH-ISSUE-\([0-9][0-9]*\)$/\1/p')"
+          BODY=""
+          if [ -n "$ISSUE_NUMBER" ]; then
+            BODY="$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json body --jq '.body // ""')"
+          fi
+          export BODY
+          RELEASE_ENABLED="$(PYTHONPATH=. python - <<'PY'
+          import os
+          from orchestrator.terminal_policy import resolve_terminal_policy
+          print("true" if resolve_terminal_policy(os.environ.get("BODY", "")).release_enabled else "false")
+          PY
+          )"
+          if [ "$RELEASE_ENABLED" = "true" ]; then
+            exit 0
+          fi
+
+          LABELS="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name')"
+          echo "$LABELS" | grep -qx "approval:production-approved"
+
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" --paginate > "$RUNNER_TEMP/release-approval-comments.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          comments=json.loads(Path(os.environ["RUNNER_TEMP"],"release-approval-comments.json").read_text())
+          owner=os.environ["OWNER"]; task=os.environ["TASK_ID"]; sha=os.environ["SOURCE_SHA"]
+          for comment in reversed(comments):
+              if (comment.get("user") or {}).get("login") != owner:
+                  continue
+              body=str(comment.get("body") or "")
+              if "<!-- release-approval:v1 -->" not in body:
+                  continue
+              if all(x in body for x in (f"task_id={task}", f"source_sha={sha}", "approved=true")):
+                  raise SystemExit(0)
+          raise SystemExit("release requires release_enabled policy or exact-SHA owner approval")
+          PY
+
+      - name: Hold release in owner review
+        if: steps.terminal_gate.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "agent:codex"             --remove-label "phase:release"             --remove-label "status:todo"             --remove-label "status:running"             --add-label "status:review"             --add-label "approval:production-required"
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "⏸️ Release stopped fail-closed: terminal policy does not permit automatic release and no exact-SHA owner release approval was found."
+
       - name: Mark release review running
+        if: steps.terminal_gate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -351,6 +408,7 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:todo"             --add-label "status:running"
 
       - name: Build release prompt
+        if: steps.terminal_gate.outcome == 'success'
         env:
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           TASK_ID: ${{ steps.context.outputs.task_id }}
@@ -367,6 +425,7 @@ jobs:
           } > "$RUNNER_TEMP/codex-release.md"
 
       - name: Run Codex release review
+        if: steps.terminal_gate.outcome == 'success'
         id: codex
         continue-on-error: true
         uses: openai/codex-action@v1
@@ -480,7 +539,7 @@ jobs:
             }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
 
       - name: Block failed release review
-        if: steps.codex.outcome != 'success' || steps.release_files.outputs.value != 'true'
+        if: steps.terminal_gate.outcome == 'success' && (steps.codex.outcome != 'success' || steps.release_files.outputs.value != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
