@@ -17,6 +17,7 @@ from .readiness import all_ok, static_checks
 from .security import verify_bearer, verify_github_signature
 from .state_store import StateStore
 from .task_router import build, next_labels
+from .terminal_policy import resolve_terminal_policy
 
 store = StateStore(settings.state_db)
 github = GitHubClient(settings.github_token)
@@ -231,6 +232,18 @@ async def process(event: dict) -> None:
             req.source_number,
             message,
         )
+        if result.status == "success" and req.phase == "phase:qa":
+            policy = resolve_terminal_policy(terminal_policy_text or "")
+            await github.comment(
+                req.repository,
+                req.source_number,
+                "<!-- terminal-policy:v1 -->\n"
+                f"task_id={req.task_id}\n"
+                f"source_sha={handoff.source_sha or req.source_sha}\n"
+                f"policy={policy.policy or 'unresolved'}\n"
+                f"release_enabled={str(policy.release_enabled).lower()}\n"
+                f"reason={policy.reason}",
+            )
         await github.set_labels(
             req.repository,
             req.source_number,
