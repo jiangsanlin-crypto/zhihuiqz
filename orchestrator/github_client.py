@@ -65,6 +65,18 @@ class GitHubClient:
                 return comments
             page += 1
 
+    async def get_issue_labels(self, repo: str, number: int) -> list[str]:
+        response = await self._request(
+            "GET",
+            f"{self.base}/repos/{repo}/issues/{number}",
+        )
+        data = response.json()
+        return [
+            str(item.get("name"))
+            for item in (data.get("labels") or [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+
     async def repository_dispatch(
         self,
         repo: str,
