@@ -56,6 +56,55 @@ jobs:
             done < "$RUNNER_TEMP/queued-$AGENT.txt"
           done
 
+      - name: Requeue exact-SHA technical failures with bounded budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          QUERY="repo:${{ github.repository }} is:open label:status:blocked label:recovery:technical"
+          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/technical-blocked.txt"
+
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            ISSUE_JSON="$RUNNER_TEMP/technical-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/issues/$NUMBER" > "$ISSUE_JSON"
+            LABELS="$(jq -r '.labels[].name' "$ISSUE_JSON")"
+            AGENT_LABEL="$(printf '%s\n' "$LABELS" | grep '^agent:' | head -n1 || true)"
+            PHASE="$(printf '%s\n' "$LABELS" | grep '^phase:' | head -n1 || true)"
+            [ -n "$AGENT_LABEL" ] && [ -n "$PHASE" ] || continue
+            AGENT="${AGENT_LABEL#agent:}"
+
+            IS_PR="$(jq -r 'has("pull_request")' "$ISSUE_JSON")"
+            if [ "$IS_PR" = "true" ]; then
+              REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
+            else
+              REV="issue-$NUMBER"
+            fi
+
+            FAILURE_MARKER="<!-- agent-technical-failure:v1:$AGENT:$PHASE:$REV -->"
+            HAS_FAILURE="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.body | contains(\"$FAILURE_MARKER\")) | .id" | head -n1)"
+            if [ -z "$HAS_FAILURE" ]; then
+              echo "#$NUMBER lacks exact-current-revision technical failure evidence; fail closed."
+              continue
+            fi
+
+            PREFIX="<!-- agent-watchdog:technical-retry:$AGENT:$PHASE:$REV:"
+            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+            if [ "$COUNT" -ge 2 ]; then
+              gh issue edit "$NUMBER" --repo "${{ github.repository }}" --remove-label "recovery:technical" || true
+              EXHAUSTED="<!-- agent-watchdog:technical-exhausted:$AGENT:$PHASE:$REV -->"
+              EXISTING="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.body | contains(\"$EXHAUSTED\")) | .id" | head -n1)"
+              if [ -z "$EXISTING" ]; then
+                gh issue comment "$NUMBER" --repo "${{ github.repository }}"                   --body "$EXHAUSTED Technical retry budget exhausted after 2 automatic attempts at exact revision $REV. Task remains status:blocked."
+              fi
+              continue
+            fi
+
+            ATTEMPT=$((COUNT + 1))
+            gh issue edit "$NUMBER" --repo "${{ github.repository }}"               --remove-label "status:blocked"               --add-label "status:todo"
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}"               --body "$PREFIX$ATTEMPT --> 🔁 Requeued retryable technical failure at exact revision $REV (attempt $ATTEMPT/2). API redispatch remains exact-SHA/idempotent."
+          done < "$RUNNER_TEMP/technical-blocked.txt"
+
       - name: Redispatch queued API-owned phases with bounded idempotency
         env:
           GH_TOKEN: ${{ github.token }}
@@ -134,6 +183,7 @@ jobs:
               ATTEMPT=$((COUNT + 1))
 
               jq -n --arg event_type "$EVENT" --argjson client_payload "$PAYLOAD" '{event_type:$event_type,client_payload:$client_payload}'               | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+              gh issue edit "$NUMBER" --repo "${{ github.repository }}" --remove-label "recovery:technical" || true
 
               gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "$PREFIX$ATTEMPT --> 🔁 Watchdog redispatched $EVENT for exact revision $REV (attempt $ATTEMPT/2)."
             done < "$RUNNER_TEMP/redispatch-$AGENT.txt"
