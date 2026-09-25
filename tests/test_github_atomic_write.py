@@ -30,6 +30,9 @@ def client_with_fake_github(monkeypatch, *, advance_before_ref=False, reject_ref
             }
         elif method == "GET" and url.endswith("/git/commits/old-head"):
             result = {"tree": {"sha": "old-tree"}}
+        elif method == "GET" and url.endswith("/commits/old-head"):
+            result = {"parents": [{"sha": "foreign"}],
+                      "commit": {"message": ""}, "files": []}
         elif method == "POST" and url.endswith("/git/blobs"):
             result = {"sha": f"blob-{len([x for x in calls if x[1].endswith('/git/blobs')])}"}
         elif method == "POST" and url.endswith("/git/trees"):
