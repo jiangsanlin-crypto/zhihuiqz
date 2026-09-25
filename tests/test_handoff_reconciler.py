@@ -134,3 +134,23 @@ def test_blocked_handoff_never_advances():
     )
 
     assert decision == {"action": "noop", "reason": "handoff_has_blockers"}
+
+
+def test_owner_wait_is_never_requeued_by_old_handoff():
+    decision = decide_reconciliation(
+        pr(["status:review", "approval:production-required"]),
+        [comment(handoff())],
+        repository_owner=OWNER,
+    )
+
+    assert decision == {"action": "noop", "reason": "intentional_owner_wait"}
+
+
+def test_blocked_review_is_never_resurrected_by_old_handoff():
+    decision = decide_reconciliation(
+        pr(["agent:workreview", "phase:code-review", "status:blocked"]),
+        [comment(handoff())],
+        repository_owner=OWNER,
+    )
+
+    assert decision == {"action": "noop", "reason": "blocked_requires_recovery"}
