@@ -85,4 +85,23 @@ require(
     ],
 )
 
+
+require(
+    ".github/workflows/agent-watchdog.yml",
+    [
+        "Redispatch queued API-owned phases with bounded idempotency",
+        "Recover watchdog timeout blockers with bounded retry and escalation",
+        "agent-watchdog:redispatch",
+        "agent-watchdog:auto-retry",
+        "phase:escalation-repair",
+    ],
+)
+
+require(
+    ".github/workflows/bootstrap-labels.yml",
+    [
+        'phase:escalation-repair',
+    ],
+)
+
 print("full-auto production safety policy validated")
