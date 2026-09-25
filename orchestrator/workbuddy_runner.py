@@ -627,9 +627,10 @@ Read the public PR directly and inspect:
 - reports/classification_validation.md;
 - deployment documentation and Docker configuration.
 
-This system is configured for fully automatic delivery. Do not request a human
-approval step. Instead, decide whether deployment is safe based on the
-documented gates.
+Decide deployment readiness from the documented technical gates. A successful
+deployment-readiness result does not itself authorize production. The
+deterministic production workflow separately requires explicit owner approval
+bound to the exact final SHA before merge/deployment.
 
 Return JSON ONLY:
 {{

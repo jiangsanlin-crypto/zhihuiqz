@@ -15,6 +15,10 @@ permissions:
   pull-requests: write
   checks: read
 
+concurrency:
+  group: production-deploy-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -37,6 +41,10 @@ jobs:
               raise SystemExit("emergency stop is active")
           if policy.get("require_ci_check") != "test":
               raise SystemExit("required CI policy is not 'test'")
+          if policy.get("require_owner_approval") is not True:
+              raise SystemExit("explicit owner approval policy is not enabled")
+          if policy.get("synthetic_e2e_never_deploys") is not True:
+              raise SystemExit("synthetic E2E production guard is not enabled")
           print("full-auto repository policy validated")
           PY
 
@@ -49,10 +57,16 @@ jobs:
           TASK_ID_HINT: ${{ github.event.client_payload.task_id }}
           SOURCE_SHA_HINT: ${{ github.event.client_payload.source_sha }}
         run: |
+          set -euo pipefail
           PR_NUMBER="${PR_NUMBER_AUTO:-$PR_NUMBER_MANUAL}"
           test -n "$PR_NUMBER"
 
           gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER"             > "$RUNNER_TEMP/pr.json"
+
+          STATE="$(jq -r '.state' "$RUNNER_TEMP/pr.json")"
+          DRAFT="$(jq -r '.draft' "$RUNNER_TEMP/pr.json")"
+          test "$STATE" = "open"
+          test "$DRAFT" = "false"
 
           HEAD_REF="$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")"
           SOURCE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")"
@@ -80,10 +94,14 @@ jobs:
           ISSUE_NUMBER="$(printf '%s' "$TASK_ID" | sed -n 's/^GH-ISSUE-\([0-9][0-9]*\)$/\1/p')"
           DRY_RUN="false"
           if [ -n "$ISSUE_NUMBER" ]; then
-            TITLE="$(gh issue view "$ISSUE_NUMBER"               --repo "${{ github.repository }}"               --json title --jq '.title' 2>/dev/null || true)"
-            case "$TITLE" in
-              "[E2E]"*) DRY_RUN="true" ;;
-            esac
+            gh issue view "$ISSUE_NUMBER"               --repo "${{ github.repository }}"               --json title,body > "$RUNNER_TEMP/source-issue.json"
+            TITLE="$(jq -r '.title // ""' "$RUNNER_TEMP/source-issue.json")"
+            ISSUE_BODY="$(jq -r '.body // ""' "$RUNNER_TEMP/source-issue.json")"
+            if printf '%s' "$ISSUE_BODY" | grep -Fq '<!-- synthetic-e2e:true -->'; then
+              DRY_RUN="true"
+            elif [[ "$TITLE" == "[E2E]"* ]]; then
+              DRY_RUN="true"
+            fi
           fi
 
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
@@ -95,7 +113,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.context.outputs.head_ref }}
+          ref: ${{ steps.context.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -108,7 +126,7 @@ jobs:
         run: |
           gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
 
-          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent workbuddy             --to-agent workbuddy             --phase deployment_plan             --source-sha "$SOURCE_SHA"
+          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent workbuddy             --to-agent workbuddy             --phase deployment_plan             --source-sha "$SOURCE_SHA"             --trusted-login "${{ github.repository_owner }}"             --trusted-login "github-actions[bot]"
 
       - name: Validate release and deployment gates
         run: |
@@ -127,6 +145,57 @@ jobs:
               raise SystemExit("deployment gate is not ready")
 
           print("release/deployment gates ready")
+          PY
+
+      - name: Require exact-head CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          LIVE_SHA="$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq '.head.sha')"
+          test "$LIVE_SHA" = "$SOURCE_SHA"
+
+          OK="$(gh api -H "Accept: application/vnd.github+json"             "repos/${{ github.repository }}/commits/$SOURCE_SHA/check-runs?per_page=100"             --jq '[.check_runs[] | select(.name == "test" and .head_sha == "'"$SOURCE_SHA"'") | .conclusion] | any(. == "success")')"
+          test "$OK" = "true"
+
+      - name: Require exact-SHA owner production approval
+        if: steps.context.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          LABELS="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}"             --json labels --jq '.labels[].name')"
+          echo "$LABELS" | grep -qx "approval:production-approved"
+
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/approval-comments.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          comments=json.loads(Path(os.environ["RUNNER_TEMP"],"approval-comments.json").read_text())
+          owner=os.environ["OWNER"]
+          task=os.environ["TASK_ID"]
+          sha=os.environ["SOURCE_SHA"]
+          marker="<!-- production-approval:v1 -->"
+
+          for comment in reversed(comments):
+              if (comment.get("user") or {}).get("login") != owner:
+                  continue
+              body=str(comment.get("body") or "")
+              if marker not in body:
+                  continue
+              if all(item in body for item in (f"task_id={task}", f"source_sha={sha}", "approved=true")):
+                  print("exact-SHA owner production approval validated")
+                  break
+          else:
+              raise SystemExit("missing exact-SHA owner production approval")
           PY
 
       - name: E2E dry-run completion
@@ -154,21 +223,38 @@ jobs:
             echo "No tests directory; nothing to run."
           fi
 
-      - name: Merge approved-by-policy PR
+      - name: Recheck immutable merge inputs
         if: steps.context.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
-          gh pr merge "$PR_NUMBER"             --repo "${{ github.repository }}"             --squash             --delete-branch
+          set -euo pipefail
+          LIVE_SHA="$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq '.head.sha')"
+          test "$LIVE_SHA" = "$SOURCE_SHA"
 
-      - name: Resolve merged main SHA
+      - name: Merge exact approved PR head
+        if: steps.context.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+        run: |
+          gh pr merge "$PR_NUMBER"             --repo "${{ github.repository }}"             --squash             --delete-branch             --match-head-commit "$SOURCE_SHA"
+
+      - name: Resolve exact merge commit
         if: steps.context.outputs.dry_run != 'true'
         id: merged
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
         run: |
-          SHA="$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')"
+          set -euo pipefail
+          SHA="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}"             --json mergedAt,mergeCommit --jq '.mergeCommit.oid')"
+          test -n "$SHA"
+          CURRENT_MAIN="$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')"
+          test "$CURRENT_MAIN" = "$SHA"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Configure deployment SSH
@@ -185,7 +271,7 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Deploy main and verify 0m 1m 5m 15m health
+      - name: Deploy exact merge commit and verify 0m 1m 5m 15m health
         if: steps.context.outputs.dry_run != 'true'
         env:
           HOST: ${{ secrets.ORCH_SERVER_HOST }}
@@ -219,6 +305,8 @@ jobs:
           trap rollback ERR
 
           git fetch origin main
+          ORIGIN_MAIN="$(git rev-parse origin/main)"
+          test "$ORIGIN_MAIN" = "$EXPECTED_SHA"
           git reset --hard "$EXPECTED_SHA"
 
           ACTUAL_SHA="$(git rev-parse HEAD)"

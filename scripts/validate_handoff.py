@@ -15,6 +15,7 @@ def main() -> int:
     parser.add_argument("--to-agent", required=True)
     parser.add_argument("--phase", required=True)
     parser.add_argument("--source-sha", default="")
+    parser.add_argument("--trusted-login", action="append", default=[])
     args = parser.parse_args()
 
     comments = json.loads(Path(args.comments).read_text())
@@ -29,6 +30,7 @@ def main() -> int:
             to_agent=args.to_agent,
             phase=args.phase,
             source_sha=args.source_sha or None,
+            trusted_logins=set(args.trusted_login) if args.trusted_login else None,
         )
     except HandoffGateError as exc:
         print(f"HANDOFF_GATE=BLOCKED: {exc}")

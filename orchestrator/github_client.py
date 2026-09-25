@@ -81,6 +81,14 @@ class GitHubClient:
             },
         )
 
+    async def get_issue_body(self, repo: str, number: int) -> str:
+        response = await self._request(
+            "GET",
+            f"{self.base}/repos/{repo}/issues/{number}",
+        )
+        data = response.json()
+        return str(data.get("body") or "")
+
     async def get_pr_head_branch(self, repo: str, number: int) -> str:
         response = await self._request(
             "GET",
