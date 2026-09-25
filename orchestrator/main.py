@@ -145,6 +145,10 @@ async def process(event: dict) -> None:
             to_agent=expected["to_agent"],
             phase=expected["phase"],
             source_sha=req.source_sha,
+            trusted_logins={
+                req.repository.split("/", 1)[0],
+                "github-actions[bot]",
+            },
         )
     except HandoffGateError as exc:
         await github.comment(
