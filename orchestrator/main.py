@@ -319,18 +319,20 @@ async def process(event: dict) -> None:
                 "Fix the previous handoff and retry the same phase."
             ),
         )
-        await require_current_state(req, req.source_sha, todo_workflow)
+        latest_labels = await require_current_state(
+            req,
+            req.source_sha,
+            todo_workflow,
+        )
+        blocked_workflow = {
+            "agent:workbuddy",
+            req.phase,
+            "status:blocked",
+        }
         await github.set_labels(
             req.repository,
             req.source_number,
-            next_labels(
-                req.agent,
-                req.source_kind,
-                current_labels,
-                "blocked",
-                [],
-                phase=req.phase,
-            ),
+            project_workflow_labels(latest_labels, blocked_workflow),
         )
         store.finish(event["delivery_id"], "done")
         return
