@@ -67,12 +67,13 @@ def _owner_wait_evidence(
     comments: list[dict[str, Any]], *, task_id: str, head_sha: str
 ) -> bool:
     """A label alone cannot authorize cleanup into the human terminal state."""
-    terminal = False
-    qa = False
+    terminal: tuple[tuple[str, int], dict[str, str]] | None = None
+    qa: tuple[tuple[str, int], dict[str, Any]] | None = None
     for comment in comments:
         if (comment.get("user") or {}).get("login") != "github-actions[bot]":
             continue
         body = str(comment.get("body") or "")
+        order = (str(comment.get("created_at") or ""), int(comment.get("id") or 0))
         if "<!-- terminal-policy:v1 -->" in body:
             fields = dict(
                 line.split("=", 1) for line in body.splitlines()
@@ -80,25 +81,26 @@ def _owner_wait_evidence(
                     "task_id", "source_sha", "policy", "release_enabled"
                 }
             )
-            terminal = terminal or (
-                fields.get("task_id") == task_id
-                and fields.get("source_sha") == head_sha
-                and fields.get("policy") in {"owner_approval_required", "stop_after_qa"}
-                and fields.get("release_enabled") == "false"
-            )
+            if fields.get("task_id") == task_id and fields.get("source_sha") == head_sha:
+                if terminal is None or order > terminal[0]:
+                    terminal = (order, fields)
         try:
             payload = extract_handoff(body)
         except Exception:
             continue
-        qa = qa or bool(
-            payload and payload.get("task_id") == task_id
+        if (payload and payload.get("task_id") == task_id
             and payload.get("source_sha") == head_sha
             and payload.get("from_agent") == "workbuddy"
             and payload.get("phase") in {"qa", "qa_acceptance"}
-            and payload.get("status") == "success"
-            and not payload.get("blockers")
-        )
-    return terminal and qa
+            and (qa is None or order > qa[0])):
+            qa = (order, payload)
+    return bool(
+        terminal and qa
+        and terminal[1].get("policy") in {"owner_approval_required", "stop_after_qa"}
+        and terminal[1].get("release_enabled") == "false"
+        and qa[1].get("status") == "success"
+        and not qa[1].get("blockers")
+    )
 
 
 def _post_qa_marker_exists(
@@ -141,6 +143,9 @@ def decide_reconciliation(
     if ci_run_id and _owner_wait_evidence(
         comments, task_id=task_id, head_sha=head_sha
     ):
+        # A later failure on the same SHA revokes an earlier PASS. Select the
+        # latest trusted review outcome before considering owner-wait cleanup.
+        reviews: list[tuple[tuple[str, int], dict[str, Any], dict[str, Any]]] = []
         for review_comment in comments:
             if (review_comment.get("user") or {}).get("login") != repository_owner:
                 continue
@@ -152,27 +157,30 @@ def decide_reconciliation(
                 and review.get("source_sha") == head_sha
                 and review.get("from_agent") == "workreview"
                 and review.get("to_agent") == "workbuddy"
-                and review.get("phase") == "code_review"
-                and review.get("status") == "success"
-                and not review.get("blockers")
+                and review.get("phase") == "code_review"):
+                continue
+            reviews.append(((str(review_comment.get("created_at") or ""),
+                             int(review_comment.get("id") or 0)), review_comment, review))
+        if reviews:
+            _, review_comment, review = max(reviews, key=lambda item: item[0])
+            if (review.get("status") == "success" and not review.get("blockers")
                 and independent_review_pass(
                     comments, handoff=review, handoff_comment=review_comment,
                     task_id=task_id, source_sha=head_sha,
                     trusted_login=repository_owner,
                 )):
-                continue
-            if labels & {"approval:production-approved", "status:blocked"}:
-                return {"action": "noop", "reason": "owner_wait_has_other_blocker"}
-            canonical = (labels - STATE_LABELS) | {
-                "status:review", "approval:production-required"
-            }
-            if canonical == labels:
-                return {"action": "noop", "reason": "intentional_owner_wait"}
-            return {
-                "action": "converge_owner_wait", "source_sha": head_sha,
-                "ci_run_id": ci_run_id, "labels_before": sorted(labels),
-                "labels_after": sorted(canonical),
-            }
+                if labels & {"approval:production-approved", "status:blocked"}:
+                    return {"action": "noop", "reason": "owner_wait_has_other_blocker"}
+                canonical = (labels - STATE_LABELS) | {
+                    "status:review", "approval:production-required"
+                }
+                if canonical == labels:
+                    return {"action": "noop", "reason": "intentional_owner_wait"}
+                return {
+                    "action": "converge_owner_wait", "source_sha": head_sha,
+                    "ci_run_id": ci_run_id, "labels_before": sorted(labels),
+                    "labels_after": sorted(canonical),
+                }
         qa_running = {"agent:workbuddy", "phase:qa"} <= labels and bool(
             labels & {"status:running", "status:todo"}
         )

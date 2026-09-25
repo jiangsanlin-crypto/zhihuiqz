@@ -355,6 +355,55 @@ def test_qa_owner_wait_converges_only_with_trusted_exact_sha_evidence():
         assert decision["action"] == "noop"
 
 
+def test_later_failed_review_cannot_converge_owner_wait_from_earlier_pass():
+    terminal = {
+        "user": {"login": "github-actions[bot]"},
+        "body": "<!-- terminal-policy:v1 -->\ntask_id=GH-ISSUE-1\n"
+                "source_sha=abc123\npolicy=stop_after_qa\nrelease_enabled=false",
+    }
+    qa = comment(handoff(from_agent="workbuddy", to_agent="human",
+                         phase="qa_acceptance"), user="github-actions[bot]")
+    passed = comment(handoff(from_agent="workreview", to_agent="workbuddy",
+                             phase="code_review"), created_at="2026-09-25T01:00:00Z")
+    failed = comment(handoff(from_agent="workreview", to_agent="workbuddy",
+                             phase="code_review", status="failed"),
+                     created_at="2026-09-25T02:00:00Z")
+    state = pr(["agent:workreview", "phase:code-review", "status:running"])
+    assert decide_reconciliation(
+        state, [terminal, qa, review_claim(), passed, failed],
+        repository_owner=OWNER, ci_runs=ci(),
+    )["action"] != "converge_owner_wait"
+
+
+def test_later_failed_qa_or_unresolved_policy_revokes_owner_wait_evidence():
+    terminal = {
+        "user": {"login": "github-actions[bot]"},
+        "created_at": "2026-09-25T00:00:00Z",
+        "body": "<!-- terminal-policy:v1 -->\ntask_id=GH-ISSUE-1\n"
+                "source_sha=abc123\npolicy=stop_after_qa\nrelease_enabled=false",
+    }
+    qa = comment(handoff(from_agent="workbuddy", to_agent="human",
+                         phase="qa_acceptance"), created_at="2026-09-25T01:00:00Z",
+                 user="github-actions[bot]")
+    review = comment(handoff(from_agent="workreview", to_agent="workbuddy",
+                             phase="code_review"), created_at="2026-09-25T02:00:00Z")
+    state = pr(["agent:workreview", "phase:code-review", "status:running"])
+    base = [terminal, qa, review_claim(), review]
+    assert decide_reconciliation(state, base, repository_owner=OWNER,
+                                 ci_runs=ci())["action"] == "converge_owner_wait"
+    failed_qa = comment(handoff(from_agent="workbuddy", to_agent="human",
+                                phase="qa_acceptance", status="failed"),
+                        created_at="2026-09-25T03:00:00Z", user="github-actions[bot]")
+    assert decide_reconciliation(state, base + [failed_qa],
+                                 repository_owner=OWNER,
+                                 ci_runs=ci())["action"] != "converge_owner_wait"
+    unresolved = dict(terminal, created_at="2026-09-25T04:00:00Z",
+                      body=terminal["body"].replace("stop_after_qa", "unresolved"))
+    assert decide_reconciliation(state, base + [unresolved],
+                                 repository_owner=OWNER,
+                                 ci_runs=ci())["action"] != "converge_owner_wait"
+
+
 def test_post_qa_final_sha_review_converges_without_restarting_qa():
     terminal = {
         "user": {"login": "github-actions[bot]"},
