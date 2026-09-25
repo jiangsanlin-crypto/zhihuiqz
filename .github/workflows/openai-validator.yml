@@ -470,6 +470,7 @@ jobs:
           QA_RELEASE_ENABLED: ${{ steps.terminal.outputs.release_enabled }}
           QA_TERMINAL_POLICY: ${{ steps.terminal.outputs.policy }}
           QA_TERMINAL_REASON: ${{ steps.terminal.outputs.reason }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
           set -euo pipefail
 
@@ -534,6 +535,19 @@ jobs:
               --body-file "$RUNNER_TEMP/terminal-policy-comment.md"
 
             if [ "${QA_RELEASE_ENABLED:-false}" != "true" ]; then
+              # QA reports advance HEAD. Earlier CI and Work Review evidence
+              # belongs to the pre-QA commit. Request independent review of
+              # the exact report commit before projecting owner approval.
+              if [ "$SHA" != "$SOURCE_SHA" ]; then
+                gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/post-qa-pr.json"
+                test "$(jq -r '.head.sha' "$RUNNER_TEMP/post-qa-pr.json")" = "$SHA"
+                test "$(jq -r '.head.ref' "$RUNNER_TEMP/post-qa-pr.json")" = "$HEAD_REF"
+                test "$(jq -r '.head.repo.full_name' "$RUNNER_TEMP/post-qa-pr.json")" = "${{ github.repository }}"
+                printf '%s\n' '<!-- qa-postwrite-review:v1 -->' "task_id=$TASK_ID" "source_sha=$SHA" "previous_sha=$SOURCE_SHA" 'next=NEW_INDEPENDENT_WORK_CODE_REVIEW' > "$RUNNER_TEMP/post-qa-review.md"
+                gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/post-qa-review.md"
+                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --remove-label "agent:workbuddy" --remove-label "phase:qa" --remove-label "status:running" --add-label "agent:workreview" --add-label "phase:code-review" --add-label "status:todo"
+                exit 0
+              fi
               gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"                 --remove-label "agent:workbuddy"                 --remove-label "phase:qa"                 --remove-label "status:running"                 --remove-label "status:todo"                 --add-label "status:review"                 --add-label "approval:production-required"
               exit 0
             fi

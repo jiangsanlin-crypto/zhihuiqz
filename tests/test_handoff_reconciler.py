@@ -293,16 +293,57 @@ def test_qa_owner_wait_converges_only_with_trusted_exact_sha_evidence():
     }
     qa = comment(handoff(from_agent="workbuddy", to_agent="human",
                          phase="qa_acceptance"), user="github-actions[bot]")
+    reviewed = comment(
+        handoff(from_agent="workreview", to_agent="workbuddy",
+                phase="code_review"),
+        created_at="2026-09-25T01:00:00Z",
+    )
+    claim = review_claim(created_at="2026-09-25T00:00:00Z")
     decision = decide_reconciliation(
-        state, [terminal, qa], repository_owner=OWNER, ci_runs=ci()
+        state, [terminal, qa, claim, reviewed],
+        repository_owner=OWNER, ci_runs=ci(),
     )
     assert decision["action"] == "converge_owner_wait"
     assert decision["labels_after"] == [
         "approval:production-required", "priority:high", "status:review"
     ]
-    for evidence in ([qa], [terminal], [dict(terminal, body=terminal["body"].replace(
-        "abc123", "old-sha")), qa]):
+    for evidence in ([qa, claim, reviewed], [terminal, claim, reviewed],
+                     [terminal, qa, reviewed],
+                     [dict(terminal, body=terminal["body"].replace(
+                         "abc123", "old-sha")), qa, claim, reviewed]):
         decision = decide_reconciliation(
             state, evidence, repository_owner=OWNER, ci_runs=ci()
         )
-        assert decision == {"action": "noop", "reason": "intentional_owner_wait"}
+        assert decision["action"] == "noop"
+
+
+def test_post_qa_final_sha_review_converges_without_restarting_qa():
+    terminal = {
+        "user": {"login": "github-actions[bot]"},
+        "body": "<!-- terminal-policy:v1 -->\ntask_id=GH-ISSUE-1\n"
+                "source_sha=abc123\npolicy=stop_after_qa\nrelease_enabled=false",
+    }
+    qa = comment(handoff(from_agent="workbuddy", to_agent="human",
+                         phase="qa_acceptance"), user="github-actions[bot]")
+    claim = review_claim(created_at="2026-09-25T00:00:00Z")
+    reviewed = comment(
+        handoff(from_agent="workreview", to_agent="workbuddy",
+                phase="code_review"),
+        created_at="2026-09-25T01:00:00Z",
+    )
+    state = pr(["agent:workreview", "phase:code-review", "status:running",
+                "priority:high"])
+    decision = decide_reconciliation(
+        state, [qa, terminal, claim, reviewed], repository_owner=OWNER,
+        ci_runs=ci(),
+    )
+    assert decision["action"] == "converge_owner_wait"
+    assert decision["labels_after"] == [
+        "approval:production-required", "priority:high", "status:review"
+    ]
+    for evidence in (ci("old"), ci(conclusion="failure"),
+                     ci(status="in_progress", conclusion=None)):
+        assert decide_reconciliation(
+            state, [qa, terminal, claim, reviewed], repository_owner=OWNER,
+            ci_runs=evidence,
+        )["action"] != "converge_owner_wait"

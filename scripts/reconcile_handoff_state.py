@@ -120,19 +120,50 @@ def decide_reconciliation(
         return {"action": "noop", "reason": "missing_head_sha"}
 
     labels = _labels(pr)
+    head_ref = str((pr.get("head") or {}).get("ref") or "")
+    ci_run_id = _successful_current_ci(
+        ci_runs or {}, head_sha=head_sha, head_ref=head_ref
+    )
+    # QA artifacts can advance HEAD after the first Work Review. The final
+    # owner wait needs a fresh independent review of that final QA commit.
+    if ci_run_id and _owner_wait_evidence(
+        comments, task_id=task_id, head_sha=head_sha
+    ):
+        for review_comment in comments:
+            if (review_comment.get("user") or {}).get("login") != repository_owner:
+                continue
+            try:
+                review = extract_handoff(str(review_comment.get("body") or ""))
+            except Exception:
+                continue
+            if not (review and review.get("task_id") == task_id
+                and review.get("source_sha") == head_sha
+                and review.get("from_agent") == "workreview"
+                and review.get("to_agent") == "workbuddy"
+                and review.get("phase") == "code_review"
+                and review.get("status") == "success"
+                and not review.get("blockers")
+                and independent_review_pass(
+                    comments, handoff=review, handoff_comment=review_comment,
+                    task_id=task_id, source_sha=head_sha,
+                    trusted_login=repository_owner,
+                )):
+                continue
+            if labels & {"approval:production-approved", "status:blocked"}:
+                return {"action": "noop", "reason": "owner_wait_has_other_blocker"}
+            canonical = (labels - STATE_LABELS) | {
+                "status:review", "approval:production-required"
+            }
+            if canonical == labels:
+                return {"action": "noop", "reason": "intentional_owner_wait"}
+            return {
+                "action": "converge_owner_wait", "source_sha": head_sha,
+                "ci_run_id": ci_run_id, "labels_before": sorted(labels),
+                "labels_after": sorted(canonical),
+            }
     if "status:review" in labels or "approval:production-required" in labels:
         if {"status:review", "approval:production-required"} <= labels and labels & STATE_LABELS:
-            ci_run_id = _successful_current_ci(
-                ci_runs or {}, head_sha=head_sha,
-                head_ref=str((pr.get("head") or {}).get("ref") or ""),
-            )
-            if ci_run_id and _owner_wait_evidence(comments, task_id=task_id, head_sha=head_sha):
-                return {
-                    "action": "converge_owner_wait",
-                    "source_sha": head_sha, "ci_run_id": ci_run_id,
-                    "labels_before": sorted(labels),
-                    "labels_after": sorted(labels - STATE_LABELS),
-                }
+            return {"action": "noop", "reason": "owner_wait_requires_final_sha_review"}
         return {"action": "noop", "reason": "intentional_owner_wait"}
 
     relevant: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
