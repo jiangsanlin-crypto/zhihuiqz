@@ -211,6 +211,18 @@ def workflow_label_set(labels: list[str]) -> set[str]:
     }
 
 
+def project_workflow_labels(
+    live_labels: list[str],
+    target_workflow: set[str],
+) -> list[str]:
+    unrelated = [
+        label
+        for label in live_labels
+        if label not in workflow_label_set(live_labels)
+    ]
+    return sorted(set(unrelated) | target_workflow)
+
+
 async def require_current_state(
     req,
     expected_sha: str,
@@ -317,17 +329,19 @@ async def process(event: dict) -> None:
         return
 
     if github.configured and not checkpoint:
-        running_labels = [
-            label
-            for label in current_labels
-            if not label.startswith("status:")
-        ]
-        running_labels.append("status:running")
-        await require_current_state(req, req.source_sha, todo_workflow)
+        latest_labels = await require_current_state(
+            req,
+            req.source_sha,
+            todo_workflow,
+        )
+        running_labels = project_workflow_labels(
+            latest_labels,
+            running_workflow,
+        )
         await github.set_labels(
             req.repository,
             req.source_number,
-            sorted(set(running_labels)),
+            running_labels,
         )
         await require_current_state(req, req.source_sha, running_workflow)
 
@@ -428,6 +442,10 @@ async def process(event: dict) -> None:
         )
     )
     transition_workflow = workflow_label_set(transition_labels)
+    transition_labels = project_workflow_labels(
+        live_labels,
+        transition_workflow,
+    )
     if live_workflow not in (running_workflow, transition_workflow):
         raise RuntimeError(
             "WORKFLOW_STATE_SUPERSEDED: "
@@ -497,7 +515,15 @@ async def process(event: dict) -> None:
             )
 
     if live_workflow == running_workflow:
-        await require_current_state(req, transition_sha, running_workflow)
+        latest_labels = await require_current_state(
+            req,
+            transition_sha,
+            running_workflow,
+        )
+        transition_labels = project_workflow_labels(
+            latest_labels,
+            transition_workflow,
+        )
         await github.set_labels(
             req.repository,
             req.source_number,
