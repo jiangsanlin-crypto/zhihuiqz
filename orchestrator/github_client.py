@@ -111,7 +111,7 @@ class GitHubClient:
         branch: str,
         change: FileChange,
         message_prefix: str,
-    ) -> None:
+    ) -> str:
         url = f"{self.base}/repos/{repo}/contents/{change.path}"
         async with httpx.AsyncClient(timeout=30) as client:
             current = await client.get(
@@ -131,7 +131,9 @@ class GitHubClient:
         elif current.status_code != 404:
             current.raise_for_status()
 
-        await self._request("PUT", url, json=payload)
+        response = await self._request("PUT", url, json=payload)
+        data = response.json()
+        return str(data["commit"]["sha"])
 
     async def update_pr_files(
         self,
@@ -139,13 +141,29 @@ class GitHubClient:
         pr_number: int,
         changes: Iterable[FileChange],
         message_prefix: str = "reports: WorkBuddy handoff",
+        expected_head_sha: str | None = None,
     ) -> str:
         branch = await self.get_pr_head_branch(repo, pr_number)
+        expected = expected_head_sha or await self.get_pr_head_sha(repo, pr_number)
+
         for change in changes:
-            await self._upsert_file(
+            live_sha = await self.get_pr_head_sha(repo, pr_number)
+            if live_sha != expected:
+                raise RuntimeError(
+                    "CONCURRENT_BRANCH_ADVANCE: "
+                    f"expected={expected} live={live_sha}"
+                )
+            expected = await self._upsert_file(
                 repo,
                 branch,
                 change,
                 message_prefix,
             )
-        return await self.get_pr_head_sha(repo, pr_number)
+
+        live_sha = await self.get_pr_head_sha(repo, pr_number)
+        if live_sha != expected:
+            raise RuntimeError(
+                "CONCURRENT_BRANCH_ADVANCE: "
+                f"expected={expected} live={live_sha}"
+            )
+        return expected
