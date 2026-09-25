@@ -30,7 +30,8 @@ jobs:
             THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
 
-            gh api --method GET search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
+            gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 \
+              --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
@@ -40,6 +41,18 @@ jobs:
               PHASE="$(echo "$LABELS" | grep '^phase:' | head -n1 || true)"
               IS_PR="$(gh api "repos/${{ github.repository }}/issues/$NUMBER" --jq 'has("pull_request")')"
               if [ "$IS_PR" = "true" ]; then
+                # Historical synthetic E2E tasks have no active worker. Do not
+                # repeatedly alert on them unless the source issue opted in.
+                ROOT_ISSUE="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" \
+                  --json body --jq '.body // ""' \
+                  | sed -n 's/.*agent-task-id:GH-ISSUE-\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                if [ -n "$ROOT_ISSUE" ]; then
+                  ROOT_TITLE="$(gh issue view "$ROOT_ISSUE" --repo "${{ github.repository }}" --json title --jq '.title' 2>/dev/null || true)"
+                  ROOT_BODY="$(gh issue view "$ROOT_ISSUE" --repo "${{ github.repository }}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                  if [[ "$ROOT_TITLE" == "[E2E]"* ]] && ! printf '%s' "$ROOT_BODY" | grep -Fq '<!-- synthetic-e2e:true -->'; then
+                    continue
+                  fi
+                fi
                 REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
               else
                 REV="issue-$NUMBER"
@@ -62,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           QUERY="repo:${{ github.repository }} is:open label:status:blocked label:recovery:technical"
-          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/technical-blocked.txt"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 --jq '.items[].number' > "$RUNNER_TEMP/technical-blocked.txt"
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
@@ -89,7 +102,8 @@ jobs:
             fi
 
             PREFIX="<!-- agent-watchdog:technical-retry:$AGENT:$PHASE:$REV:"
-            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq ".[] | select(.body | startswith(\"$PREFIX\")) | .id" | wc -l | tr -d ' ')"
             if [ "$COUNT" -ge 2 ]; then
               gh issue edit "$NUMBER" --repo "${{ github.repository }}" --remove-label "recovery:technical" || true
               EXHAUSTED="<!-- agent-watchdog:technical-exhausted:$AGENT:$PHASE:$REV -->"
@@ -114,7 +128,7 @@ jobs:
 
           for AGENT in codex workbuddy; do
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
-            gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/redispatch-$AGENT.txt"
+            gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 --jq '.items[].number' > "$RUNNER_TEMP/redispatch-$AGENT.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
@@ -176,7 +190,8 @@ jobs:
               fi
 
               PREFIX="<!-- agent-watchdog:redispatch:$AGENT:$PHASE:$REV:"
-              COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+              COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+                --paginate --jq ".[] | select(.body | startswith(\"$PREFIX\")) | .id" | wc -l | tr -d ' ')"
               if [ "$COUNT" -ge 2 ]; then
                 continue
               fi
@@ -287,7 +302,7 @@ jobs:
         run: |
           set -euo pipefail
           QUERY="repo:${{ github.repository }} is:open label:status:blocked label:watchdog:timeout"
-          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/timeout-blocked.txt"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 --jq '.items[].number' > "$RUNNER_TEMP/timeout-blocked.txt"
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
@@ -327,7 +342,8 @@ jobs:
             fi
 
             PREFIX="<!-- agent-watchdog:auto-retry:$AGENT:$PHASE:$REV:"
-            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq ".[] | select(.body | startswith(\"$PREFIX\")) | .id" | wc -l | tr -d ' ')"
 
             if [ "$COUNT" -eq 0 ]; then
               gh issue edit "$NUMBER" --repo "${{ github.repository }}"                 --remove-label "status:blocked"                 --remove-label "watchdog:timeout"                 --add-label "status:todo"

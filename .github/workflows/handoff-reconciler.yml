@@ -75,7 +75,7 @@ jobs:
               > "$RUNNER_TEMP/decision-$PR_NUMBER.json"
 
             ACTION="$(jq -r '.action' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            if [ "$ACTION" != "reconcile" ] && [ "$ACTION" != "ensure_qa_dispatch" ]; then
+            if [ "$ACTION" != "reconcile" ] && [ "$ACTION" != "ensure_qa_dispatch" ] && [ "$ACTION" != "converge_owner_wait" ]; then
               continue
             fi
 
@@ -95,10 +95,15 @@ jobs:
               echo "PR #$PR_NUMBER labels changed; retry at next reconciliation."
               continue
             fi
-            if [ "$ACTION" = "reconcile" ]; then
+            if [ "$ACTION" = "reconcile" ] || [ "$ACTION" = "converge_owner_wait" ]; then
               jq '{labels: .labels_after}' "$RUNNER_TEMP/decision-$PR_NUMBER.json" \
                 | gh api --method PUT \
                     "repos/${{ github.repository }}/issues/$PR_NUMBER/labels" --input - >/dev/null
+            fi
+
+            # Validated QA owner wait has no downstream worker to start.
+            if [ "$ACTION" = "converge_owner_wait" ]; then
+              continue
             fi
 
             TARGET_AGENT="$(jq -r '.target_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"

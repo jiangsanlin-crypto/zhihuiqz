@@ -261,3 +261,28 @@ def test_review_pass_without_pass_check_never_starts_qa():
         [review_claim(), comment(payload)], repository_owner=OWNER, ci_runs=ci()
     )
     assert decision == {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}
+
+
+def test_qa_owner_wait_converges_only_with_trusted_exact_sha_evidence():
+    state = pr(["agent:workbuddy", "phase:qa", "status:running",
+                "status:review", "approval:production-required", "priority:high"])
+    terminal = {
+        "user": {"login": "github-actions[bot]"},
+        "body": "<!-- terminal-policy:v1 -->\ntask_id=GH-ISSUE-1\n"
+                "source_sha=abc123\npolicy=stop_after_qa\nrelease_enabled=false",
+    }
+    qa = comment(handoff(from_agent="workbuddy", to_agent="human",
+                         phase="qa_acceptance"), user="github-actions[bot]")
+    decision = decide_reconciliation(
+        state, [terminal, qa], repository_owner=OWNER, ci_runs=ci()
+    )
+    assert decision["action"] == "converge_owner_wait"
+    assert decision["labels_after"] == [
+        "approval:production-required", "priority:high", "status:review"
+    ]
+    for evidence in ([qa], [terminal], [dict(terminal, body=terminal["body"].replace(
+        "abc123", "old-sha")), qa]):
+        decision = decide_reconciliation(
+            state, evidence, repository_owner=OWNER, ci_runs=ci()
+        )
+        assert decision == {"action": "noop", "reason": "intentional_owner_wait"}

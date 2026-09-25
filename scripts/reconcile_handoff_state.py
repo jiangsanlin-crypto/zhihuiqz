@@ -63,6 +63,44 @@ def _successful_current_ci(
     return int(latest["id"])
 
 
+def _owner_wait_evidence(
+    comments: list[dict[str, Any]], *, task_id: str, head_sha: str
+) -> bool:
+    """A label alone cannot authorize cleanup into the human terminal state."""
+    terminal = False
+    qa = False
+    for comment in comments:
+        if (comment.get("user") or {}).get("login") != "github-actions[bot]":
+            continue
+        body = str(comment.get("body") or "")
+        if "<!-- terminal-policy:v1 -->" in body:
+            fields = dict(
+                line.split("=", 1) for line in body.splitlines()
+                if "=" in line and line.split("=", 1)[0] in {
+                    "task_id", "source_sha", "policy", "release_enabled"
+                }
+            )
+            terminal = terminal or (
+                fields.get("task_id") == task_id
+                and fields.get("source_sha") == head_sha
+                and fields.get("policy") in {"owner_approval_required", "stop_after_qa"}
+                and fields.get("release_enabled") == "false"
+            )
+        try:
+            payload = extract_handoff(body)
+        except Exception:
+            continue
+        qa = qa or bool(
+            payload and payload.get("task_id") == task_id
+            and payload.get("source_sha") == head_sha
+            and payload.get("from_agent") == "workbuddy"
+            and payload.get("phase") in {"qa", "qa_acceptance"}
+            and payload.get("status") == "success"
+            and not payload.get("blockers")
+        )
+    return terminal and qa
+
+
 def decide_reconciliation(
     pr: dict[str, Any],
     comments: list[dict[str, Any]],
@@ -80,6 +118,22 @@ def decide_reconciliation(
     head_sha = str((pr.get("head") or {}).get("sha") or "")
     if not head_sha:
         return {"action": "noop", "reason": "missing_head_sha"}
+
+    labels = _labels(pr)
+    if "status:review" in labels or "approval:production-required" in labels:
+        if {"status:review", "approval:production-required"} <= labels and labels & STATE_LABELS:
+            ci_run_id = _successful_current_ci(
+                ci_runs or {}, head_sha=head_sha,
+                head_ref=str((pr.get("head") or {}).get("ref") or ""),
+            )
+            if ci_run_id and _owner_wait_evidence(comments, task_id=task_id, head_sha=head_sha):
+                return {
+                    "action": "converge_owner_wait",
+                    "source_sha": head_sha, "ci_run_id": ci_run_id,
+                    "labels_before": sorted(labels),
+                    "labels_after": sorted(labels - STATE_LABELS),
+                }
+        return {"action": "noop", "reason": "intentional_owner_wait"}
 
     relevant: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for comment in comments:
@@ -128,11 +182,7 @@ def decide_reconciliation(
     ):
         return {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}
 
-    labels = _labels(pr)
-    # Fail closed for terminal/manual states. A previously valid handoff must not
-    # resurrect a PR after a later review blocked it or QA moved it to owner wait.
-    if "status:review" in labels or "approval:production-required" in labels:
-        return {"action": "noop", "reason": "intentional_owner_wait"}
+    # A previously valid handoff must not resurrect a blocked PR.
     if "status:blocked" in labels:
         return {"action": "noop", "reason": "blocked_requires_recovery"}
 

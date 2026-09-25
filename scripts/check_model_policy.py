@@ -101,6 +101,7 @@ require(
         "agent_workbuddy_qa",
         "ensure_qa_dispatch",
         "agent-handoff-qa-dispatch:v1",
+        "converge_owner_wait",
     ],
 )
 
@@ -111,6 +112,7 @@ require(
         '("workreview", "workbuddy", "code_review")',
         "current_sha_ci_not_success",
         "canonical_qa_may_need_dispatch",
+        "converge_owner_wait",
         "missing_independent_current_sha_review_pass",
     ],
 )
