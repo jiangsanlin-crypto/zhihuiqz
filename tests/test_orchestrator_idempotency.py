@@ -53,12 +53,24 @@ def test_terminal_policy_comment_is_deduplicated_by_task_and_sha():
         "owner/repo",
         "GH-ISSUE-77",
         "abc123",
+        "owner_approval_required",
+        False,
     )
     assert not main.terminal_policy_comment_exists(
         comments,
         "owner/repo",
         "GH-ISSUE-77",
         "new456",
+        "owner_approval_required",
+        False,
+    )
+    assert not main.terminal_policy_comment_exists(
+        comments,
+        "owner/repo",
+        "GH-ISSUE-77",
+        "abc123",
+        "release_enabled",
+        True,
     )
 
 
