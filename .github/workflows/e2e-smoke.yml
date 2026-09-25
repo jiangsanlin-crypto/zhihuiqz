@@ -53,7 +53,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "[E2E] three-agent full-auto chain ${{ github.run_id }}"             --body "Synthetic coordination test. ChatGPT acceptance requirement: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK. Do not use production data.")"
+          ISSUE_URL="$(gh issue create             --repo "${{ github.repository }}"             --title "[E2E] three-agent full-auto chain ${{ github.run_id }}"             --body "<!-- synthetic-e2e:true -->\nterminal_policy: release_enabled\n\nSynthetic coordination test. ChatGPT acceptance requirement: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK. Do not use production data. This task must never merge or deploy production because synthetic_e2e_never_deploys is authoritative.")"
 
           ISSUE_NUMBER="${ISSUE_URL##*/}"
           echo "number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"

@@ -164,7 +164,7 @@ jobs:
         run: |
           gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
 
-          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent "$PREV_FROM"             --to-agent "$PREV_TO"             --phase "$PREV_PHASE"             --source-sha "$SOURCE_SHA"
+          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent "$PREV_FROM"             --to-agent "$PREV_TO"             --phase "$PREV_PHASE"             --source-sha "$SOURCE_SHA"             --trusted-login "${{ github.repository_owner }}"             --trusted-login "github-actions[bot]"
 
           jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
 
@@ -373,6 +373,30 @@ jobs:
 
           echo "status=ready" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve QA terminal policy
+        if: steps.validator.outcome == 'success' && steps.gate.outcome == 'success' && steps.context.outputs.phase == 'qa'
+        id: terminal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_ID: ${{ steps.context.outputs.task_id }}
+        run: |
+          set -euo pipefail
+          ISSUE_NUMBER="$(printf '%s' "$TASK_ID" | sed -n 's/^GH-ISSUE-\([0-9][0-9]*\)$/\1/p')"
+          BODY=""
+          if [ -n "$ISSUE_NUMBER" ]; then
+            BODY="$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json body --jq '.body // ""')"
+          fi
+          export BODY
+          PYTHONPATH=. python - <<'PY' > "$RUNNER_TEMP/terminal-policy.env"
+          import os
+          from orchestrator.terminal_policy import resolve_terminal_policy
+          decision = resolve_terminal_policy(os.environ.get("BODY", ""))
+          print(f"release_enabled={'true' if decision.release_enabled else 'false'}")
+          print(f"policy={decision.policy or 'unresolved'}")
+          print("reason=" + decision.reason.replace("\n", " ").replace("\r", " "))
+          PY
+          cat "$RUNNER_TEMP/terminal-policy.env" >> "$GITHUB_OUTPUT"
+
       - name: Commit validation artifacts
         if: steps.validator.outcome == 'success' && steps.gate.outcome == 'success'
         env:
@@ -399,6 +423,9 @@ jobs:
           NEXT_AGENT: ${{ steps.context.outputs.next_agent }}
           NEXT_PHASE: ${{ steps.context.outputs.next_phase }}
           NEXT_EVENT: ${{ steps.context.outputs.next_event }}
+          QA_RELEASE_ENABLED: ${{ steps.terminal.outputs.release_enabled }}
+          QA_TERMINAL_POLICY: ${{ steps.terminal.outputs.policy }}
+          QA_TERMINAL_REASON: ${{ steps.terminal.outputs.reason }}
         run: |
           set -euo pipefail
 
@@ -450,6 +477,24 @@ jobs:
 
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body-file "$RUNNER_TEMP/validator-handoff.md"
 
+          if [ "$PHASE" = "qa" ]; then
+            printf '%s\n' \
+              '<!-- terminal-policy:v1 -->' \
+              "task_id=$TASK_ID" \
+              "source_sha=$SHA" \
+              "policy=${QA_TERMINAL_POLICY:-unresolved}" \
+              "release_enabled=${QA_RELEASE_ENABLED:-false}" \
+              "reason=${QA_TERMINAL_REASON:-missing terminal policy decision}" \
+              > "$RUNNER_TEMP/terminal-policy-comment.md"
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --body-file "$RUNNER_TEMP/terminal-policy-comment.md"
+
+            if [ "${QA_RELEASE_ENABLED:-false}" != "true" ]; then
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"                 --remove-label "agent:workbuddy"                 --remove-label "phase:qa"                 --remove-label "status:running"                 --remove-label "status:todo"                 --add-label "status:review"                 --add-label "approval:production-required"
+              exit 0
+            fi
+          fi
+
           if [ "$PHASE" = "prototype" ]; then
             gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"               --remove-label "agent:workbuddy"               --remove-label "phase:prototype"               --remove-label "status:running"               --add-label "agent:chatgpt"               --add-label "phase:implementation"               --add-label "status:todo"
           elif [ "$PHASE" = "qa" ]; then
@@ -489,15 +534,25 @@ jobs:
           echo "Failed to dispatch next phase."
           exit 1
 
-      - name: Block failed validation
-        if: steps.validator.outcome != 'success' || steps.gate.outcome != 'success'
+      - name: Mark retryable validator execution failure
+        if: steps.validator.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PHASE: ${{ steps.context.outputs.phase }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked"             --add-label "recovery:technical" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "<!-- agent-technical-failure:v1:workbuddy:phase:$PHASE:$SOURCE_SHA --> OpenAI Validator execution failed before a valid gate was produced. The bounded watchdog may retry this same phase at the exact SHA."
+          exit 1
+
+      - name: Block validation gate failure
+        if: steps.validator.outcome == 'success' && steps.gate.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           PHASE: ${{ steps.context.outputs.phase }}
         run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
-
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "❌ OpenAI validation agent blocked phase $PHASE. No later phase was dispatched."
-
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --remove-label "recovery:technical"             --add-label "status:blocked" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "❌ OpenAI validation gate blocked phase $PHASE. This is a gate/content blocker, not an automatic technical retry."
           exit 1
