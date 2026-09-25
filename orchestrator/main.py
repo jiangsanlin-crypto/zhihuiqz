@@ -131,6 +131,8 @@ def terminal_policy_comment_exists(
     repository: str,
     task_id: str,
     source_sha: str,
+    policy_name: str,
+    release_enabled: bool,
 ) -> bool:
     for comment in comments:
         if not _trusted_comment(comment, repository):
@@ -140,6 +142,11 @@ def terminal_policy_comment_exists(
             "<!-- terminal-policy:v1 -->" in body
             and f"task_id={task_id}" in body.splitlines()
             and f"source_sha={source_sha}" in body.splitlines()
+            and f"policy={policy_name}" in body.splitlines()
+            and (
+                f"release_enabled={str(release_enabled).lower()}"
+                in body.splitlines()
+            )
         ):
             return True
     return False
@@ -494,6 +501,8 @@ async def process(event: dict) -> None:
             req.repository,
             req.task_id,
             transition_sha,
+            policy.policy or "unresolved",
+            policy.release_enabled,
         )
         if live_workflow == transition_workflow and not already_recorded:
             raise RuntimeError("TRANSITION_WITHOUT_TERMINAL_POLICY")
