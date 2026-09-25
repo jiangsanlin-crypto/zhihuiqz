@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   issues: write
   pull-requests: write
@@ -42,8 +43,8 @@ jobs:
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             printf '%s\n' "$EVENT_PR" > "$RUNNER_TEMP/prs.txt"
           else
-            gh pr list --repo "${{ github.repository }}" --state open --limit 100 \
-              --json number --jq '.[].number' > "$RUNNER_TEMP/prs.txt"
+            gh api "repos/${{ github.repository }}/pulls?state=open&per_page=100" \
+              --paginate --jq '.[].number' > "$RUNNER_TEMP/prs.txt"
           fi
 
       - name: Reconcile validated handoff state
@@ -59,11 +60,17 @@ jobs:
             gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" \
               > "$RUNNER_TEMP/pr-$PR_NUMBER.json"
             gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
-              --paginate > "$RUNNER_TEMP/comments-$PR_NUMBER.json"
+              --paginate --jq '.[]' | jq -s '.' \
+              > "$RUNNER_TEMP/comments-$PR_NUMBER.json"
+            HEAD_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr-$PR_NUMBER.json")"
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' \
+              > "$RUNNER_TEMP/ci-$PR_NUMBER.json"
 
             PYTHONPATH=. python scripts/reconcile_handoff_state.py \
               --pr-json "$RUNNER_TEMP/pr-$PR_NUMBER.json" \
               --comments-json "$RUNNER_TEMP/comments-$PR_NUMBER.json" \
+              --ci-runs-json "$RUNNER_TEMP/ci-$PR_NUMBER.json" \
               --repository-owner "$REPOSITORY_OWNER" \
               > "$RUNNER_TEMP/decision-$PR_NUMBER.json"
 
@@ -73,38 +80,28 @@ jobs:
             fi
 
             EXPECTED_SHA="$(jq -r '.source_sha' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            LIVE_SHA="$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq '.head.sha')"
+            gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/live-$PR_NUMBER.json"
+            LIVE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/live-$PR_NUMBER.json")"
             if [ "$LIVE_SHA" != "$EXPECTED_SHA" ]; then
               echo "PR #$PR_NUMBER advanced during reconciliation; skip stale decision."
               continue
             fi
 
+            # Labels are a single projection write, not a sequence of partial
+            # remove/add operations. Do not overwrite a concurrent label edit.
+            if ! diff -u \
+              <(jq -r '.labels_before[]' "$RUNNER_TEMP/decision-$PR_NUMBER.json") \
+              <(jq -r '.labels[].name' "$RUNNER_TEMP/live-$PR_NUMBER.json" | sort); then
+              echo "PR #$PR_NUMBER labels changed; retry at next reconciliation."
+              continue
+            fi
+            jq '{labels: .labels_after}' "$RUNNER_TEMP/decision-$PR_NUMBER.json" \
+              | gh api --method PUT \
+                  "repos/${{ github.repository }}/issues/$PR_NUMBER/labels" --input - >/dev/null
+
             TARGET_AGENT="$(jq -r '.target_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
             TARGET_PHASE="$(jq -r '.target_phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
             DESIRED_STATUS="$(jq -r '.desired_status' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-
-            CURRENT_LABELS="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --json labels --jq '.labels[].name')
-
-            for LABEL in \
-              agent:codex agent:chatgpt agent:workreview agent:workbuddy \
-              phase:prototype phase:implementation phase:code-review phase:qa phase:release phase:deploy \
-              status:todo status:running status:blocked
-            do
-              if printf '%s\n' "$CURRENT_LABELS" | grep -Fxq "$LABEL"; then
-                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-                  --remove-label "$LABEL"
-              fi
-            done
-
-            # Ownership and phase must exist before status:todo is emitted, because
-            # OpenAI Validator uses that final label event as the QA trigger.
-            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --add-label "$TARGET_AGENT"
-            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --add-label "$TARGET_PHASE"
-            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --add-label "$DESIRED_STATUS"
 
             FROM_AGENT="$(jq -r '.from_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
             PHASE="$(jq -r '.phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
@@ -113,10 +110,21 @@ jobs:
               "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
               --paginate \
               --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" \
-              | head -n1)
+              | head -n1)"
 
             if [ -z "$EXISTING" ]; then
               gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
                 --body "$MARKER Reconciled the validated handoff to $TARGET_AGENT + $TARGET_PHASE + $DESIRED_STATUS at exact head $EXPECTED_SHA."
+            fi
+
+            # GITHUB_TOKEN-created label events do not wake ordinary Actions
+            # pull_request:labeled consumers. repository_dispatch is explicit
+            # and Validator revalidates the live exact-SHA handoff itself.
+            if [ "$TARGET_PHASE" = "phase:qa" ] && [ "$DESIRED_STATUS" = "status:todo" ]; then
+              TASK_ID="$(jq -r '.task_id' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              jq -n --argjson pr_number "$PR_NUMBER" --arg task_id "$TASK_ID" \
+                --arg source_sha "$EXPECTED_SHA" \
+                '{event_type:"agent_workbuddy_qa",client_payload:{pr_number:$pr_number,task_id:$task_id,source_sha:$source_sha,phase:"qa"}}' \
+                | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
             fi
           done < "$RUNNER_TEMP/prs.txt"
