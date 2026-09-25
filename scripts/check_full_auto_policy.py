@@ -28,8 +28,21 @@ require(
         "reports/qa_summary.json",
         "reports/deployment_gate.json",
         "Run deterministic QA tests",
+        "Resolve QA terminal policy",
+        "approval:production-required",
+        "terminal-policy:v1",
         '--trusted-login "${{ github.repository_owner }}"',
         '--trusted-login "github-actions[bot]"',
+    ],
+)
+
+
+require(
+    ".github/workflows/codex-task.yml",
+    [
+        "Require release-enabled terminal policy or exact owner release approval",
+        "release-approval:v1",
+        "Hold release in owner review",
     ],
 )
 
