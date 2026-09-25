@@ -75,7 +75,7 @@ jobs:
               > "$RUNNER_TEMP/decision-$PR_NUMBER.json"
 
             ACTION="$(jq -r '.action' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            if [ "$ACTION" != "reconcile" ] && [ "$ACTION" != "ensure_qa_dispatch" ] && [ "$ACTION" != "converge_owner_wait" ]; then
+            if [ "$ACTION" != "reconcile" ] && [ "$ACTION" != "ensure_qa_dispatch" ] && [ "$ACTION" != "converge_owner_wait" ] && [ "$ACTION" != "requeue_post_qa_review" ]; then
               continue
             fi
 
@@ -93,6 +93,20 @@ jobs:
               <(jq -r '.labels_before[]' "$RUNNER_TEMP/decision-$PR_NUMBER.json") \
               <(jq -r '.labels[].name' "$RUNNER_TEMP/live-$PR_NUMBER.json" | sort); then
               echo "PR #$PR_NUMBER labels changed; retry at next reconciliation."
+              continue
+            fi
+            if [ "$ACTION" = "requeue_post_qa_review" ]; then
+              TASK_ID="$(jq -r '.task_id' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              if [ "$(jq -r '.write_marker' "$RUNNER_TEMP/decision-$PR_NUMBER.json")" = "true" ]; then
+                printf '%s\n' '<!-- qa-postwrite-review:v1 -->' "task_id=$TASK_ID" "source_sha=$EXPECTED_SHA" 'next=NEW_INDEPENDENT_WORK_CODE_REVIEW' > "$RUNNER_TEMP/post-qa-$PR_NUMBER.md"
+                gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/post-qa-$PR_NUMBER.md"
+              fi
+              # A comment can race with another actor. Verify the PR again
+              # after publishing the marker and before projecting READY.
+              gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/live-$PR_NUMBER.json"
+              test "$(jq -r '.head.sha' "$RUNNER_TEMP/live-$PR_NUMBER.json")" = "$EXPECTED_SHA"
+              diff -u <(jq -r '.labels_before[]' "$RUNNER_TEMP/decision-$PR_NUMBER.json") <(jq -r '.labels[].name' "$RUNNER_TEMP/live-$PR_NUMBER.json" | sort)
+              jq '{labels: .labels_after}' "$RUNNER_TEMP/decision-$PR_NUMBER.json" | gh api --method PUT "repos/${{ github.repository }}/issues/$PR_NUMBER/labels" --input - >/dev/null
               continue
             fi
             if [ "$ACTION" = "reconcile" ] || [ "$ACTION" = "converge_owner_wait" ]; then

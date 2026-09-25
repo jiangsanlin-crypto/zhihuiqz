@@ -101,6 +101,18 @@ def _owner_wait_evidence(
     return terminal and qa
 
 
+def _post_qa_marker_exists(
+    comments: list[dict[str, Any]], *, task_id: str, head_sha: str
+) -> bool:
+    return any(
+        (comment.get("user") or {}).get("login") == "github-actions[bot]"
+        and "<!-- qa-postwrite-review:v1 -->" in str(comment.get("body") or "")
+        and f"task_id={task_id}" in str(comment.get("body") or "").splitlines()
+        and f"source_sha={head_sha}" in str(comment.get("body") or "").splitlines()
+        for comment in comments
+    )
+
+
 def decide_reconciliation(
     pr: dict[str, Any],
     comments: list[dict[str, Any]],
@@ -161,6 +173,34 @@ def decide_reconciliation(
                 "ci_run_id": ci_run_id, "labels_before": sorted(labels),
                 "labels_after": sorted(canonical),
             }
+        qa_running = {"agent:workbuddy", "phase:qa"} <= labels and bool(
+            labels & {"status:running", "status:todo"}
+        )
+        review_queued = {
+            "agent:workreview", "phase:code-review", "status:todo"
+        } <= labels
+        if (qa_running or review_queued) and not labels & {
+            "status:blocked", "status:review", "approval:production-required",
+            "approval:production-approved",
+        }:
+            canonical = (labels - STATE_LABELS) | {
+                "agent:workreview", "phase:code-review", "status:todo"
+            }
+            # A complete label projection without its marker is still
+            # incomplete: the Work consumer needs trusted QA evidence to
+            # claim the independent final-SHA review.
+            if canonical != labels or not _post_qa_marker_exists(
+                comments, task_id=task_id, head_sha=head_sha
+            ):
+                return {
+                    "action": "requeue_post_qa_review", "task_id": task_id,
+                    "source_sha": head_sha, "ci_run_id": ci_run_id,
+                    "labels_before": sorted(labels),
+                    "labels_after": sorted(canonical),
+                    "write_marker": not _post_qa_marker_exists(
+                        comments, task_id=task_id, head_sha=head_sha
+                    ),
+                }
     if "status:review" in labels or "approval:production-required" in labels:
         if {"status:review", "approval:production-required"} <= labels and labels & STATE_LABELS:
             return {"action": "noop", "reason": "owner_wait_requires_final_sha_review"}

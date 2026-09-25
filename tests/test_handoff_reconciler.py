@@ -347,3 +347,40 @@ def test_post_qa_final_sha_review_converges_without_restarting_qa():
             state, [qa, terminal, claim, reviewed], repository_owner=OWNER,
             ci_runs=evidence,
         )["action"] != "converge_owner_wait"
+
+
+def test_post_qa_handoff_requeues_final_sha_review_after_ci():
+    terminal = {
+        "user": {"login": "github-actions[bot]"},
+        "body": "<!-- terminal-policy:v1 -->\ntask_id=GH-ISSUE-1\n"
+                "source_sha=abc123\npolicy=stop_after_qa\nrelease_enabled=false",
+    }
+    qa = comment(handoff(from_agent="workbuddy", to_agent="human",
+                         phase="qa_acceptance"), user="github-actions[bot]")
+    state = pr(["agent:workbuddy", "phase:qa", "status:running"])
+    decision = decide_reconciliation(
+        state, [qa, terminal], repository_owner=OWNER, ci_runs=ci()
+    )
+    assert decision["action"] == "requeue_post_qa_review"
+    assert decision["write_marker"] is True
+    assert decision["labels_after"] == [
+        "agent:workreview", "phase:code-review", "status:todo"
+    ]
+    assert decide_reconciliation(
+        state, [qa, terminal], repository_owner=OWNER,
+        ci_runs=ci(status="in_progress", conclusion=None),
+    )["action"] != "requeue_post_qa_review"
+
+    marker = {
+        "user": {"login": "github-actions[bot]"},
+        "body": "<!-- qa-postwrite-review:v1 -->\ntask_id=GH-ISSUE-1\n"
+                "source_sha=abc123\nnext=NEW_INDEPENDENT_WORK_CODE_REVIEW",
+    }
+    projected = pr(["agent:workreview", "phase:code-review", "status:todo"])
+    assert decide_reconciliation(
+        projected, [qa, terminal, marker], repository_owner=OWNER,
+        ci_runs=ci(),
+    )["action"] == "noop"
+    assert decide_reconciliation(
+        projected, [qa, terminal], repository_owner=OWNER, ci_runs=ci()
+    )["write_marker"] is True
