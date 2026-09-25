@@ -88,21 +88,29 @@ class GitHubClient:
         data = response.json()
         return str(data.get("body") or "")
 
-    async def get_pr_head_branch(self, repo: str, number: int) -> str:
+    async def get_pr_head_identity(self, repo: str, number: int) -> dict[str, str]:
         response = await self._request(
             "GET",
             f"{self.base}/repos/{repo}/pulls/{number}",
         )
         data = response.json()
-        return str(data["head"]["ref"])
+        head = data.get("head") or {}
+        base = data.get("base") or {}
+        head_repo = head.get("repo") or {}
+        base_repo = base.get("repo") or {}
+        return {
+            "head_ref": str(head.get("ref") or ""),
+            "head_sha": str(head.get("sha") or ""),
+            "head_repo_full_name": str(head_repo.get("full_name") or ""),
+            "base_ref": str(base.get("ref") or ""),
+            "default_branch": str(base_repo.get("default_branch") or ""),
+        }
+
+    async def get_pr_head_branch(self, repo: str, number: int) -> str:
+        return (await self.get_pr_head_identity(repo, number))["head_ref"]
 
     async def get_pr_head_sha(self, repo: str, number: int) -> str:
-        response = await self._request(
-            "GET",
-            f"{self.base}/repos/{repo}/pulls/{number}",
-        )
-        data = response.json()
-        return str(data["head"]["sha"])
+        return (await self.get_pr_head_identity(repo, number))["head_sha"]
 
     async def _create_tree_commit(
         self,
@@ -160,13 +168,23 @@ class GitHubClient:
         message_prefix: str = "reports: WorkBuddy handoff",
         expected_head_sha: str | None = None,
     ) -> str:
-        branch = await self.get_pr_head_branch(repo, pr_number)
-        expected = expected_head_sha or await self.get_pr_head_sha(repo, pr_number)
+        identity = await self.get_pr_head_identity(repo, pr_number)
+        branch = identity["head_ref"]
+        expected = expected_head_sha or identity["head_sha"]
+        protected = {identity["base_ref"], identity["default_branch"]} - {""}
+        if identity["head_repo_full_name"] != repo:
+            raise RuntimeError(
+                "UNSAFE_PR_HEAD_REPOSITORY: "
+                f"expected={repo} live={identity['head_repo_full_name']}"
+            )
+        if not branch or branch in protected:
+            raise RuntimeError(f"UNSAFE_PR_HEAD_BRANCH: {branch or '<empty>'}")
+
         pending = list(changes)
         if not pending:
             return expected
 
-        live_sha = await self.get_pr_head_sha(repo, pr_number)
+        live_sha = identity["head_sha"]
         if live_sha != expected:
             raise RuntimeError(
                 "CONCURRENT_BRANCH_ADVANCE: "
