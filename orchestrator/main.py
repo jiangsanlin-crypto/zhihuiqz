@@ -135,8 +135,10 @@ def terminal_policy_comment_exists(
     return False
 
 
-def dispatch_delivery_id(payload: dict, header_delivery_id: str | None) -> str:
-    if payload.get("action") is None:
+def dispatch_delivery_id(
+    payload: dict, header_delivery_id: str | None, event_name: str | None
+) -> str:
+    if event_name == "repository_dispatch":
         client_payload = payload.get("client_payload") or {}
         dispatch_key = str(client_payload.get("dispatch_key") or "")
         if dispatch_key:
@@ -625,7 +627,9 @@ async def events(
     except json.JSONDecodeError:
         raise HTTPException(400, "invalid JSON")
 
-    delivery_id = dispatch_delivery_id(payload, x_github_delivery)
+    delivery_id = dispatch_delivery_id(
+        payload, x_github_delivery, x_github_event
+    )
     return {
         "queued": store.enqueue(
             delivery_id,
