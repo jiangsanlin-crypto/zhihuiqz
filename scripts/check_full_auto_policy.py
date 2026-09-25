@@ -16,6 +16,8 @@ require(
         '"auto_production_enabled": true',
         '"emergency_stop": false',
         '"require_ci_check": "test"',
+        '"require_owner_approval": true',
+        '"synthetic_e2e_never_deploys": true',
     ],
 )
 
@@ -26,6 +28,8 @@ require(
         "reports/qa_summary.json",
         "reports/deployment_gate.json",
         "Run deterministic QA tests",
+        '--trusted-login "${{ github.repository_owner }}"',
+        '--trusted-login "github-actions[bot]"',
     ],
 )
 
@@ -35,11 +39,37 @@ require(
         "Require autonomous production controls",
         "Validate OpenAI validator deployment handoff",
         "Validate release and deployment gates",
+        "Require exact-head CI",
+        "Require exact-SHA owner production approval",
+        "approval:production-approved",
+        "production-approval:v1",
         "Run final repository tests before merge",
-        "Merge approved-by-policy PR",
-        "Deploy main and verify 0m 1m 5m 15m health",
+        "Recheck immutable merge inputs",
+        "Merge exact approved PR head",
+        '--match-head-commit "$SOURCE_SHA"',
+        "Resolve exact merge commit",
+        "Deploy exact merge commit and verify 0m 1m 5m 15m health",
+        "production-deploy-${{ github.repository }}",
+        "ORIGIN_MAIN",
         "Rolling back",
     ],
 )
 
-print("full-auto production policy validated")
+require(
+    "orchestrator/handoff_gate.py",
+    [
+        "trusted_logins",
+        "_comment_login",
+        "Trust is established before parsing",
+    ],
+)
+
+require(
+    "scripts/reconcile_handoff_state.py",
+    [
+        "intentional_owner_wait",
+        "blocked_requires_recovery",
+    ],
+)
+
+print("full-auto production safety policy validated")
