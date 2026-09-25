@@ -139,6 +139,31 @@ def test_exact_sha_mismatch_never_advances():
     assert decision == {"action": "noop", "reason": "source_sha_mismatch"}
 
 
+def test_late_stale_handoff_cannot_hide_current_sha_success():
+    state = pr(["agent:chatgpt", "phase:implementation", "status:running"])
+    decision = decide_reconciliation(
+        state,
+        [comment(handoff(), created_at="2026-09-24T00:00:00Z"),
+         comment(handoff(sha="old"), created_at="2026-09-25T00:00:00Z")],
+        repository_owner=OWNER,
+        ci_runs=ci(),
+    )
+    assert decision["action"] == "reconcile"
+    assert decision["target_phase"] == "phase:code-review"
+
+
+def test_latest_current_sha_failure_overrides_earlier_success():
+    decision = decide_reconciliation(
+        pr(["agent:chatgpt", "phase:implementation", "status:running"]),
+        [comment(handoff(), created_at="2026-09-24T00:00:00Z"),
+         comment(handoff(status="failed"), created_at="2026-09-25T00:00:00Z"),
+         comment(handoff(sha="old"), created_at="2026-09-26T00:00:00Z")],
+        repository_owner=OWNER,
+        ci_runs=ci(),
+    )
+    assert decision == {"action": "noop", "reason": "handoff_not_success"}
+
+
 def test_non_owner_handoff_is_ignored():
     decision = decide_reconciliation(
         pr(["agent:chatgpt", "phase:implementation", "status:running"]),

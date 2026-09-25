@@ -228,7 +228,16 @@ def decide_reconciliation(
     if not relevant:
         return {"action": "noop", "reason": "no_relevant_owner_handoff"}
 
-    relevant.sort(key=lambda item: item[0], reverse=True)
+    # A delayed replay of an old-SHA handoff must not hide valid evidence for
+    # the current HEAD. Among current-SHA handoffs, the latest result still
+    # wins so a later failure cannot be overridden by an earlier PASS.
+    relevant.sort(
+        key=lambda item: (
+            str(item[2].get("source_sha") or "") == head_sha,
+            item[0],
+        ),
+        reverse=True,
+    )
     handoff_comment, payload = relevant[0][1:]
     key = (
         str(payload.get("from_agent") or ""),
