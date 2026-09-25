@@ -98,6 +98,13 @@ def decide_reconciliation(
         return {"action": "noop", "reason": "pr_number_mismatch"}
 
     labels = _labels(pr)
+    # Fail closed for terminal/manual states. A previously valid handoff must not
+    # resurrect a PR after a later review blocked it or QA moved it to owner wait.
+    if "status:review" in labels or "approval:production-required" in labels:
+        return {"action": "noop", "reason": "intentional_owner_wait"}
+    if "status:blocked" in labels:
+        return {"action": "noop", "reason": "blocked_requires_recovery"}
+
     desired_status = (
         "status:running"
         if {target_agent, target_phase, "status:running"}.issubset(labels)
