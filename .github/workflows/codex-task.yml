@@ -253,8 +253,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ steps.source.outputs.number }}
         run: |
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
-          gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --body "Codex product-planning failed or produced invalid output. No WorkBuddy handoff was dispatched."
+          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked"             --add-label "recovery:technical" || true
+          gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --body "<!-- agent-technical-failure:v1:codex:phase:product-plan:issue-$ISSUE_NUMBER --> Codex product-planning execution failed or produced invalid workflow output. This technical phase may be retried by the bounded watchdog; no later phase was dispatched."
           exit 1
 
   release-review:
@@ -543,7 +543,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
-          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked" || true
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "Codex release-review failed or produced invalid release artifacts."
+          gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked"             --add-label "recovery:technical" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "<!-- agent-technical-failure:v1:codex:phase:release:$SOURCE_SHA --> Codex release-review execution failed or produced invalid workflow output. This technical phase may be retried by the bounded watchdog at the same exact SHA."
           exit 1
