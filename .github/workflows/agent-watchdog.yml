@@ -6,9 +6,14 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
+
+concurrency:
+  group: agent-watchdog-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   watchdog:
@@ -250,6 +255,46 @@ jobs:
               gh issue comment "$NUMBER" --repo "${{ github.repository }}"                 --body "<!-- agent-watchdog:timeout:workbuddy:$PHASE:$REV --> ⏱ Central watchdog: OpenAI Validator exceeded the $LIMIT-minute limit for $PHASE. The task was blocked instead of advancing."
             done < "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
           done
+
+      - name: Reclaim orphaned exact-SHA Work review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          QUERY="repo:${{ github.repository }} is:pr is:open label:agent:workreview label:phase:code-review label:status:running"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 \
+            --jq '.items[].number' > "$RUNNER_TEMP/review-running.txt"
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            PR="$RUNNER_TEMP/review-$NUMBER.json"
+            DECISION="$RUNNER_TEMP/review-decision-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$PR"
+            SHA="$(jq -r '.head.sha' "$PR")"
+            gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/review-comments-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' \
+              > "$RUNNER_TEMP/review-ci-$NUMBER.json"
+            PYTHONPATH=. python scripts/plan_review_reclaim.py \
+              --pr-json "$PR" \
+              --comments-json "$RUNNER_TEMP/review-comments-$NUMBER.json" \
+              --ci-runs-json "$RUNNER_TEMP/review-ci-$NUMBER.json" \
+              --repository-owner "${{ github.repository_owner }}" \
+              --now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$DECISION"
+            [ "$(jq -r '.action' "$DECISION")" = "requeue" ] || continue
+
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$RUNNER_TEMP/review-live-$NUMBER.json"
+            [ "$(jq -r '.head.sha' "$RUNNER_TEMP/review-live-$NUMBER.json")" = "$SHA" ] || continue
+            if ! diff -u \
+              <(jq -r '.labels_before[]' "$DECISION") \
+              <(jq -r '.labels[].name' "$RUNNER_TEMP/review-live-$NUMBER.json" | sort); then
+              continue
+            fi
+            jq '{labels: .labels_after}' "$DECISION" | gh api --method PUT \
+              "repos/${{ github.repository }}/issues/$NUMBER/labels" --input - >/dev/null
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}" \
+              --body "<!-- agent-recovery:v1:$NUMBER:$SHA:code-review --> rule_id=R04_EXPIRED_REVIEW_RUNNING source_sha=$SHA last_progress_at=$(jq -r '.last_progress_at' "$DECISION") next=status:todo. No independent PASS was bypassed."
+          done < "$RUNNER_TEMP/review-running.txt"
 
       - name: Block Work review running longer than 120 minutes
         env:

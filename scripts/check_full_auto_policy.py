@@ -93,6 +93,8 @@ require(
         "Recover watchdog timeout blockers with bounded retry and escalation",
         "agent-watchdog:redispatch",
         "agent-watchdog:auto-retry",
+        "Reclaim orphaned exact-SHA Work review",
+        "scripts/plan_review_reclaim.py",
         "phase:escalation-repair",
         "Requeue exact-SHA technical failures with bounded budget",
         "recovery:technical",
