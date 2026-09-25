@@ -194,7 +194,20 @@ def test_owner_wait_is_never_requeued_by_old_handoff():
         ci_runs=ci(),
     )
 
-    assert decision == {"action": "noop", "reason": "intentional_owner_wait"}
+    assert decision == {
+        "action": "noop", "reason": "owner_wait_missing_exact_terminal_evidence"
+    }
+
+
+def test_owner_wait_missing_final_sha_ci_stays_protected_and_reported():
+    decision = decide_reconciliation(
+        pr(["status:review", "approval:production-required"]),
+        [], repository_owner=OWNER,
+        ci_runs=ci(conclusion="action_required"),
+    )
+    assert decision == {
+        "action": "noop", "reason": "owner_wait_current_sha_ci_not_success"
+    }
 
 
 def test_blocked_review_is_never_resurrected_by_old_handoff():

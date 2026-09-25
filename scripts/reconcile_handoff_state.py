@@ -202,9 +202,17 @@ def decide_reconciliation(
                     ),
                 }
     if "status:review" in labels or "approval:production-required" in labels:
+        # Human wait is protected from automatic exit, but missing evidence
+        # must remain visible as a distinct unresolved state for operators.
+        if ci_run_id is None:
+            return {"action": "noop", "reason": "owner_wait_current_sha_ci_not_success"}
+        if not _owner_wait_evidence(
+            comments, task_id=task_id, head_sha=head_sha
+        ):
+            return {"action": "noop", "reason": "owner_wait_missing_exact_terminal_evidence"}
         if {"status:review", "approval:production-required"} <= labels and labels & STATE_LABELS:
             return {"action": "noop", "reason": "owner_wait_requires_final_sha_review"}
-        return {"action": "noop", "reason": "intentional_owner_wait"}
+        return {"action": "noop", "reason": "owner_wait_requires_final_sha_review"}
 
     relevant: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for comment in comments:
