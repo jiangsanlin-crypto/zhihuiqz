@@ -216,6 +216,17 @@ def test_independent_review_requires_fresh_claim_and_explicit_pass():
     kwargs = dict(handoff=payload, handoff_comment=pass_comment,
                   task_id="GH-ISSUE-12", source_sha="review123", trusted_login="owner")
     assert independent_review_pass([claim, pass_comment], **kwargs)
+    live_check = {**payload, "checks": [
+        {"name": "independent_code_review", "status": "passed"}
+    ]}
+    live_pass_comment = comment(
+        live_check, created_at="2026-09-23T02:00:00Z"
+    )
+    assert independent_review_pass(
+        [claim, live_pass_comment],
+        **{**kwargs, "handoff": live_check,
+           "handoff_comment": live_pass_comment},
+    )
     requeue = {
         "created_at": "2026-09-23T01:00:00Z",
         "user": {"login": "owner"},

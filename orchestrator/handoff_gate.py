@@ -51,7 +51,7 @@ def independent_review_pass(
     """
     if not any(
         isinstance(check, dict)
-        and check.get("name") == "code_review"
+        and check.get("name") in {"code_review", "independent_code_review"}
         and check.get("status") == "passed"
         for check in handoff.get("checks") or []
     ):
