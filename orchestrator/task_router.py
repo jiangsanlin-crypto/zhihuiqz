@@ -69,15 +69,17 @@ def next_labels(agent: str, kind: str, current: list[str], status: str,
         if phase:
             retry.append(phase)
         return sorted(set(keep + retry))
-    if explicit:
-        return sorted(set(keep + explicit))
-    if agent == "workbuddy" and phase == "phase:prototype":
-        return sorted(set(keep + ["agent:chatgpt", "phase:implementation", "status:todo"]))
+    # QA terminal policy is authoritative. Agent-supplied next labels must not
+    # bypass stop-after-QA, owner approval, or fail-closed policy resolution.
     if agent == "workbuddy" and phase == "phase:qa":
         decision = resolve_terminal_policy(terminal_policy_text or "")
         if decision.release_enabled:
             return sorted(set(keep + ["agent:codex", "phase:release", "status:todo"]))
         return owner_wait_labels(keep)
+    if explicit:
+        return sorted(set(keep + explicit))
+    if agent == "workbuddy" and phase == "phase:prototype":
+        return sorted(set(keep + ["agent:chatgpt", "phase:implementation", "status:todo"]))
     if agent == "workbuddy" and phase == "phase:deploy":
         return sorted(set(keep + ["agent:workbuddy", "phase:deploy", "status:running"]))
     return sorted(set(keep + ["status:review"]))
