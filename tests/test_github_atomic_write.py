@@ -94,17 +94,31 @@ def test_stale_initial_head_and_duplicate_paths_fail_closed(monkeypatch):
     client, calls = client_with_fake_github(monkeypatch)
     with pytest.raises(RuntimeError, match="initial head changed"):
         asyncio.run(client.update_pr_files(
-            "owner/repo", 7, [FileChange(path="a", content="x")],
+            "owner/repo", 7, [FileChange(path="reports/a.md", content="x")],
             expected_head_sha="stale",
         ))
     assert len(calls) == 2
     assert all(method == "GET" for method, _, _ in calls)
     with pytest.raises(ValueError, match="duplicate"):
         asyncio.run(client.update_pr_files(
-            "owner/repo", 7, [FileChange(path="a", content="x"),
-                              FileChange(path="a", content="y")],
+            "owner/repo", 7, [FileChange(path="reports/a.md", content="x"),
+                              FileChange(path="reports/a.md", content="y")],
             expected_head_sha="old-head",
         ))
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/chatgpt-dev.yml", "orchestrator/main.py",
+    "reports/../.github/workflows/chatgpt-dev.yml", "reports/",
+])
+def test_validation_results_cannot_write_outside_reports(monkeypatch, path):
+    client, calls = client_with_fake_github(monkeypatch)
+    with pytest.raises(ValueError, match="invalid or duplicate report path"):
+        asyncio.run(client.update_pr_files(
+            "owner/repo", 7, [FileChange(path=path, content="unsafe")],
+            expected_head_sha="old-head",
+        ))
+    assert calls == []
 
 
 def test_crash_replay_recognizes_only_exact_wrapped_report_commit(monkeypatch):

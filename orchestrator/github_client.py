@@ -181,8 +181,8 @@ class GitHubClient:
         files = list(changes)
         paths = [change.path for change in files]
         if len(set(paths)) != len(paths) or any(
-            not path or path.startswith("/") or any(
-                segment in {".", ".."} for segment in path.split("/")
+            not path.startswith("reports/") or path.endswith("/") or any(
+                segment in {"", ".", ".."} for segment in path.split("/")
             ) for path in paths
         ):
             raise ValueError("invalid or duplicate report path")
