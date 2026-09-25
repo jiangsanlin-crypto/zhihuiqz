@@ -38,6 +38,14 @@ def comment(payload, *, created_at="2026-09-24T00:00:00Z", user=OWNER):
     }
 
 
+def review_claim(sha="abc123", *, created_at="2026-09-23T00:00:00Z", user=OWNER):
+    return {
+        "created_at": created_at, "user": {"login": user},
+        "body": "<!-- agent-claim:v1 -->\ntask_id=GH-ISSUE-1\n"
+                f"agent=workreview\nphase=code-review\nsource_sha={sha}",
+    }
+
+
 def handoff(
     *,
     from_agent="chatgpt",
@@ -56,6 +64,8 @@ def handoff(
         "phase": phase,
         "status": status,
         "blockers": blockers or [],
+        "checks": [{"name": "code_review", "status": "passed"}]
+        if from_agent == "workreview" and status == "success" else [],
         "source_sha": sha,
         "pr_number": 9,
     }
@@ -99,7 +109,7 @@ def test_preserves_running_target_instead_of_requeueing():
 def test_code_review_handoff_targets_luna_qa():
     decision = decide_reconciliation(
         pr(["agent:workreview", "phase:code-review", "status:running"]),
-        [
+        [review_claim(),
             comment(
                 handoff(
                     from_agent="workreview",
@@ -179,7 +189,7 @@ def test_successful_handoff_cannot_advance_qa_without_current_sha_ci():
     for evidence in ({"workflow_runs": []}, ci("old"), ci(conclusion="failure"),
                      ci(status="in_progress", conclusion=None), ci(event="push")):
         decision = decide_reconciliation(
-            state, [comment(payload)], repository_owner=OWNER, ci_runs=evidence
+            state, [review_claim(), comment(payload)], repository_owner=OWNER, ci_runs=evidence
         )
         assert decision == {"action": "noop", "reason": "current_sha_ci_not_success"}
 
@@ -191,7 +201,7 @@ def test_latest_failed_ci_overrides_older_success_for_same_sha():
     runs["workflow_runs"].append(failed)
     decision = decide_reconciliation(
         pr(["agent:workreview", "phase:code-review", "status:running"]),
-        [comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
+        [review_claim(), comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
         repository_owner=OWNER, ci_runs=runs,
     )
     assert decision == {"action": "noop", "reason": "current_sha_ci_not_success"}
@@ -213,7 +223,7 @@ def test_reconcile_projects_one_legal_state_preserving_other_labels():
 def test_canonical_qa_todo_retries_missing_dispatch():
     decision = decide_reconciliation(
         pr(["agent:workbuddy", "phase:qa", "status:todo"]),
-        [comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
+        [review_claim(), comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
         repository_owner=OWNER, ci_runs=ci(),
     )
     assert decision["action"] == "ensure_qa_dispatch"
@@ -224,7 +234,30 @@ def test_canonical_qa_todo_retries_missing_dispatch():
 def test_running_qa_is_not_redispatched():
     decision = decide_reconciliation(
         pr(["agent:workbuddy", "phase:qa", "status:running"]),
-        [comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
+        [review_claim(), comment(handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review"))],
         repository_owner=OWNER, ci_runs=ci(),
     )
     assert decision["action"] == "noop"
+
+
+def test_review_pass_without_fresh_claim_never_starts_qa():
+    payload = handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review")
+    state = pr(["agent:workreview", "phase:code-review", "status:running"])
+    for prior in ([], [review_claim("old")],
+                  [review_claim(), {"user": {"login": OWNER},
+                                    "created_at": "2026-09-23T12:00:00Z",
+                                    "body": "<!-- work-review-requeue:v1 -->\ntask_id=GH-ISSUE-1\nsource_sha=abc123"}]):
+        decision = decide_reconciliation(
+            state, prior + [comment(payload)], repository_owner=OWNER, ci_runs=ci()
+        )
+        assert decision == {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}
+
+
+def test_review_pass_without_pass_check_never_starts_qa():
+    payload = handoff(from_agent="workreview", to_agent="workbuddy", phase="code_review")
+    payload["checks"] = []
+    decision = decide_reconciliation(
+        pr(["agent:workreview", "phase:code-review", "status:running"]),
+        [review_claim(), comment(payload)], repository_owner=OWNER, ci_runs=ci()
+    )
+    assert decision == {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}

@@ -23,6 +23,7 @@ on:
           - deploy
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
@@ -139,17 +140,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.context.outputs.head_ref }}
+          ref: ${{ steps.context.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Resolve OpenAI API key
-        id: openai_key
-        env:
-          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
-          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
 
       - name: Validate previous handoff
         id: handoff_gate
@@ -161,12 +154,48 @@ jobs:
           PREV_FROM: ${{ steps.context.outputs.prev_from }}
           PREV_TO: ${{ steps.context.outputs.prev_to }}
           PREV_PHASE: ${{ steps.context.outputs.prev_handoff_phase }}
+          PHASE: ${{ steps.context.outputs.phase }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/live-pr.json"
+          test "$(jq -r '.head.sha' "$RUNNER_TEMP/live-pr.json")" = "$SOURCE_SHA"
+          test "$(jq -r '.head.ref' "$RUNNER_TEMP/live-pr.json")" = "$HEAD_REF"
+          jq -e --arg phase "phase:$PHASE" \
+            '[.labels[].name] as $labels |
+             (($labels | map(select(startswith("agent:")))) == ["agent:workbuddy"]) and
+             (($labels | map(select(startswith("phase:")))) == [$phase]) and
+             (($labels | map(select(startswith("status:")))) == ["status:todo"]) and
+             (($labels | index("approval:production-required")) == null)' \
+            "$RUNNER_TEMP/live-pr.json" >/dev/null
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+            --paginate --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/comments.json"
 
-          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent "$PREV_FROM"             --to-agent "$PREV_TO"             --phase "$PREV_PHASE"             --source-sha "$SOURCE_SHA"             --trusted-login "${{ github.repository_owner }}"             --trusted-login "github-actions[bot]"
+          REVIEW_GATE=()
+          if [ "$PHASE" = "qa" ]; then
+            REVIEW_GATE=(--require-independent-review)
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SOURCE_SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '.' > "$RUNNER_TEMP/ci-runs.json"
+            jq -e --arg sha "$SOURCE_SHA" --arg branch "$HEAD_REF" \
+              '[.[] | select(.head_sha == $sha and .head_branch == $branch and .name == "CI" and .path == ".github/workflows/ci.yml" and .event == "pull_request")] | sort_by(.created_at, .id) | last | .status == "completed" and .conclusion == "success"' \
+              "$RUNNER_TEMP/ci-runs.json" >/dev/null
+          fi
+          PYTHONPATH=. python scripts/validate_handoff.py \
+            --comments "$RUNNER_TEMP/comments.json" --task-id "$TASK_ID" \
+            --from-agent "$PREV_FROM" --to-agent "$PREV_TO" \
+            --phase "$PREV_PHASE" --source-sha "$SOURCE_SHA" \
+            --trusted-login "${{ github.repository_owner }}" \
+            --trusted-login "github-actions[bot]" "${REVIEW_GATE[@]}"
 
           jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
+
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
 
       - name: Mark validation running
         env:

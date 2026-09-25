@@ -111,5 +111,16 @@ require(
         '("workreview", "workbuddy", "code_review")',
         "current_sha_ci_not_success",
         "canonical_qa_may_need_dispatch",
+        "missing_independent_current_sha_review_pass",
+    ],
+)
+
+require(
+    ".github/workflows/openai-validator.yml",
+    [
+        "--require-independent-review",
+        '--paginate --jq',
+        'head_sha == $sha',
+        "steps.context.outputs.source_sha",
     ],
 )

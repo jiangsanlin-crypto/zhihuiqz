@@ -2,7 +2,9 @@ import json
 
 import pytest
 
-from orchestrator.handoff_gate import HandoffGateError, validate_handoff
+from orchestrator.handoff_gate import (
+    HandoffGateError, independent_review_pass, validate_handoff,
+)
 
 
 def comment(payload, created_at="2026-09-23T01:00:00Z", user="owner"):
@@ -167,3 +169,36 @@ def test_trusted_malformed_handoff_fails_closed():
             phase="prototype_validation",
             trusted_logins={"owner", "github-actions[bot]"},
         )
+
+
+def test_independent_review_requires_fresh_claim_and_explicit_pass():
+    payload = {
+        "task_id": "GH-ISSUE-12", "from_agent": "workreview",
+        "to_agent": "workbuddy", "phase": "code_review",
+        "status": "success", "source_sha": "review123",
+        "checks": [{"name": "code_review", "status": "passed"}],
+    }
+    claim = {
+        "created_at": "2026-09-23T00:00:00Z",
+        "user": {"login": "owner"},
+        "body": "<!-- agent-claim:v1 -->\ntask_id=GH-ISSUE-12\nagent=workreview\n"
+                "phase=code-review\nsource_sha=review123",
+    }
+    pass_comment = comment(payload, created_at="2026-09-23T02:00:00Z")
+    kwargs = dict(handoff=payload, handoff_comment=pass_comment,
+                  task_id="GH-ISSUE-12", source_sha="review123", trusted_login="owner")
+    assert independent_review_pass([claim, pass_comment], **kwargs)
+    requeue = {
+        "created_at": "2026-09-23T01:00:00Z",
+        "user": {"login": "owner"},
+        "body": "<!-- work-review-requeue:v1 -->\ntask_id=GH-ISSUE-12\nsource_sha=review123",
+    }
+    assert not independent_review_pass([claim, requeue, pass_comment], **kwargs)
+    assert not independent_review_pass(
+        [dict(claim, user={"login": "attacker"}), pass_comment], **kwargs
+    )
+    assert not independent_review_pass([dict(claim, body=claim["body"].replace(
+        "review123", "stale123")), pass_comment], **kwargs)
+    assert not independent_review_pass(
+        [claim, pass_comment], **dict(kwargs, handoff=dict(payload, checks=[]))
+    )

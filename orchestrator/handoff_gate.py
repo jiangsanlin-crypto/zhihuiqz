@@ -35,6 +35,59 @@ def _comment_login(comment: dict[str, Any]) -> str:
     return str(user.get("login") or "")
 
 
+def independent_review_pass(
+    comments: list[dict[str, Any]],
+    *,
+    handoff: dict[str, Any],
+    handoff_comment: dict[str, Any],
+    task_id: str,
+    source_sha: str,
+    trusted_login: str,
+) -> bool:
+    """Require a fresh exact-SHA review claim and an explicit PASS check.
+
+    A repair/requeue on the same SHA invalidates an earlier claim. A repair
+    execution cannot approve its own result by publishing a handoff.
+    """
+    if not any(
+        isinstance(check, dict)
+        and check.get("name") == "code_review"
+        and check.get("status") == "passed"
+        for check in handoff.get("checks") or []
+    ):
+        return False
+    if _comment_login(handoff_comment) != trusted_login:
+        return False
+
+    def order(comment: dict[str, Any]) -> tuple[str, int]:
+        return str(comment.get("created_at") or ""), int(comment.get("id") or 0)
+
+    pass_order = order(handoff_comment)
+    claims: list[tuple[str, int]] = []
+    invalidated: list[tuple[str, int]] = []
+    for comment in comments:
+        if _comment_login(comment) != trusted_login:
+            continue
+        body = str(comment.get("body") or "")
+        if f"task_id={task_id}" not in body or f"source_sha={source_sha}" not in body:
+            continue
+        position = order(comment)
+        if (
+            "<!-- agent-claim:v1 -->" in body
+            and "agent=workreview" in body
+            and "phase=code-review" in body
+        ):
+            claims.append(position)
+        if "<!-- agent-repair:v1 -->" in body or "<!-- work-review-requeue:v1 -->" in body:
+            invalidated.append(position)
+    if not claims:
+        return False
+    claim_order = max(claims)
+    return claim_order < pass_order and (
+        not invalidated or claim_order > max(invalidated)
+    )
+
+
 def latest_matching_handoff(
     comments: list[dict[str, Any]],
     *,

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from orchestrator.handoff_gate import extract_handoff
+from orchestrator.handoff_gate import extract_handoff, independent_review_pass
 
 TASK_ID_RE = re.compile(r"<!-- agent-task-id:([A-Za-z0-9._:-]+) -->")
 
@@ -81,7 +81,7 @@ def decide_reconciliation(
     if not head_sha:
         return {"action": "noop", "reason": "missing_head_sha"}
 
-    relevant: list[tuple[str, dict[str, Any]]] = []
+    relevant: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for comment in comments:
         user = comment.get("user") or {}
         if str(user.get("login") or "") != repository_owner:
@@ -98,13 +98,13 @@ def decide_reconciliation(
             str(payload.get("phase") or ""),
         )
         if key in TRANSITIONS:
-            relevant.append((str(comment.get("created_at") or ""), payload))
+            relevant.append((str(comment.get("created_at") or ""), comment, payload))
 
     if not relevant:
         return {"action": "noop", "reason": "no_relevant_owner_handoff"}
 
     relevant.sort(key=lambda item: item[0], reverse=True)
-    payload = relevant[0][1]
+    handoff_comment, payload = relevant[0][1:]
     key = (
         str(payload.get("from_agent") or ""),
         str(payload.get("to_agent") or ""),
@@ -122,6 +122,11 @@ def decide_reconciliation(
         return {"action": "noop", "reason": "source_sha_mismatch"}
     if payload.get("pr_number") not in (None, pr.get("number")):
         return {"action": "noop", "reason": "pr_number_mismatch"}
+    if key == ("workreview", "workbuddy", "code_review") and not independent_review_pass(
+        comments, handoff=payload, handoff_comment=handoff_comment,
+        task_id=task_id, source_sha=head_sha, trusted_login=repository_owner,
+    ):
+        return {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}
 
     labels = _labels(pr)
     # Fail closed for terminal/manual states. A previously valid handoff must not
