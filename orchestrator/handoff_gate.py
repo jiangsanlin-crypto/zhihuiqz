@@ -30,6 +30,11 @@ def extract_handoff(body: str) -> dict[str, Any] | None:
     return payload
 
 
+def _comment_login(comment: dict[str, Any]) -> str:
+    user = comment.get("user") or {}
+    return str(user.get("login") or "")
+
+
 def latest_matching_handoff(
     comments: list[dict[str, Any]],
     *,
@@ -37,10 +42,16 @@ def latest_matching_handoff(
     from_agent: str,
     to_agent: str,
     phase: str,
+    trusted_logins: set[str] | None = None,
 ) -> dict[str, Any]:
     parsed: list[tuple[str, dict[str, Any]]] = []
 
     for comment in comments:
+        # Trust is established before parsing. This prevents an untrusted public
+        # comment from either forging a handoff or causing a malformed-marker DoS.
+        if trusted_logins is not None and _comment_login(comment) not in trusted_logins:
+            continue
+
         body = str(comment.get("body") or "")
         payload = extract_handoff(body)
         if payload is None:
@@ -73,6 +84,7 @@ def validate_handoff(
     to_agent: str,
     phase: str,
     source_sha: str | None = None,
+    trusted_logins: set[str] | None = None,
 ) -> dict[str, Any]:
     payload = latest_matching_handoff(
         comments,
@@ -80,6 +92,7 @@ def validate_handoff(
         from_agent=from_agent,
         to_agent=to_agent,
         phase=phase,
+        trusted_logins=trusted_logins,
     )
 
     if payload.get("status") != "success":
