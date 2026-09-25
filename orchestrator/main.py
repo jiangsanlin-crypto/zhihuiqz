@@ -211,6 +211,9 @@ async def process(event: dict) -> None:
             result.artifacts = [
                 change.path for change in result.changes
             ]
+            # Every downstream handoff/dispatch must bind to the commit that
+            # actually contains the WorkBuddy write-back, never the pre-write SHA.
+            req.source_sha = new_sha
             if result.handoff:
                 result.handoff.source_sha = new_sha
                 result.handoff.artifacts = result.artifacts
