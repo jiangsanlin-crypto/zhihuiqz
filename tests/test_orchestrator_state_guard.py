@@ -37,3 +37,15 @@ def test_current_state_accepts_exact_workflow_and_preserves_unrelated(monkeypatc
 def test_current_state_rejects_superseded_workflow(monkeypatch, labels):
     with pytest.raises(RuntimeError, match="WORKFLOW_STATE_SUPERSEDED"):
         asyncio.run(run_state_guard(monkeypatch, labels))
+
+
+def test_projection_preserves_latest_unrelated_labels_and_removes_old_state():
+    labels = main.project_workflow_labels(
+        ["agent:workbuddy", "phase:qa", "status:running", "status:todo",
+         "domain:billing", "priority:p1"],
+        {"status:review", "approval:production-required"},
+    )
+    assert labels == [
+        "approval:production-required", "domain:billing", "priority:p1",
+        "status:review",
+    ]
