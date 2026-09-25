@@ -164,6 +164,7 @@ async def process(event: dict) -> None:
             },
         )
     except HandoffGateError as exc:
+        await require_current_head(req, req.source_sha)
         await github.comment(
             req.repository,
             req.source_number,
@@ -175,6 +176,7 @@ async def process(event: dict) -> None:
                 "Fix the previous handoff and retry the same phase."
             ),
         )
+        await require_current_head(req, req.source_sha)
         await github.set_labels(
             req.repository,
             req.source_number,
@@ -197,6 +199,7 @@ async def process(event: dict) -> None:
             if not label.startswith("status:")
         ]
         running_labels.append("status:running")
+        await require_current_head(req, req.source_sha)
         await github.set_labels(
             req.repository,
             req.source_number,
