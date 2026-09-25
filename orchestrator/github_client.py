@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from typing import Any, Iterable
 
 import httpx
@@ -105,35 +104,53 @@ class GitHubClient:
         data = response.json()
         return str(data["head"]["sha"])
 
-    async def _upsert_file(
+    async def _create_tree_commit(
         self,
         repo: str,
-        branch: str,
-        change: FileChange,
+        expected_head_sha: str,
+        changes: list[FileChange],
         message_prefix: str,
     ) -> str:
-        url = f"{self.base}/repos/{repo}/contents/{change.path}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            current = await client.get(
-                url,
-                headers=self._headers(),
-                params={"ref": branch},
+        base = await self._request(
+            "GET",
+            f"{self.base}/repos/{repo}/git/commits/{expected_head_sha}",
+        )
+        base_tree_sha = str(base.json()["tree"]["sha"])
+        entries = []
+
+        for change in changes:
+            blob = await self._request(
+                "POST",
+                f"{self.base}/repos/{repo}/git/blobs",
+                json={"content": change.content, "encoding": "utf-8"},
+            )
+            entries.append(
+                {
+                    "path": change.path,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": str(blob.json()["sha"]),
+                }
             )
 
-        payload = {
-            "message": f"{message_prefix}: {change.path}",
-            "content": base64.b64encode(change.content.encode()).decode(),
-            "branch": branch,
-        }
-
-        if current.status_code == 200:
-            payload["sha"] = current.json()["sha"]
-        elif current.status_code != 404:
-            current.raise_for_status()
-
-        response = await self._request("PUT", url, json=payload)
-        data = response.json()
-        return str(data["commit"]["sha"])
+        tree = await self._request(
+            "POST",
+            f"{self.base}/repos/{repo}/git/trees",
+            json={"base_tree": base_tree_sha, "tree": entries},
+        )
+        commit = await self._request(
+            "POST",
+            f"{self.base}/repos/{repo}/git/commits",
+            json={
+                "message": (
+                    f"{message_prefix}: "
+                    + ", ".join(change.path for change in changes)
+                ),
+                "tree": str(tree.json()["sha"]),
+                "parents": [expected_head_sha],
+            },
+        )
+        return str(commit.json()["sha"])
 
     async def update_pr_files(
         self,
@@ -145,20 +162,9 @@ class GitHubClient:
     ) -> str:
         branch = await self.get_pr_head_branch(repo, pr_number)
         expected = expected_head_sha or await self.get_pr_head_sha(repo, pr_number)
-
-        for change in changes:
-            live_sha = await self.get_pr_head_sha(repo, pr_number)
-            if live_sha != expected:
-                raise RuntimeError(
-                    "CONCURRENT_BRANCH_ADVANCE: "
-                    f"expected={expected} live={live_sha}"
-                )
-            expected = await self._upsert_file(
-                repo,
-                branch,
-                change,
-                message_prefix,
-            )
+        pending = list(changes)
+        if not pending:
+            return expected
 
         live_sha = await self.get_pr_head_sha(repo, pr_number)
         if live_sha != expected:
@@ -166,4 +172,35 @@ class GitHubClient:
                 "CONCURRENT_BRANCH_ADVANCE: "
                 f"expected={expected} live={live_sha}"
             )
-        return expected
+
+        # Build one commit whose only parent is the reviewed revision. Objects are
+        # not visible on the PR branch until the final non-force ref update.
+        commit_sha = await self._create_tree_commit(
+            repo,
+            expected,
+            pending,
+            message_prefix,
+        )
+
+        # Close the object-creation race. If another actor advanced the branch,
+        # leave the new commit unreachable and do not mutate the PR ref.
+        live_sha = await self.get_pr_head_sha(repo, pr_number)
+        if live_sha != expected:
+            raise RuntimeError(
+                "CONCURRENT_BRANCH_ADVANCE: "
+                f"expected={expected} live={live_sha}"
+            )
+
+        await self._request(
+            "PATCH",
+            f"{self.base}/repos/{repo}/git/refs/heads/{branch}",
+            json={"sha": commit_sha, "force": False},
+        )
+
+        live_sha = await self.get_pr_head_sha(repo, pr_number)
+        if live_sha != commit_sha:
+            raise RuntimeError(
+                "CONCURRENT_BRANCH_ADVANCE: "
+                f"expected={commit_sha} live={live_sha}"
+            )
+        return commit_sha
