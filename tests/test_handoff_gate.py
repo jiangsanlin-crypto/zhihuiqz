@@ -77,6 +77,34 @@ def test_wrong_sha_fails():
         )
 
 
+def test_late_stale_sha_handoff_does_not_mask_current_one():
+    current = base_payload()
+    stale = {**current, "source_sha": "old"}
+    result = validate_handoff(
+        [comment(current, created_at="2026-09-23T01:00:00Z"),
+         comment(stale, created_at="2026-09-23T02:00:00Z")],
+        task_id="GH-ISSUE-12", from_agent="workbuddy",
+        to_agent="chatgpt", phase="prototype_validation",
+        source_sha="abc123", trusted_logins={"owner"},
+    )
+    assert result["source_sha"] == "abc123"
+
+
+def test_latest_current_sha_blocker_overrides_earlier_pass():
+    current = base_payload()
+    blocked = {**current, "status": "blocked", "blockers": ["QA failed"]}
+    stale = {**current, "source_sha": "old"}
+    with pytest.raises(HandoffGateError, match="handoff status"):
+        validate_handoff(
+            [comment(current, created_at="2026-09-23T01:00:00Z"),
+             comment(blocked, created_at="2026-09-23T02:00:00Z"),
+             comment(stale, created_at="2026-09-23T03:00:00Z")],
+            task_id="GH-ISSUE-12", from_agent="workbuddy",
+            to_agent="chatgpt", phase="prototype_validation",
+            source_sha="abc123", trusted_logins={"owner"},
+        )
+
+
 def test_missing_handoff_fails():
     with pytest.raises(HandoffGateError):
         validate_handoff(

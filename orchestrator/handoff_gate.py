@@ -102,6 +102,7 @@ def latest_matching_handoff(
     from_agent: str,
     to_agent: str,
     phase: str,
+    source_sha: str | None = None,
     trusted_logins: set[str] | None = None,
 ) -> dict[str, Any]:
     parsed: list[tuple[str, dict[str, Any]]] = []
@@ -119,7 +120,15 @@ def latest_matching_handoff(
         created_at = str(comment.get("created_at") or "")
         parsed.append((created_at, payload))
 
-    parsed.sort(key=lambda item: item[0], reverse=True)
+    # An old-SHA handoff delivered late cannot mask an earlier valid
+    # current-SHA record. The latest result for the current SHA still wins.
+    parsed.sort(
+        key=lambda item: (
+            source_sha is not None and item[1].get("source_sha") == source_sha,
+            item[0],
+        ),
+        reverse=True,
+    )
 
     for _, payload in parsed:
         if (
@@ -152,6 +161,7 @@ def validate_handoff(
         from_agent=from_agent,
         to_agent=to_agent,
         phase=phase,
+        source_sha=source_sha,
         trusted_logins=trusted_logins,
     )
 
