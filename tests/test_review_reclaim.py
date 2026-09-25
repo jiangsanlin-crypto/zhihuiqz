@@ -67,3 +67,19 @@ def test_review_result_or_owner_wait_never_requeues():
         "agent:workreview", "phase:code-review", "status:running",
         "status:review", "approval:production-required"
     ]), [], ci(), now=NOW, owner="owner")["action"] == "noop"
+
+
+def test_unrelated_comments_cannot_keep_a_dead_review_worker_alive():
+    old_claim = claim(created="2026-09-25T11:00:00Z")
+    other_phase = {
+        "user": {"login": "owner"}, "created_at": "2026-09-25T13:25:00Z",
+        "body": "<!-- agent-heartbeat:v1 -->\nagent=chatgpt\n"
+                "phase=implementation\nsource_sha=currentsha",
+    }
+    current = pr(updated="2026-09-25T13:25:00Z")
+    result = decide_reclaim(current, [old_claim, other_phase], ci(),
+                            now=NOW, owner="owner")
+    assert result["action"] == "requeue"
+    assert result["last_progress_at"] == "2026-09-25T11:00:00+00:00"
+    assert decide_reclaim(current, [old_claim, claim()], ci(), now=NOW,
+                          owner="owner")["reason"] == "review_may_still_be_active"

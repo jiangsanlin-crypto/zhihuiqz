@@ -50,14 +50,15 @@ def decide_reclaim(
         if (comment.get("user") or {}).get("login") != owner:
             continue
         body = str(comment.get("body") or "")
-        if f"source_sha={sha}" in body and any(
+        fields = set(body.splitlines())
+        if ({f"source_sha={sha}", "agent=workreview", "phase=code-review"} <= fields
+            and any(
             marker in body for marker in (
                 "<!-- agent-claim:v1 -->",
                 "<!-- agent-heartbeat:v1 -->",
                 "<!-- agent-retry:v1 -->",
-                "<!-- agent-repair:v1 -->",
             )
-        ):
+        )):
             when = _timestamp(comment.get("created_at"))
             if when:
                 progress.append(when)
@@ -72,11 +73,13 @@ def decide_reclaim(
         ):
             return {"action": "noop", "reason": "review_result_exists"}
 
-    # PR updated_at can include a concurrent comment or label edit. Using the
-    # newer clock fails closed when we cannot establish when RUNNING began.
-    started = _timestamp(pr.get("updated_at"))
-    if started:
-        progress.append(started)
+    # Once a trusted Work Review progress record exists, unrelated PR edits
+    # must not indefinitely renew a dead worker. Without such a record,
+    # updated_at is a conservative fallback for an unknown RUNNING start.
+    if not progress:
+        started = _timestamp(pr.get("updated_at"))
+        if started:
+            progress.append(started)
     if not progress or now - max(progress) < STALE_AFTER:
         return {"action": "noop", "reason": "review_may_still_be_active"}
 
