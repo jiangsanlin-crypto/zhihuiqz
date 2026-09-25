@@ -296,6 +296,52 @@ jobs:
               --body "<!-- agent-recovery:v1:$NUMBER:$SHA:code-review --> rule_id=R04_EXPIRED_REVIEW_RUNNING source_sha=$SHA last_progress_at=$(jq -r '.last_progress_at' "$DECISION") next=status:todo. No independent PASS was bypassed."
           done < "$RUNNER_TEMP/review-running.txt"
 
+      - name: Re-evaluate Work repair CI blockers and restore independent review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create "recovery:repair-ci" --repo "${{ github.repository }}" \
+            --color B60205 --description "Review repair awaits recoverable current-SHA CI" --force
+          QUERY="repo:${{ github.repository }} is:pr is:open label:agent:workreview label:phase:escalation-repair"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 \
+            --jq '.items[].number' > "$RUNNER_TEMP/repair-prs.txt"
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            PR="$RUNNER_TEMP/repair-pr-$NUMBER.json"
+            COMMENTS="$RUNNER_TEMP/repair-comments-$NUMBER.json"
+            RUNS="$RUNNER_TEMP/repair-ci-$NUMBER.json"
+            DECISION="$RUNNER_TEMP/repair-decision-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$PR"
+            SHA="$(jq -r '.head.sha' "$PR")"
+            gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq '.[]' | jq -s '.' > "$COMMENTS"
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' > "$RUNS"
+            PYTHONPATH=. python scripts/plan_repair_recovery.py \
+              --pr-json "$PR" --comments-json "$COMMENTS" --ci-runs-json "$RUNS" \
+              --repository-owner "${{ github.repository_owner }}" \
+              --now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$DECISION"
+            ACTION="$(jq -r '.action' "$DECISION")"
+            [ "$ACTION" = "block" ] || [ "$ACTION" = "requeue_review" ] || continue
+
+            # GitHub issue-label PUT has no conditional write. Re-read HEAD and
+            # the exact label set immediately before projecting a new state.
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" \
+              > "$RUNNER_TEMP/repair-live-$NUMBER.json"
+            [ "$(jq -r '.head.sha' "$RUNNER_TEMP/repair-live-$NUMBER.json")" = "$SHA" ] || continue
+            if ! diff -u <(jq -r '.labels_before[]' "$DECISION") \
+              <(jq -r '.labels[].name' "$RUNNER_TEMP/repair-live-$NUMBER.json" | sort); then
+              continue
+            fi
+            jq '{labels: .labels_after}' "$DECISION" | gh api --method PUT \
+              "repos/${{ github.repository }}/issues/$NUMBER/labels" --input - >/dev/null
+            REASON="$(jq -r '.reason // "current_sha_ci_success"' "$DECISION")"
+            CI_ID="$(jq -r '.ci_run_id // "none"' "$DECISION")"
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}" \
+              --body "<!-- agent-repair-recovery:v1:$SHA:$ACTION --> rule_id=R05_R06_REPAIR_CI source_sha=$SHA reason=$REASON ci_run_id=$CI_ID action=$ACTION. Requeue requires a new independent Work Review PASS before QA; no release or deployment is authorized."
+          done < "$RUNNER_TEMP/repair-prs.txt"
+
       - name: Block Work review running longer than 120 minutes
         env:
           GH_TOKEN: ${{ github.token }}
