@@ -106,6 +106,12 @@ class GitHubClient:
         data = response.json()
         return str(data["head"]["sha"])
 
+    async def get_pr_snapshot(self, repo: str, number: int) -> dict[str, Any]:
+        response = await self._request(
+            "GET", f"{self.base}/repos/{repo}/pulls/{number}"
+        )
+        return response.json()
+
     async def update_pr_files(
         self,
         repo: str,
@@ -132,7 +138,7 @@ class GitHubClient:
         url = f"{self.base}/repos/{repo}"
 
         async def live_pr() -> dict[str, Any]:
-            data = (await self._request("GET", f"{url}/pulls/{pr_number}")).json()
+            data = await self.get_pr_snapshot(repo, pr_number)
             head = data.get("head") or {}
             base = data.get("base") or {}
             if (data.get("state") != "open" or data.get("merged_at")

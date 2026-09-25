@@ -117,8 +117,18 @@ def required_handoff(req):
 
 
 async def require_current_head(req, expected_sha: str) -> None:
-    """Reject outward mutations after another writer advances this PR."""
-    live_sha = await github.get_pr_head_sha(req.repository, req.source_number)
+    """Reject a changed SHA, fork or protected branch before outward writes."""
+    snapshot = await github.get_pr_snapshot(req.repository, req.source_number)
+    head = snapshot.get("head") or {}
+    base = snapshot.get("base") or {}
+    head_ref = head.get("ref")
+    if (snapshot.get("state") != "open" or snapshot.get("merged_at")
+        or (head.get("repo") or {}).get("full_name") != req.repository
+        or not head_ref or head_ref in {"main", base.get("ref")}
+        or (getattr(req, "source_ref", None)
+            and head_ref != req.source_ref)):
+        raise RuntimeError("PR_BRANCH_IDENTITY_CHANGED")
+    live_sha = head.get("sha")
     if live_sha != expected_sha:
         raise RuntimeError(
             "CONCURRENT_BRANCH_ADVANCE: "
