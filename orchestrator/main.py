@@ -234,6 +234,7 @@ async def process(event: dict) -> None:
         return
 
     req, current_labels = routed
+    event_source_sha = req.source_sha
 
     if not github.configured:
         raise RuntimeError("GitHub write-back is required for handoff validation")
@@ -431,11 +432,7 @@ async def process(event: dict) -> None:
         )
 
     checkpoint_payload = {
-        "source_sha": (
-            checkpoint.get("source_sha")
-            if checkpoint
-            else req.source_sha
-        ),
+        "source_sha": event_source_sha,
         "published_sha": transition_sha,
         "result": result.model_dump(mode="json"),
         "transition_labels": transition_labels,
