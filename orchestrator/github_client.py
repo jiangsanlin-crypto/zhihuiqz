@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from typing import Any, Iterable
 
 import httpx
@@ -172,6 +174,59 @@ class GitHubClient:
         )
         return str(commit.json()["sha"])
 
+    async def _matches_published_report(
+        self,
+        repo: str,
+        live_sha: str,
+        expected_parent: str,
+        changes: list[FileChange],
+        message_prefix: str,
+    ) -> bool:
+        """Recognize only the exact report commit prepared by an interrupted run."""
+        response = await self._request(
+            "GET",
+            f"{self.base}/repos/{repo}/commits/{live_sha}",
+        )
+        data = response.json()
+        parents = [
+            str(parent.get("sha") or "")
+            for parent in (data.get("parents") or [])
+            if isinstance(parent, dict)
+        ]
+        message = str((data.get("commit") or {}).get("message") or "")
+        requested_paths = [change.path for change in changes]
+        published_paths = [
+            str(item.get("filename") or "")
+            for item in (data.get("files") or [])
+            if isinstance(item, dict)
+        ]
+        if (
+            parents != [expected_parent]
+            or not message.startswith(f"{message_prefix}:")
+            or len(requested_paths) != len(set(requested_paths))
+            or set(published_paths) != set(requested_paths)
+            or len(published_paths) != len(requested_paths)
+        ):
+            return False
+
+        for change in changes:
+            content_response = await self._request(
+                "GET",
+                f"{self.base}/repos/{repo}/contents/{change.path}",
+                params={"ref": live_sha},
+            )
+            content_data = content_response.json()
+            if content_data.get("encoding") != "base64":
+                return False
+            encoded = str(content_data.get("content") or "").replace("\\n", "")
+            try:
+                published = base64.b64decode(encoded, validate=True).decode()
+            except (ValueError, UnicodeDecodeError):
+                return False
+            if published != change.content:
+                return False
+        return True
+
     async def update_pr_files(
         self,
         repo: str,
@@ -198,6 +253,14 @@ class GitHubClient:
 
         live_sha = identity["head_sha"]
         if live_sha != expected:
+            if await self._matches_published_report(
+                repo,
+                live_sha,
+                expected,
+                pending,
+                message_prefix,
+            ):
+                return live_sha
             raise RuntimeError(
                 "CONCURRENT_BRANCH_ADVANCE: "
                 f"expected={expected} live={live_sha}"
