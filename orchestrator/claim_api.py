@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from .security import verify_bearer
 from .handoff_gate import HandoffGateError
+from .evidence_gate import validate_qa_evidence
 from .state_projection import verified_next_workflow
 from .state_store import now
 
@@ -126,6 +127,69 @@ def create_claim_router(store, github, settings):
         if not store.finish(value.delivery_id, "done", lease_id=value.lease_id):
             raise HTTPException(409, "WORKER_LEASE_LOST")
         return {"released": True}
+
+    @router.post("/start")
+    async def start(value: OwnedClaim):
+        row, binding = owned(value)
+        projection_key = json.dumps([binding["repository"], binding["pr_number"], "state-projection"])
+        if not store.claim_operation(projection_key, value.delivery_id, value.lease_id):
+            raise HTTPException(409, "ANOTHER_WORKER_OWNS_PROJECTION")
+        checkpoint = json.loads(row.get("checkpoint_json") or "{}")
+        previous = checkpoint.get("start_projection") or {}
+        target = {binding["agent"], binding["phase"], "status:running"}
+        # Only accept RUNNING as a retry when this lease recorded its intent.
+        replay = previous.get("lease_id") == value.lease_id
+        pr = await current(binding, projected_route=target if replay else None)
+        if binding["phase"] == "phase:qa":
+            comments = await github.list_comments(binding["repository"], binding["pr_number"])
+            runs = await github.list_workflow_runs(binding["repository"], binding["source_sha"])
+            try:
+                validate_qa_evidence(comments, runs, task_id=binding["task_id"],
+                    head_sha=binding["source_sha"], head_ref=binding["head_ref"],
+                    trusted_login=binding["repository"].split("/", 1)[0],
+                    pr_number=binding["pr_number"])
+            except HandoffGateError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        before = labels(pr)
+        after = (before - {"status:todo"}) | target
+        audit = previous if replay else {
+            "rule_id": "LEASED_WORKER_START", "lease_id": value.lease_id,
+            "repository": binding["repository"], "pr_number": binding["pr_number"],
+            "task_id": binding["task_id"], "phase": binding["phase"],
+            "worker_id": value.worker_id, "source_sha": binding["source_sha"],
+            "operation_key": binding["operation_key"], "action_type": "start",
+            "reason": "live lease verified before READY to RUNNING",
+            "status": "planned", "created_at": now(),
+            "labels_before": sorted(before), "labels_after": sorted(after),
+            "evidence_generation": hashlib.sha256(
+                f"start:{binding['operation_key']}:{value.lease_id}".encode()).hexdigest(),
+        }
+        # Do not overwrite a newer label edit while recovering a lost response.
+        if replay and (sorted(before) not in [audit["labels_before"], audit["labels_after"]]):
+            raise HTTPException(409, "STATE_CHANGED")
+        if replay and audit["status"] == "applied" and sorted(before) != audit["labels_after"]:
+            raise HTTPException(409, "STATE_CHANGED")
+        checkpoint["start_projection"] = audit
+        store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
+        store.record_recovery_audit(value.delivery_id, audit)
+        live = await current(binding, projected_route=target if replay else None)
+        if labels(live) != before:
+            raise HTTPException(409, "STATE_CHANGED")
+        owned(value)
+        store.assert_operation(projection_key, value.delivery_id, value.lease_id)
+        if before != after:
+            await github.set_labels(binding["repository"], binding["pr_number"], sorted(after))
+        verified = await current(binding, projected_route=target)
+        if labels(verified) != after:
+            raise HTTPException(409, "PROJECTION_UNVERIFIED")
+        owned(value)  # An expired worker must not receive permission to execute.
+        already_applied = audit["status"] == "applied"
+        audit["status"] = "applied"
+        audit["applied_at"] = now()
+        store.record_recovery_audit(value.delivery_id, audit)
+        store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
+        return {"status": "already_applied" if already_applied else "applied",
+                "audit": audit, **response(store.get(value.delivery_id))}
 
     @router.post("/advance")
     async def advance(value: OwnedClaim):

@@ -1,7 +1,7 @@
 # Shared claim protocol
 
 The Orchestrator exposes `/claims/acquire`, `/claims/heartbeat`,
-`/claims/release`, and `/claims/advance`. All require its existing bearer token.
+`/claims/release`, `/claims/start`, and `/claims/advance`. All require its existing bearer token.
 The three lease endpoints never edit GitHub labels. The advance endpoint
 projects only a verified next phase; none starts an agent, dispatches Actions
 or deploys.
@@ -52,6 +52,24 @@ lease. Treat transport failures as uncertain; retry the same acquisition ID,
 and stop execution before the last confirmed expiry if renewal is unavailable.
 Before every write, workers must also re-fetch the PR and verify its head/state;
 a successful heartbeat is not an atomic GitHub write authorization.
+
+## Start execution
+
+After acquisition, call `POST /claims/start` with the same ownership fields.
+Only execute after a successful response and while the confirmed lease is live.
+This projects the claimed READY route to RUNNING without releasing the lease.
+It uses the same per-PR projection lock as advancement, records planned/applied
+audit evidence, preserves unrelated labels, and rechecks SHA, state and ownership
+before writing. QA additionally requires live exact-SHA ordinary CI and independent
+Review evidence. Other workers must still validate their phase's prerequisites;
+this endpoint never starts an agent or grants downstream approval.
+
+Retry uncertain start responses with the same live lease. A recorded RUNNING
+projection is verified without another label PUT. Completed starts cannot undo a
+subsequent requeue. An expired lease, changed HEAD, human wait or label drift fails
+closed. Do not execute after a failed or uncertain start. A worker dying after
+RUNNING still requires the authoritative recovery controller to reclaim it; this
+endpoint alone is not that controller. Legacy writers remain an integration gate.
 
 ## Verified advancement
 

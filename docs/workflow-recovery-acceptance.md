@@ -27,6 +27,11 @@ satisfy this rule. Do not merge or deploy as part of this repair task.
   cycle of HEAD invalidation and repeated review.
 - Same-second handoffs use the GitHub comment ID to order evidence, so a newer
   failed outcome cannot be hidden behind an older success.
+- Shared-lease `/claims/start` projects READY to RUNNING with ownership fencing,
+  planned/applied audit, response-loss recovery, and live CI/Review checks for QA.
+  It retains the execution lease and rejects stale retries after a requeue.
+  This provides a controlled start interface; it does not migrate account workers
+  or implement a repository-wide stale-RUNNING recovery controller.
 
 Run the checked-in tests with `python -m pytest -q tests` in an isolated runtime
 with the pinned test dependencies. All external workers and GitHub mutations

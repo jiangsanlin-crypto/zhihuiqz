@@ -299,3 +299,86 @@ def test_other_phase_transitions_do_not_skip_independent_review(projection_setup
     assert result.status_code == 200
     assert target in pr["labels"]
     assert "phase:qa" not in pr["labels"]
+
+
+def test_start_requires_ownership_and_keeps_lease_for_execution(projection_setup):
+    client, store, pr, _, _, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim)).status_code == 401
+    assert client.post('/claims/start', json=owned(claim, 'other'), headers=AUTH).status_code == 409
+    pr['labels'].append('keep:me')
+    result = client.post('/claims/start', json=owned(claim), headers=AUTH)
+    assert result.status_code == 200
+    assert pr['labels'] == ['agent:workreview', 'keep:me', 'phase:code-review', 'status:running']
+    assert store.get(claim['delivery_id'])['lease_id'] == claim['lease_id']
+    assert client.post('/claims/heartbeat', json=owned(claim), headers=AUTH).status_code == 200
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).json()['status'] == 'already_applied'
+    assert len(writes) == 1
+    assert client.post('/claims/advance', json=owned(claim), headers=AUTH).status_code == 200
+    assert 'phase:qa' in pr['labels']
+
+
+def test_start_recovers_response_loss_without_repeating_put(projection_setup):
+    client, store, pr, github, _, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    original = github.set_labels
+    async def lost(*args):
+        await original(*args)
+        raise RuntimeError('lost start response')
+    github.set_labels = lost
+    with pytest.raises(RuntimeError, match='lost start response'):
+        client.post('/claims/start', json=owned(claim), headers=AUTH)
+    github.set_labels = original
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+    assert len(writes) == 1
+    with sqlite3.connect(store.path) as connection:
+        audits = connection.execute('SELECT payload_json FROM recovery_audit').fetchall()
+    assert {json.loads(a[0])['status'] for a in audits} == {'planned', 'applied'}
+
+
+@pytest.mark.parametrize('change', ['head', 'human_wait', 'expiry', 'label_drift'])
+def test_start_fences_changes_before_label_write(projection_setup, change):
+    client, store, pr, github, _, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    original = github.get_pr_snapshot
+    reads = 0
+    async def changed(*args):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            if change == 'head':
+                pr['head']['sha'] = 'b' * 40
+            elif change == 'human_wait':
+                pr['labels'] = ['status:review', 'approval:production-required']
+            elif change == 'label_drift':
+                pr['labels'].append('keep:new')
+            else:
+                with sqlite3.connect(store.path) as connection:
+                    connection.execute('UPDATE events SET lease_expires_at=?', ('2000-01-01T00:00:00+00:00',))
+        return await original(*args)
+    github.get_pr_snapshot = changed
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 409
+    assert writes == []
+
+
+def test_start_qa_requires_live_independent_review_and_ci(projection_setup):
+    client, _, pr, _, comments, runs, writes = projection_setup
+    pr['labels'] = ['agent:workbuddy', 'phase:qa', 'status:todo']
+    claim = client.post('/claims/acquire', json=dict(payload(), phase='phase:qa'), headers=AUTH).json()
+    runs['workflow_runs'][0]['conclusion'] = 'failure'
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 409
+    runs['workflow_runs'][0]['conclusion'] = 'success'
+    review_claim = comments.pop(0)
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 409
+    assert writes == []
+    comments.insert(0, review_claim)
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+
+
+def test_start_replay_never_undoes_requeue(projection_setup):
+    client, _, pr, _, _, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+    pr['labels'] = ['agent:workreview', 'phase:code-review', 'status:todo']
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 409
+    assert len(writes) == 1
