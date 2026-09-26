@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .security import verify_bearer
-from .handoff_gate import HandoffGateError
+from .handoff_gate import HandoffGateError, validate_handoff
 from .evidence_gate import successful_current_ci, validate_qa_evidence
 from .state_projection import verified_next_workflow
 from .state_store import now
@@ -356,16 +356,72 @@ def create_claim_router(store, github, settings):
         # Only accept RUNNING as a retry when this lease recorded its intent.
         replay = previous.get("lease_id") == value.lease_id
         pr = await current(binding, projected_route=target if replay else None)
-        if binding["phase"] == "phase:qa":
-            comments = await github.list_comments(binding["repository"], binding["pr_number"])
-            runs = await github.list_workflow_runs(binding["repository"], binding["source_sha"])
-            try:
-                validate_qa_evidence(comments, runs, task_id=binding["task_id"],
+        comments = await github.list_comments(binding["repository"], binding["pr_number"])
+        runs = await github.list_workflow_runs(binding["repository"], binding["source_sha"])
+        owner_login = binding["repository"].split("/", 1)[0]
+        phase = binding["phase"]
+        try:
+            if phase == "phase:prototype":
+                validate_handoff(
+                    comments, task_id=binding["task_id"], from_agent="codex",
+                    to_agent="workbuddy", phase="product_planning",
+                    source_sha=binding["source_sha"],
+                    trusted_logins={owner_login, "github-actions[bot]"},
+                )
+            elif phase == "phase:implementation":
+                validate_handoff(
+                    comments, task_id=binding["task_id"], from_agent="workbuddy",
+                    to_agent="chatgpt", phase="prototype_validation",
+                    source_sha=binding["source_sha"],
+                    trusted_logins={owner_login, "github-actions[bot]"},
+                )
+                if successful_current_ci(
+                    runs, head_sha=binding["source_sha"], head_ref=binding["head_ref"]
+                ) is None:
+                    raise HandoffGateError("current-SHA ordinary CI has not passed")
+            elif phase == "phase:code-review":
+                if successful_current_ci(
+                    runs, head_sha=binding["source_sha"], head_ref=binding["head_ref"]
+                ) is None:
+                    raise HandoffGateError("current-SHA ordinary CI has not passed")
+                lines = [
+                    set(str(item.get("body") or "").splitlines())
+                    for item in comments
+                    if (item.get("user") or {}).get("login")
+                    in {owner_login, "github-actions[bot]"}
+                ]
+                post_qa = any(
+                    "<!-- qa-postwrite-review:v1 -->" in str(item.get("body") or "")
+                    and {
+                        f"task_id={binding['task_id']}",
+                        f"source_sha={binding['source_sha']}",
+                        "next=NEW_INDEPENDENT_WORK_CODE_REVIEW",
+                    } <= set(str(item.get("body") or "").splitlines())
+                    for item in comments
+                    if (item.get("user") or {}).get("login")
+                    in {owner_login, "github-actions[bot]"}
+                )
+                repair_requeue = any(
+                    "<!-- work-review-requeue:v1 -->" in str(item.get("body") or "")
+                    and f"task_id={binding['task_id']}" in str(item.get("body") or "").splitlines()
+                    and f"source_sha={binding['source_sha']}" in str(item.get("body") or "").splitlines()
+                    for item in comments
+                    if (item.get("user") or {}).get("login") == owner_login
+                )
+                if not post_qa and not repair_requeue:
+                    validate_handoff(
+                        comments, task_id=binding["task_id"], from_agent="chatgpt",
+                        to_agent="workreview", phase="implementation",
+                        source_sha=binding["source_sha"], trusted_logins={owner_login},
+                    )
+            elif phase == "phase:qa":
+                validate_qa_evidence(
+                    comments, runs, task_id=binding["task_id"],
                     head_sha=binding["source_sha"], head_ref=binding["head_ref"],
-                    trusted_login=binding["repository"].split("/", 1)[0],
-                    pr_number=binding["pr_number"])
-            except HandoffGateError as exc:
-                raise HTTPException(409, str(exc)) from exc
+                    trusted_login=owner_login, pr_number=binding["pr_number"],
+                )
+        except HandoffGateError as exc:
+            raise HTTPException(409, str(exc)) from exc
         before = labels(pr)
         after = (before - {"status:todo"}) | target
         audit = previous if replay else {
