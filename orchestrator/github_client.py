@@ -122,6 +122,20 @@ class GitHubClient:
         )
         return response.json()
 
+    async def list_open_prs(self, repo: str) -> list[dict]:
+        items, page = [], 1
+        while True:
+            response = await self._request("GET", f"{self.base}/repos/{repo}/pulls",
+                params={"state": "open", "sort": "created", "direction": "asc",
+                        "per_page": 100, "page": page})
+            batch = response.json()
+            if not isinstance(batch, list):
+                raise ValueError("GitHub pull requests response is not a list")
+            items.extend(batch)
+            if len(batch) < 100:
+                return items
+            page += 1
+
     async def list_workflow_runs(self, repo: str, head_sha: str) -> dict[str, Any]:
         runs: list[dict[str, Any]] = []
         page = 1

@@ -116,3 +116,55 @@ own lease and independently validates its gates.
 - Validate competing real workers, restart, network loss and current-SHA
   invalidation after an authorized rollout. No rollout is performed by these
   tests or by adding this interface.
+
+## Discovery and account client integration
+
+`GET /claims/ready` uses the same bearer authentication. It paginates open PRs
+and returns canonical READY candidates with one task marker, safe same-repository
+head and exact SHA. Drafts, human approval, conflicting routes, blockers and
+release/deployment phases are excluded. Discovery is read-only: candidates are
+not claims and must pass the live acquisition checks.
+
+The native Orchestrator now scans once per minute in its lifespan. It durably
+queues only prototype/QA candidates for its **existing** worker, using a stable
+repository/PR/SHA/phase/task identity. Duplicate scans do not reset exhausted
+attempts. Account phases are never executed by this scanner. An exception in a
+scan is retried on the next scan without logging response payloads or credentials.
+
+`orchestrator.claim_client.ClaimClient` supplies an account-host integration:
+
+```python
+client = ClaimClient(service_url, service_token)  # injected by the host
+try:
+    result = await client.consume_one("phase:code-review", worker_id, review)
+finally:
+    await client.close()
+```
+
+The host provides a cooperative async `review(binding)` worker that reads its
+required inputs, performs independent review and publishes its trusted exact-SHA
+handoff before returning. `consume_one` discovers work, skips stale/busy claims,
+starts through the service, renews during work and requests verified advancement.
+It never invokes a model itself. Acquisition transport/429/5xx failures retry the
+same request ID with bounded backoff; 401/409 fail without retry. Heartbeat failure
+or expiry cancels work and prevents advancement. Host write operations must still
+be cancellation-aware and independently check HEAD; Python cancellation cannot
+fence an unrelated remote process or a noncooperative synchronous callback.
+
+This client is integrated with the real claim router in mocked-GitHub tests.
+**Existing account schedules and Actions have not been switched to this client.**
+Their host configuration and the authoritative service deployment are required.
+Do not silently fall back to direct label writes after adopting this protocol.
+
+A phase that commits and changes HEAD cannot advance under its old lease. The
+client stops on that change. A verified publication/new-SHA recovery protocol
+for external implementation/repair workers is still required before declaring
+those workers fully migrated. Expired external RUNNING recovery and arbitrary
+machine-blocker recovery are also not supplied by this client.
+
+Native workers now persist a `starting` checkpoint before projecting RUNNING.
+After a crash on either side of that write, the same durable event is reclaimed
+under a new lease and revalidates the live branch/state and phase evidence.
+All returned agent results are saved, including failures or results with no file
+changes, so a comment failure does not rerun completed work. A crash before an
+adapter returns may still require adapter-level idempotency on replay.

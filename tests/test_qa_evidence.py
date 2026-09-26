@@ -115,7 +115,7 @@ def test_orchestrator_enforces_gate_before_running_adapter(monkeypatch, conclusi
     monkeypatch.setattr(main, "github", SimpleNamespace(configured=True,
         list_comments=list_comments, list_workflow_runs=list_runs,
         comment=comment, set_labels=set_labels))
-    monkeypatch.setattr(main, "store", SimpleNamespace(finish=lambda *a, **kw: None))
+    monkeypatch.setattr(main, "store", SimpleNamespace(finish=lambda *a, **kw: None, checkpoint=lambda *a, **kw: None))
     monkeypatch.setattr(main, "workbuddy", SimpleNamespace(run=run))
     event = {"delivery_id": "test", "event_name": "pull_request", "payload": {}}
     if conclusion == "success":

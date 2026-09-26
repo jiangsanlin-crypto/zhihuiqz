@@ -382,3 +382,45 @@ def test_start_replay_never_undoes_requeue(projection_setup):
     pr['labels'] = ['agent:workreview', 'phase:code-review', 'status:todo']
     assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 409
     assert len(writes) == 1
+
+
+def test_ready_endpoint_is_authenticated_read_only_and_excludes_human_wait(projection_setup):
+    client, _, pr, github, _, _, writes = projection_setup
+    pr['number'] = 78
+    async def open_prs(*args): return [copy.deepcopy(pr)]
+    github.list_open_prs = open_prs
+    assert client.get('/claims/ready').status_code == 401
+    assert client.get('/claims/ready', headers=AUTH).json()['candidates'][0]['pr_number'] == 78
+    pr['labels'] = ['status:review', 'approval:production-required']
+    assert client.get('/claims/ready', headers=AUTH).json() == {'candidates': []}
+    assert writes == []
+
+
+def test_account_consumer_end_to_end_with_real_claim_router(projection_setup):
+    import asyncio
+    import httpx
+    from orchestrator.claim_client import ClaimClient
+    client, store, pr, github, _, _, writes = projection_setup
+    pr['number'] = 78
+    async def open_prs(*args): return [copy.deepcopy(pr)]
+    github.list_open_prs = open_prs
+
+    async def run():
+        transport = httpx.ASGITransport(app=client.app)
+        worker = ClaimClient('https://claims.test', 'test-only-token', transport=transport)
+        rival = ClaimClient('https://claims.test', 'test-only-token', transport=transport)
+        async def review(binding):
+            assert 'status:running' in pr['labels']
+            with pytest.raises(httpx.HTTPStatusError) as error:
+                await rival.acquire(binding, 'rival', 'rival-request', delays=(0,))
+            assert error.value.response.status_code == 409
+            return 'verified exact-SHA review'
+        assert await worker.consume_one('phase:code-review', 'account-worker', review) == 'verified exact-SHA review'
+        assert worker.ownership is None
+        await worker.close()
+        await rival.close()
+    asyncio.run(run())
+    assert pr['labels'] == ['agent:workbuddy', 'phase:qa', 'status:todo']
+    assert len(writes) == 2  # READY -> RUNNING -> verified QA READY.
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT count(*) FROM events WHERE status='running'").fetchone()[0] == 0

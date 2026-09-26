@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from .adapters import HttpAgentAdapter
 from .config import settings
 from .claim_api import create_claim_router
+from .queue_discovery import discovery_loop
 from .github_client import GitHubClient
 from .evidence_gate import successful_current_ci, validate_qa_evidence
 from .handoff_gate import HandoffGateError, extract_handoff, validate_handoff
@@ -278,6 +279,8 @@ async def process(event: dict) -> None:
             req.repository, req.source_number
         )
         allowed_workflows = [running_workflow]
+        if checkpoint.get("stage") == "starting" and "result" not in checkpoint:
+            allowed_workflows.append(todo_workflow)
         if checkpoint.get("transition_labels"):
             allowed_workflows.append(
                 workflow_label_set(checkpoint["transition_labels"])
@@ -346,36 +349,36 @@ async def process(event: dict) -> None:
         store.finish(event["delivery_id"], "done", lease_id=event.get("lease_id"))
         return
 
-    if github.configured and not checkpoint:
-        current_labels = await require_current_state(
-            req, req.source_sha, todo_workflow
-        )
+    if github.configured and (not checkpoint or "result" not in checkpoint):
+        expected_start = (workflow_label_set(current_labels)
+                          if checkpoint else todo_workflow)
         latest_labels = await require_current_state(
-            req, req.source_sha, todo_workflow
+            req, req.source_sha, expected_start
         )
         running_labels = project_workflow_labels(
             latest_labels, running_workflow
         )
         require_lease()
-        await github.set_labels(
-            req.repository,
-            req.source_number,
-            running_labels,
-        )
+        # Persist the intent before RUNNING: a crash during or after the PUT
+        # must resume under a fresh lease instead of failing the READY guard.
+        store.checkpoint(event["delivery_id"],
+            {"source_sha": req.source_sha, "stage": "starting"},
+            lease_id=event.get("lease_id"))
+        if expected_start != running_workflow:
+            await github.set_labels(req.repository, req.source_number, running_labels)
         await require_current_state(req, req.source_sha, running_workflow)
 
-    if checkpoint:
+    if checkpoint and "result" in checkpoint:
         result = AgentRunResult.model_validate(checkpoint["result"])
     else:
         require_lease()
         result = await workbuddy.run(req)
-        if result.status == "success" and result.changes:
-            store.checkpoint(
-                event["delivery_id"],
-                {"source_sha": req.source_sha,
-                 "result": result.model_dump(mode="json")},
-                lease_id=event.get("lease_id"),
-            )
+        store.checkpoint(
+            event["delivery_id"],
+            {"source_sha": req.source_sha,
+             "result": result.model_dump(mode="json")},
+            lease_id=event.get("lease_id"),
+        )
 
     if result.status == "success" and result.changes:
         if not github.configured:
@@ -704,9 +707,16 @@ async def worker(stop: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     stop = asyncio.Event()
     task = asyncio.create_task(worker(stop))
-    yield
-    stop.set()
-    await task
+    scanner = (asyncio.create_task(discovery_loop(stop, store, github, settings.github_repository))
+               if github.configured and settings.github_repository else None)
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
+        if scanner:
+            scanner.cancel()
+        await asyncio.gather(task, *([scanner] if scanner else []), return_exceptions=True)
 
 
 app = FastAPI(

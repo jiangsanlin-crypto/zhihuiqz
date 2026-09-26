@@ -64,3 +64,26 @@ These are requirements, not claims of implementation:
 
 The branch CI can verify code regressions. It cannot by itself prove server
 rollout, adoption by account workers, or successful recovery in GitHub.
+
+## Discovery/client/restart batch
+
+Implemented and wired into the service:
+- Periodic paginated PR discovery feeding the existing native prototype/QA
+  worker queue; durable scan identity and retry after temporary scan errors.
+- Authenticated read-only account READY discovery and a cooperative account
+  consumer using acquire/start/heartbeat/advance, with bounded acquisition retry.
+- Native start-intent recovery before/after RUNNING label writes, and durable
+  results even without report changes. Human wait still stops replay.
+- In-process account-consumer -> real claim-router integration covering competing
+  workers and verified Review -> QA transition. GitHub and agents are mocked.
+
+Still not implemented/accepted globally:
+- Issue ingestion into a planned PR, all machine-blocker lifecycles and external
+  stale-RUNNING recovery; a PR scanner does not cover these.
+- External worker publication across HEAD changes and adoption by actual account
+  schedules/Actions. No account model or live client is started by these tests.
+- A sole state writer across existing Actions/native workers/account workers.
+- Authorized service rollout, independent review and live #78 final-SHA acceptance.
+
+The branch can be reviewed and tested without modifying workflow YAML or
+starting production. None of these tests authorizes rollout, merge or deployment.

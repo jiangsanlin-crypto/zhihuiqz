@@ -12,6 +12,7 @@ from .handoff_gate import HandoffGateError
 from .evidence_gate import validate_qa_evidence
 from .state_projection import verified_next_workflow
 from .state_store import now
+from .queue_discovery import discover
 
 
 class AcquireClaim(BaseModel):
@@ -39,6 +40,13 @@ def create_claim_router(store, github, settings):
             raise HTTPException(401, "invalid claim authentication")
 
     router = APIRouter(prefix="/claims", dependencies=[Depends(authenticated)])
+
+    @router.get("/ready")
+    async def ready():
+        if not settings.github_repository:
+            raise HTTPException(503, "REPOSITORY_NOT_CONFIGURED")
+        return {"candidates": [binding for _, binding in
+                await discover(github, settings.github_repository)]}
 
     def owned(value: OwnedClaim):
         row = store.get(value.delivery_id)
