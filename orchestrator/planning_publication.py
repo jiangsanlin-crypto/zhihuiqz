@@ -42,8 +42,19 @@ def install_publication_routes(router, store, github, repository):
         repo=repository()
         await scan_issues(store,github,repo)
         default=await github.get_default_branch(repo)
-        if value.head_ref in {'main',default,value.base_ref}:
+        if value.base_ref != default or value.head_ref in {'main',default,value.base_ref}:
             raise HTTPException(409,'PROTECTED_PUBLICATION_BRANCH')
+        base_sha=await github.get_branch_sha(repo,value.base_ref)
+        commit=await github.get_publication_commit(repo,value.head_sha)
+        allowed={
+            'docs/PRD.md','docs/RECRUITMENT_RULES.md','docs/DATA_COLLECTION_PLAN.md',
+            'docs/CLASSIFICATION_DICTIONARY.md','TASKS.md','CHANGELOG.md'
+        }
+        changed={item.get('filename') for item in commit.get('files',[]) if item.get('filename')}
+        if (not base_sha or commit.get('sha')!=value.head_sha
+            or [item.get('sha') for item in commit.get('parents',[])]!=[base_sha]
+            or not changed or not changed<=allowed):
+            raise HTTPException(409,'PUBLICATION_COMMIT_INVALID')
         intent=value.model_dump(exclude={'worker_id','lease_id'})
         encoded=json.dumps(intent,sort_keys=True)
         identity=hashlib.sha256(json.dumps([repo,encoded,owner(value)]).encode()).hexdigest()
