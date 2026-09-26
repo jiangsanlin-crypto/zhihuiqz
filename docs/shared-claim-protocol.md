@@ -227,3 +227,28 @@ are not adopted. Confirmations are idempotent, including heartbeat/confirm races
 The server records prepared/applied invalidation audit entries and retains the
 old-SHA history. This proves a controlled publication path in branch tests, not
 that existing account hosts have adopted it or that deployment is authorized.
+
+## Durable Issue intake
+
+The service periodically reads all open issues and PRs. Owner-authored issues
+with a nonempty task body and no human/blocker wait enter `awaiting_planner`.
+Other authors require triage. Exact task markers and closing references link
+existing PRs; weak/multiple references enter `needs_link_resolution`. Previously
+observed associations survive disappearance/closure/reopening so discovery cannot
+silently plan a duplicate PR. A failed full scan never closes unseen queue rows.
+
+Authenticated endpoints (same bearer policy as `/claims`):
+
+- `GET /intake/issues`: revision, disposition and claimable status; no lease tokens.
+- `POST /intake/acquire`: `issue_number`, 64-character `generation`, `worker_id`,
+  and a fresh random `lease_id` (16–150 safe characters). Re-fetches issues/PRs,
+  then performs database CAS. Same live request is idempotent; a second owner is
+  rejected. Expired attempts require a new token.
+- `POST /intake/heartbeat`: same body; rechecks the issue revision and association
+  before renewal. Body/label/closure/PR-link changes fence the old planning lease.
+
+The lease lasts 180 seconds. Planning hosts must heartbeat and stop on uncertainty,
+recheck before publishing, and use the same service/database. The service does
+not execute a planner or create a branch/PR. The existing planning host has not
+been connected; this API alone is not Issue-to-PR completion. GitHub publication
+by an uncooperative host is not fenced by a SQLite lease.

@@ -68,6 +68,19 @@ class StateStore:
                   delivery_id TEXT NOT NULL,
                   payload_json TEXT NOT NULL,
                   created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS issue_intake(
+                  repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
+                  generation TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL,
+                  worker_id TEXT, lease_id TEXT, expires_at TEXT,
+                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                  PRIMARY KEY(repository,issue_number)
+                );
+                CREATE TABLE IF NOT EXISTS blocker_observations(
+                  repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+                  head_sha TEXT NOT NULL, code TEXT NOT NULL, payload_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                  PRIMARY KEY(repository,pr_number,head_sha,code)
                 );"""
             )
             columns = {
@@ -427,3 +440,91 @@ class StateStore:
                 """INSERT OR IGNORE INTO recovery_audit(event_id,delivery_id,payload_json,created_at)
                    VALUES(?,?,?,?)""", (event_id, delivery_id, json.dumps(audit), now()),
             )
+
+    def observe_issue(self, repository: str, number: int, generation: str, status: str, payload: dict):
+        with self.lock, self.conn() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            old = connection.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
+                                     (repository, number)).fetchone()
+            previous = json.loads(old['payload_json']) if old else {}
+            association = previous.get('previous_link') or (
+                previous if previous.get('linked_prs') or previous.get('ambiguous_prs') else None)
+            if association:
+                payload['previous_link'] = association
+                if status == 'awaiting_planner':
+                    status = 'needs_link_resolution'
+            if old and old['generation'] == generation and status == 'awaiting_planner' and old['status'] == 'leased':
+                connection.execute('COMMIT')
+                return
+            connection.execute('''INSERT INTO issue_intake
+                (repository,issue_number,generation,status,payload_json,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository,issue_number) DO UPDATE SET
+                generation=excluded.generation,status=excluded.status,payload_json=excluded.payload_json,
+                worker_id=NULL,lease_id=NULL,expires_at=NULL,updated_at=excluded.updated_at''',
+                (repository, number, generation, status, json.dumps(payload), now(), now()))
+            connection.execute('COMMIT')
+
+    def intake_items(self, repository: str):
+        with self.lock, self.conn() as connection:
+            rows = connection.execute('SELECT * FROM issue_intake WHERE repository=? ORDER BY issue_number',
+                                      (repository,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def claim_issue(self, repository: str, number: int, generation: str, worker: str, lease: str):
+        with self.lock, self.conn() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
+                                     (repository, number)).fetchone()
+            if not row or row['generation'] != generation:
+                raise RuntimeError('ISSUE_CHANGED')
+            if row['status'] == 'leased' and row['expires_at'] > now():
+                if row['worker_id'] == worker and row['lease_id'] == lease:
+                    return dict(row)
+                raise RuntimeError('ANOTHER_PLANNER_OWNS_LEASE')
+            if row['status'] not in {'awaiting_planner', 'leased'}:
+                raise RuntimeError('ISSUE_NOT_READY')
+            # Callers supply a random attempt token. An expired token never renews.
+            if row['lease_id'] == lease:
+                raise RuntimeError('PLANNER_LEASE_EXPIRED')
+            expiry = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+            connection.execute('''UPDATE issue_intake SET status='leased',worker_id=?,lease_id=?,expires_at=?,updated_at=?
+                WHERE repository=? AND issue_number=?''', (worker, lease, expiry, now(), repository, number))
+            result = connection.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
+                                        (repository, number)).fetchone()
+            connection.execute('COMMIT')
+        return dict(result)
+
+    def renew_issue(self, repository, number, generation, worker, lease):
+        expiry = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+        with self.lock, self.conn() as connection:
+            return connection.execute('''UPDATE issue_intake SET expires_at=?,updated_at=?
+                WHERE repository=? AND issue_number=? AND generation=? AND worker_id=? AND lease_id=?
+                AND status='leased' AND expires_at>?''',
+                (expiry, now(), repository, number, generation, worker, lease, now())).rowcount == 1
+
+    def observe_blocker(self, repository, number, sha, code, payload):
+        with self.lock, self.conn() as connection:
+            connection.execute('''INSERT INTO blocker_observations VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(repository,pr_number,head_sha,code) DO UPDATE SET
+                payload_json=excluded.payload_json,updated_at=excluded.updated_at''',
+                (repository, number, sha, code, json.dumps(payload), now(), now()))
+
+    def operation_active(self, operation_key):
+        with self.lock, self.conn() as connection:
+            return connection.execute('''SELECT 1 FROM operation_claims c JOIN events e
+                ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                WHERE c.operation_key=? AND e.status='running' AND e.lease_expires_at>?''',
+                (operation_key, now())).fetchone() is not None
+
+    def queue_generation(self, binding):
+        target = {binding['phase'], 'status:todo'}
+        with self.lock, self.conn() as connection:
+            for row in connection.execute('SELECT event_id,payload_json FROM recovery_audit ORDER BY rowid DESC'):
+                audit = json.loads(row['payload_json'])
+                if (audit.get('repository') == binding['repository']
+                    and audit.get('pr_number') == binding['pr_number']
+                    and audit.get('source_sha') == binding['source_sha']
+                    and audit.get('status') == 'applied'
+                    and target <= set(audit.get('labels_after', []))):
+                    return row['event_id']
+        return 'initial'

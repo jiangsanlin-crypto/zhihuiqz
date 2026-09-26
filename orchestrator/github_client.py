@@ -136,6 +136,19 @@ class GitHubClient:
                 return items
             page += 1
 
+    async def list_open_issues(self, repo: str) -> list[dict]:
+        items, page = [], 1
+        while True:
+            response = await self._request("GET", f"{self.base}/repos/{repo}/issues",
+                params={"state": "open", "sort": "created", "direction": "asc", "per_page": 100, "page": page})
+            batch = response.json()
+            if not isinstance(batch, list):
+                raise ValueError("GitHub issues response is not a list")
+            items.extend(x for x in batch if "pull_request" not in x)
+            if len(batch) < 100:
+                return items
+            page += 1
+
     async def get_publication_commit(self, repo: str, sha: str) -> dict:
         """Read the immutable commit and every changed path (fail on truncation)."""
         result, files, page = None, [], 1

@@ -111,3 +111,28 @@ Tests cover the consumer-to-real-router implementation -> new HEAD -> fresh CI
 competing new-SHA ownership, duplicate confirmation, base/head/human-wait races
 and commit file pagination. Live hosts still need to adopt the protocol; no
 GitHub ref or workflow is mutated by these tests.
+
+## Issue discovery and registered blocker recovery batch
+
+The service now persists issue revisions/associations and exposes authenticated
+planning acquisition/heartbeat. Tests cover concurrent database clients, replay,
+expiry, issue changes, closure/reopening, association ambiguity and pagination.
+An actual planner must still consume this queue and publish its planned PR.
+
+The scanner reevaluates `recovery:qa-evidence`, `recovery:repair-ci` and
+`watchdog:timeout` using their existing trusted evidence policies. Repair recovery
+requires an exact-current-SHA repair record and verified mergeability, then queues
+independent Review, never QA directly. Unknown/content/multiple blockers are
+persisted as `policy_required`, not removed. Human wait remains untouched.
+Reevaluation currently follows the one-minute discovery interval; the complete
+R01/R04/R05 warning/verification cadence remains an integration requirement.
+
+Blocker projections use phase/projection leases and durable planned/applied audit.
+A lost successful label-write response is completed by expired-lease recovery.
+Applied recovery creates a fresh native queue generation, so a completed earlier
+queue item cannot suppress recovery of the same SHA/phase. Repeated scans remain
+deduplicated and active operation leases are skipped.
+
+226 isolated tests pass at this batch, including 33 new regressions. This proves
+branch behavior with mocked GitHub; it does not prove live adoption or full R01–R10
+conformance. See [worker-rollout-gates.md](worker-rollout-gates.md).

@@ -99,6 +99,18 @@ async def _recover(store, github, row, binding):
     op = binding['operation_key']
     pr = await github.get_pr_snapshot(binding['repository'], binding['pr_number'])
     before = _labels(pr)
+    blocker_projection = checkpoint.get('blocker_projection')
+    if blocker_projection:
+        if _identity(pr, binding) and before == set(blocker_projection['labels_after']):
+            blocker_projection.update(lease_id=lease, status='applied')
+            store.record_recovery_audit(delivery, blocker_projection)
+            store.observe_blocker(binding['repository'], binding['pr_number'], binding['source_sha'],
+                blocker_projection['blocker_codes'][0], {'status': 'resolved', 'last_evaluated_at': now(),
+                'labels_after': sorted(before), 'reason': 'verified interrupted blocker projection'})
+            store.finish(delivery, 'done', lease_id=lease)
+            return 1
+        store.finish(delivery, 'superseded', lease_id=lease)
+        return 0
     # Human wait, HEAD movement and ambiguous routes are never repaired by
     # replaying an old phase. Leave their labels untouched.
     running = {binding['agent'], binding['phase'], 'status:running'}

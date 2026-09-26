@@ -10,6 +10,8 @@ import re
 
 from .task_router import TASK_MARKER, label_names
 from .external_recovery import recover_external_once
+from .issue_intake import scan_issues
+from .blocker_recovery import recover_blockers_once
 
 ROUTES = {
     'phase:implementation': 'agent:chatgpt',
@@ -52,7 +54,10 @@ async def scan_once(store, github, repository):
         # No account model, API programmer, release or deployment invocation.
         if binding['phase'] not in {'phase:prototype', 'phase:qa'}:
             continue
-        identity = json.dumps(binding, sort_keys=True)
+        key = json.dumps([repository, binding['pr_number'], binding['source_sha'], binding['phase']], separators=(',', ':'))
+        if store.operation_active(key):
+            continue
+        identity = json.dumps([binding, store.queue_generation(binding)], sort_keys=True)
         delivery = 'queue-scan:' + hashlib.sha256(identity.encode()).hexdigest()
         queued += store.enqueue(delivery, 'pull_request', {
             'action': 'labeled', 'number': pr['number'], 'pull_request': pr,
@@ -63,12 +68,12 @@ async def scan_once(store, github, repository):
 
 async def discovery_loop(stop, store, github, repository, interval=60):
     while not stop.is_set():
-        try:
-            await recover_external_once(store, github, repository)
-            await scan_once(store, github, repository)
-        except Exception:
-            # Do not log credentials, headers, payloads or exception text.
-            logging.getLogger(__name__).warning('queue discovery failed; retrying next scan')
+        for action in (scan_issues, recover_external_once, recover_blockers_once, scan_once):
+            try:
+                await action(store, github, repository)
+            except Exception:
+                # A failed issue scan must not starve ready PRs or recovery.
+                logging.getLogger(__name__).warning('queue discovery step failed: %s', action.__name__)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except asyncio.TimeoutError:
