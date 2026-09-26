@@ -75,13 +75,13 @@ def test_workflow_migration_is_exclusive_read_only_and_revision_pinned(name,lega
     import yaml
     data=yaml.safe_load((Path('.github/workflows')/name).read_text())
     jobs=data['jobs'];shared=jobs['shared-control']
-    assert shared['if']=="vars.CONTROL_WORKFLOW_MODE == 'shared'"
+    assert shared['if']=="vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared'"
     assert shared['permissions']=={'contents':'read'}
     assert jobs['invalid-control-mode']['permissions']=={}
     for old in legacy:
-        assert "vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'legacy'" in jobs[old]['if']
+        assert "vars.CONTROL_WORKFLOW_MODE == 'legacy'" in jobs[old]['if']
     checkout=next(s for s in shared['steps'] if s.get('uses','').startswith('actions/checkout'))
-    assert checkout['with']['ref']=='${{ vars.CONTROL_BUILD_SHA }}'
+    assert checkout['with']['ref']=='${{ vars.CONTROL_BUILD_SHA || github.sha }}'
     text=json.dumps(shared)
     for forbidden in ['gh api','gh pr','codex-action','OPENAI_API_KEY','repository_dispatch','workflow_dispatch','continue-on-error']:
         assert forbidden not in text
