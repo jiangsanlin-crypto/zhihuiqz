@@ -1,6 +1,7 @@
 """Authenticated shared leases. A lease is not a CI/review/production approval."""
 
 import json
+from .state_writer import write_labels
 import hashlib
 from typing import Literal
 
@@ -46,6 +47,13 @@ def create_claim_router(store, github, settings):
             raise HTTPException(401, "invalid claim authentication")
 
     router = APIRouter(prefix="/claims", dependencies=[Depends(authenticated)])
+
+    @router.get("/recovery")
+    async def recovery():
+        with store.conn() as db:
+            rows=db.execute("SELECT payload_json,action FROM timeout_observations WHERE active=1 AND action!='none'").fetchall()
+        return {'observations': [{**json.loads(row['payload_json']), 'action': row['action']}
+            for row in rows if json.loads(row['payload_json'])['repository']==settings.github_repository]}
 
     @router.get("/ready")
     async def ready():
@@ -250,7 +258,7 @@ def create_claim_router(store, github, settings):
         owned(value)
         store.assert_operation(projection_key, value.delivery_id, value.lease_id)
         if before != after:
-            await github.set_labels(binding["repository"], binding["pr_number"], sorted(after))
+            await write_labels(store, github, binding, value.delivery_id, value.lease_id, before, after)
         verified = await current(binding, projected_route=target)
         if labels(verified) != after:
             raise HTTPException(409, "PROJECTION_UNVERIFIED")
@@ -313,7 +321,7 @@ def create_claim_router(store, github, settings):
         owned(value)  # Fence an expired lease immediately before the write.
         store.assert_operation(projection_key, value.delivery_id, value.lease_id)
         if before != after:
-            await github.set_labels(binding["repository"], binding["pr_number"], sorted(after))
+            await write_labels(store, github, binding, value.delivery_id, value.lease_id, before, after)
         verified = await current(binding, resumed=True, projected_route=target)
         if labels(verified) != after:
             raise HTTPException(409, "PROJECTION_UNVERIFIED")

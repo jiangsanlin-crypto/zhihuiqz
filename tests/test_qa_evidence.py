@@ -83,7 +83,7 @@ def test_operation_claim_is_required_before_any_github_side_effect(monkeypatch):
 
 
 @pytest.mark.parametrize("conclusion", ["action_required", "success"])
-def test_orchestrator_enforces_gate_before_running_adapter(monkeypatch, conclusion):
+def test_orchestrator_enforces_gate_before_running_adapter(monkeypatch, conclusion, tmp_path):
     comments, runs = evidence()
     runs["workflow_runs"][0]["conclusion"] = conclusion
     writes, starts = [], []
@@ -112,12 +112,18 @@ def test_orchestrator_enforces_gate_before_running_adapter(monkeypatch, conclusi
 
     monkeypatch.setattr(main, "build", lambda *args: (req, []))
     monkeypatch.setattr(main, "require_current_state", state)
+    async def snapshot(*args):
+        return dict(state='open',head={'sha':'sha','ref':'feature','repo':{'full_name':'owner/repo'}},
+            base={'ref':'main'},labels=writes[-1] if writes else ['agent:workbuddy','phase:qa','status:todo','keep:me'])
     monkeypatch.setattr(main, "github", SimpleNamespace(configured=True,
-        list_comments=list_comments, list_workflow_runs=list_runs,
+        list_comments=list_comments, list_workflow_runs=list_runs, get_pr_snapshot=snapshot,
         comment=comment, set_labels=set_labels))
-    monkeypatch.setattr(main, "store", SimpleNamespace(finish=lambda *a, **kw: None, checkpoint=lambda *a, **kw: None))
+    from orchestrator.state_store import StateStore
+    store=StateStore(str(tmp_path/'state.db'))
+    store.enqueue('test','pull_request',{})
+    monkeypatch.setattr(main,'store',store)
     monkeypatch.setattr(main, "workbuddy", SimpleNamespace(run=run))
-    event = {"delivery_id": "test", "event_name": "pull_request", "payload": {}}
+    event = store.claim_next()
     if conclusion == "success":
         with pytest.raises(RuntimeError, match="TEST_ADAPTER_REACHED"):
             asyncio.run(main.process(event))
@@ -149,7 +155,7 @@ def test_machine_evidence_blocker_recovers_only_when_both_gates_pass():
 
 
 @pytest.mark.parametrize("final_conclusion", ["action_required", "success"])
-def test_report_commit_waits_for_final_ci_and_new_review(monkeypatch, final_conclusion):
+def test_report_commit_waits_for_final_ci_and_new_review(monkeypatch, final_conclusion, tmp_path):
     comments, initial_runs = evidence()
     state = {"sha": "sha", "labels": ["agent:workbuddy", "phase:qa", "status:todo"]}
     checkpoints, dispatches, adapter_calls = [], [], []
@@ -161,7 +167,7 @@ def test_report_commit_waits_for_final_ci_and_new_review(monkeypatch, final_conc
 
     async def snapshot(*args):
         return {"state": "open", "head": {"sha": state["sha"], "ref": "feature",
-                "repo": {"full_name": "owner/repo"}}, "base": {"ref": "main"}}
+                "repo": {"full_name": "owner/repo"}}, "base": {"ref": "main"}, "labels": list(state['labels'])}
 
     async def labels(*args):
         return list(state["labels"])
@@ -202,10 +208,19 @@ def test_report_commit_waits_for_final_ci_and_new_review(monkeypatch, final_conc
         get_pr_snapshot=snapshot, get_issue_labels=labels, set_labels=set_labels,
         list_comments=list_comments, list_workflow_runs=list_runs, comment=comment,
         get_issue_body=issue_body, update_pr_files=update_files, repository_dispatch=dispatch))
-    monkeypatch.setattr(main, "store", SimpleNamespace(finish=lambda *a, **k: None,
-        checkpoint=lambda delivery, payload, **kw: checkpoints.append(payload)))
+    from orchestrator.state_store import StateStore
+    store=StateStore(str(tmp_path/'state.db'))
+    store.enqueue('test','pull_request',{})
+    save=store.checkpoint
+    def checkpoint(delivery,payload,**kwargs):
+        checkpoints.append(payload)
+        return save(delivery,payload,**kwargs)
+    monkeypatch.setattr(store,'checkpoint',checkpoint)
+    # Simulate interruption after projection, before the event completes.
+    monkeypatch.setattr(store,'finish',lambda *a,**k: None)
+    monkeypatch.setattr(main,'store',store)
     monkeypatch.setattr(main, "workbuddy", SimpleNamespace(run=run))
-    event = {"delivery_id": "test", "event_name": "pull_request", "payload": {}}
+    event = store.claim_next()
     if final_conclusion != "success":
         with pytest.raises(RuntimeError, match="QA_FINAL_SHA_CI_PENDING"):
             asyncio.run(main.process(event))

@@ -12,6 +12,7 @@ from .adapters import HttpAgentAdapter
 from .config import settings
 from .claim_api import create_claim_router
 from .queue_discovery import discovery_loop
+from .state_writer import write_labels
 from .issue_intake import create_intake_router
 from .github_client import GitHubClient
 from .evidence_gate import successful_current_ci, validate_qa_evidence
@@ -236,6 +237,15 @@ async def process(event: dict) -> None:
             if operation_key is not None:
                 store.assert_operation(operation_key, event["delivery_id"], event["lease_id"])
 
+    async def write_native(expected_sha, before, after):
+        if not event.get('lease_id'):
+            raise RuntimeError('WORKER_LEASE_REQUIRED')
+        snapshot = await github.get_pr_snapshot(req.repository, req.source_number)
+        binding = dict(repository=req.repository, pr_number=req.source_number,
+            source_sha=expected_sha, head_ref=getattr(req, 'source_ref', None) or (snapshot.get('head') or {}).get('ref'),
+            base_ref=(snapshot.get('base') or {}).get('ref'), operation_key=operation_key)
+        await write_labels(store, github, binding, event['delivery_id'], event['lease_id'], before, after)
+
     routed = build(
         event["event_name"],
         event["payload"],
@@ -342,11 +352,9 @@ async def process(event: dict) -> None:
             # independent review and ordinary CI both pass for the live HEAD.
             latest_labels = list(latest_labels) + ["recovery:qa-evidence"]
         require_lease()
-        await github.set_labels(
-            req.repository,
-            req.source_number,
-            project_workflow_labels(latest_labels, blocked_workflow),
-        )
+        await write_native(req.source_sha,
+            [x for x in latest_labels if x != 'recovery:qa-evidence'],
+            project_workflow_labels(latest_labels, blocked_workflow))
         store.finish(event["delivery_id"], "done", lease_id=event.get("lease_id"))
         return
 
@@ -366,7 +374,7 @@ async def process(event: dict) -> None:
             {"source_sha": req.source_sha, "stage": "starting"},
             lease_id=event.get("lease_id"))
         if expected_start != running_workflow:
-            await github.set_labels(req.repository, req.source_number, running_labels)
+            await write_native(req.source_sha, latest_labels, running_labels)
         await require_current_state(req, req.source_sha, running_workflow)
 
     if checkpoint and "result" in checkpoint:
@@ -589,11 +597,7 @@ async def process(event: dict) -> None:
             latest_labels, transition_workflow
         )
         require_lease()
-        await github.set_labels(
-            req.repository,
-            req.source_number,
-            transition_labels,
-        )
+        await write_native(transition_sha, latest_labels, transition_labels)
         await require_current_state(
             req,
             transition_sha,

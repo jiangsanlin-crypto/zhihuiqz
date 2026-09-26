@@ -276,3 +276,10 @@ without `retry_journal`, compatibility callers retain in-memory retry behavior.
 The journal is not a distributed lock: the authoritative claim service remains
 responsible for excluding competing workers. Multi-host audit aggregation and
 remaining R01/R04 policies still require integration.
+
+## Planning and unified recovery update
+
+See [planning-timeouts-state-writer.md](planning-timeouts-state-writer.md) for the
+prepare/confirm planning protocol, common timing policy and native/controller
+writer migration. PR execution leases now use the 60-minute R04 expiry; planning
+leases remain 180 seconds. Earlier execution-lease durations are superseded.

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .claim_retry_journal import ClaimRetriesExhausted
+from .recovery_policy import CLAIM_RETRY_DELAYS
 
 
 class LeaseLost(RuntimeError):
@@ -84,7 +85,7 @@ class ClaimClient:
             return await self.run(lambda: work(self.binding), advance=True)
         return None
 
-    async def acquire(self, binding, worker_id, request_id, delays=(0, 120, 300, 600, 1200)):
+    async def acquire(self, binding, worker_id, request_id, delays=CLAIM_RETRY_DELAYS):
         if self.ownership:
             raise LeaseLost('client already owns a claim')
         value = dict(binding, worker_id=worker_id, request_id=request_id)

@@ -4,6 +4,7 @@ Never invokes a worker. Unknown/unleased legacy RUNNING tasks are not adopted.
 """
 import hashlib
 import json
+from .state_writer import write_labels
 import logging
 
 from .handoff_gate import HandoffGateError, extract_handoff
@@ -172,7 +173,7 @@ async def _recover(store, github, row, binding):
     store.assert_operation(op, delivery, lease)
     store.assert_operation(projection_key, delivery, lease)
     if before != after:
-        await github.set_labels(binding['repository'], binding['pr_number'], sorted(after))
+        await write_labels(store, github, binding, delivery, lease, before, after)
     verified = await github.get_pr_snapshot(binding['repository'], binding['pr_number'])
     if not _identity(verified, binding) or _labels(verified) != after:
         return 0

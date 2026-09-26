@@ -1,6 +1,7 @@
 """Reevaluate registered machine blocker types without guessing human decisions."""
 import hashlib
 import json
+from .state_writer import write_labels
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -109,7 +110,7 @@ async def _recover_blocker(store, github, repository, listed):
             return 0
         store.assert_operation(binding['operation_key'], delivery, lease)
         store.assert_operation(projection, delivery, lease)
-        await github.set_labels(repository, pr['number'], sorted(target))
+        await write_labels(store, github, binding, delivery, lease, labels, target)
         live = await github.get_pr_snapshot(repository, pr['number'])
         if not _identity(live, binding) or _labels(live) != target:
             return 0

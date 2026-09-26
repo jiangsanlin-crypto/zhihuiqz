@@ -334,3 +334,8 @@ class GitHubClient:
             or final["base"]["ref"] != original["base"]["ref"]):
             raise RuntimeError("CONCURRENT_BRANCH_ADVANCE: after ref update")
         return new_sha
+
+    async def get_default_branch(self, repo: str) -> str:
+        response = await self._request('GET', f'{self.base}/repos/{repo}')
+        response.raise_for_status()
+        return response.json()['default_branch']

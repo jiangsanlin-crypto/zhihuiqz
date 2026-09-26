@@ -51,7 +51,7 @@ def test_projection_preserves_latest_unrelated_labels_and_removes_old_state():
     ]
 
 
-def test_handoff_gate_block_keeps_concurrent_unrelated_label(monkeypatch):
+def test_handoff_gate_block_keeps_concurrent_unrelated_label(monkeypatch, tmp_path):
     req = SimpleNamespace(
         task_id="GH-ISSUE-77", agent="workbuddy", repository="owner/repo",
         source_kind="pull_request", source_number=78,
@@ -76,22 +76,24 @@ def test_handoff_gate_block_keeps_concurrent_unrelated_label(monkeypatch):
     async def set_labels(repository, source_number, labels):
         written.append(labels)
 
+    async def snapshot(*args):
+        return dict(state='open', head={'sha':'abc123','ref':'feature','repo':{'full_name':'owner/repo'}},
+            base={'ref':'main'}, labels=written[-1] if written else
+            ['agent:workbuddy','phase:qa','status:todo','keep:concurrent'])
     monkeypatch.setattr(main, "github", SimpleNamespace(
-        configured=True, list_comments=list_comments,
+        configured=True, list_comments=list_comments, get_pr_snapshot=snapshot,
         comment=comment, set_labels=set_labels,
     ))
-    monkeypatch.setattr(main, "store", SimpleNamespace(
-        finish=lambda *args, **kwargs: None,
-    ))
+    from orchestrator.state_store import StateStore
+    store=StateStore(str(tmp_path/'state.db'))
+    store.enqueue('delivery-1','pull_request',{})
+    monkeypatch.setattr(main,'store',store)
     monkeypatch.setattr(main, "require_current_state", current_state)
     monkeypatch.setattr(main, "build", lambda *args: (
         req, ["agent:workbuddy", "phase:qa", "status:todo"],
     ))
 
-    asyncio.run(main.process({
-        "delivery_id": "delivery-1", "event_name": "pull_request",
-        "payload": {},
-    }))
+    asyncio.run(main.process(store.claim_next()))
     assert written == [[
         "agent:workbuddy", "keep:concurrent", "phase:qa", "recovery:qa-evidence", "status:blocked",
     ]]

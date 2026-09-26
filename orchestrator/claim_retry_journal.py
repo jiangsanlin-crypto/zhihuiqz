@@ -6,6 +6,7 @@ import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from .recovery_policy import BLOCKER_REEVALUATE
 
 
 class ClaimRetriesExhausted(RuntimeError):
@@ -67,6 +68,6 @@ class ClaimRetryJournal:
                 return row['request']
             if row['status'] in {'exhausted','stale'}:
                 elapsed = (timestamp - datetime.fromisoformat(row['updated_at'])).total_seconds()
-                if elapsed < 600:
+                if elapsed < BLOCKER_REEVALUATE:
                     return None
         return str(uuid.uuid4())

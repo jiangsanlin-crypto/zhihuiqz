@@ -10,8 +10,10 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-LEASE_SECONDS = 180
-RETRY_DELAYS_SECONDS = (0, 120, 300, 600, 1200)
+from .recovery_policy import CLAIM_RETRY_DELAYS, BLOCKER_REEVALUATE, RUNNING_RECLAIM
+LEASE_SECONDS = RUNNING_RECLAIM
+PLANNER_LEASE_SECONDS = 180
+RETRY_DELAYS_SECONDS = CLAIM_RETRY_DELAYS
 
 
 def now() -> str:
@@ -75,6 +77,16 @@ class StateStore:
                   payload_json TEXT NOT NULL,
                   created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS timeout_observations(
+                    operation_key TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT,
+                    action TEXT, active INTEGER, payload_json TEXT);
+                CREATE TABLE IF NOT EXISTS timeout_audit(
+                    event_id TEXT PRIMARY KEY,operation_key TEXT,action TEXT,created_at TEXT);
+                CREATE TABLE IF NOT EXISTS planning_publications(
+                    repository TEXT, issue_number INTEGER, publication_id TEXT UNIQUE,
+                    generation TEXT, owner_hash TEXT, intent_json TEXT,
+                    status TEXT, pr_number INTEGER, created_at TEXT, updated_at TEXT,
+                    PRIMARY KEY(repository,issue_number));
                 CREATE TABLE IF NOT EXISTS issue_intake(
                   repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
                   generation TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL,
@@ -487,12 +499,17 @@ class StateStore:
                 if row['worker_id'] == worker and row['lease_id'] == lease:
                     return dict(row)
                 raise RuntimeError('ANOTHER_PLANNER_OWNS_LEASE')
+            reserved = connection.execute(
+                "SELECT 1 FROM planning_publications WHERE repository=? AND issue_number=? AND status='prepared'",
+                (repository, number)).fetchone()
+            if reserved:
+                raise RuntimeError('PUBLICATION_CONFIRMATION_REQUIRED')
             if row['status'] not in {'awaiting_planner', 'leased'}:
                 raise RuntimeError('ISSUE_NOT_READY')
             # Callers supply a random attempt token. An expired token never renews.
             if row['lease_id'] == lease:
                 raise RuntimeError('PLANNER_LEASE_EXPIRED')
-            expiry = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+            expiry = (datetime.now(timezone.utc) + timedelta(seconds=PLANNER_LEASE_SECONDS)).isoformat()
             connection.execute('''UPDATE issue_intake SET status='leased',worker_id=?,lease_id=?,expires_at=?,updated_at=?
                 WHERE repository=? AND issue_number=?''', (worker, lease, expiry, now(), repository, number))
             result = connection.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
@@ -501,7 +518,7 @@ class StateStore:
         return dict(result)
 
     def renew_issue(self, repository, number, generation, worker, lease):
-        expiry = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+        expiry = (datetime.now(timezone.utc) + timedelta(seconds=PLANNER_LEASE_SECONDS)).isoformat()
         with self.lock, self.conn() as connection:
             return connection.execute('''UPDATE issue_intake SET expires_at=?,updated_at=?
                 WHERE repository=? AND issue_number=? AND generation=? AND worker_id=? AND lease_id=?
@@ -548,6 +565,6 @@ class StateStore:
             return True
         try:
             previous = datetime.fromisoformat(value['last_evaluated_at'])
-            return (datetime.now(timezone.utc) - previous).total_seconds() >= 600
+            return (datetime.now(timezone.utc) - previous).total_seconds() >= BLOCKER_REEVALUATE
         except (KeyError, TypeError, ValueError):
             return True

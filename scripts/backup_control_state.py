@@ -20,7 +20,8 @@ def backup(source, destination):
                 original.backup(copied)
                 if copied.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
                     raise RuntimeError('backup integrity check failed')
-                required = {'events','operation_claims','recovery_audit','issue_intake','blocker_observations'}
+                required = {'events','operation_claims','recovery_audit','issue_intake','blocker_observations',
+                            'planning_publications','timeout_observations','timeout_audit'}
                 tables = {row[0] for row in copied.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required <= tables:
                     raise RuntimeError('not a complete control-state database')

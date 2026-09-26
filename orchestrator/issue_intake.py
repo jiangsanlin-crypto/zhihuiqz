@@ -82,11 +82,16 @@ def create_intake_router(store, github, settings):
 
     @router.get('/issues')
     async def issues():
-        # Lease tokens are never returned by a queue listing.
+        # Lease tokens are never returned by a queue listing. An uncertain
+        # publication must be confirmed, never advertised as fresh planning.
+        with store.conn() as db:
+            reserved={row[0] for row in db.execute(
+                "SELECT issue_number FROM planning_publications WHERE repository=? AND status='prepared'",
+                (repository(),))}
         return {'issues': [{**{key: row[key] for key in
             ('issue_number', 'generation', 'status', 'payload_json', 'updated_at')},
-            'claimable': row['status'] == 'awaiting_planner' or
-                (row['status'] == 'leased' and row['expires_at'] <= now())}
+            'claimable': row['issue_number'] not in reserved and (row['status'] == 'awaiting_planner' or
+                (row['status'] == 'leased' and row['expires_at'] <= now()))}
             for row in store.intake_items(repository())]}
 
     @router.post('/acquire')
@@ -107,4 +112,6 @@ def create_intake_router(store, github, settings):
             raise HTTPException(409, 'PLANNER_LEASE_LOST')
         return {'renewed': True}
 
+    from .planning_publication import install_publication_routes
+    install_publication_routes(router, store, github, repository)
     return router

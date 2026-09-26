@@ -178,7 +178,11 @@ def test_verified_advance_is_audited_and_retry_does_not_write_twice(projection_s
     with sqlite3.connect(store.path) as connection:
         audits = connection.execute("SELECT payload_json FROM recovery_audit WHERE delivery_id=?",
                                     (claim["delivery_id"],)).fetchall()
-    assert sorted(json.loads(x[0])["status"] for x in audits) == ["applied", "planned"]
+    decoded = [json.loads(x[0]) for x in audits]
+    shared = [x for x in decoded if x['rule_id'] == 'SHARED_STATE_WRITER']
+    phase = [x for x in decoded if x['rule_id'] != 'SHARED_STATE_WRITER']
+    assert sorted(x['status'] for x in shared) == ['applied', 'planned']
+    assert sorted(x['status'] for x in phase) == ['applied', 'planned']
 
 
 def test_failed_ci_and_missing_independent_review_do_not_write(projection_setup):
