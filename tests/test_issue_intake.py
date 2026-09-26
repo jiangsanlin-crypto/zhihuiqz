@@ -16,7 +16,7 @@ AUTH = {'Authorization': 'Bearer test-only'}
 @pytest.fixture
 def intake(tmp_path):
     store = StateStore(str(tmp_path / 'intake.db'))
-    issues = [dict(number=80, title='Repair queue', body='Implement discovery', state='open', labels=[], user={'login':'owner'})]
+    issues = [dict(number=80, title='Repair queue', body='<!-- agent-root-task:v1 -->\nImplement discovery', state='open', labels=[], user={'login':'owner'})]
     prs = []
     async def get_issues(*args): return copy.deepcopy(issues)
     async def get_prs(*args): return copy.deepcopy(prs)
@@ -43,6 +43,14 @@ def test_unlabelled_discovery_replay_and_authenticated_claim(intake):
     assert row['status'] == 'leased' and not row['claimable']
     assert 'lease_id' not in row and 'worker_id' not in row
     assert len(store.intake_items(REPO)) == 1
+
+def test_unmarked_owner_issue_is_not_agent_root(intake):
+    intake[1][0]['body'] = 'Ordinary owner issue, not an automation root.'
+    scan(intake)
+    row = intake[0].intake_items(REPO)[0]
+    assert row['status'] == 'not_agent_root'
+    assert intake[4].post('/intake/acquire', json=claim(intake), headers=AUTH).status_code == 409
+
 
 def test_two_database_clients_cannot_both_claim(intake):
     store, _, _, _, _ = intake

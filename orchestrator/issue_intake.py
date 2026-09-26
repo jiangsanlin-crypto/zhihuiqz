@@ -10,6 +10,13 @@ from .security import verify_bearer
 from .task_router import TASK_MARKER, label_names
 from .state_store import now
 
+ROOT_MARKERS = ("<!-- agent-root-task:v1 -->", "<!-- synthetic-e2e:true -->")
+
+
+def is_root_task(issue) -> bool:
+    body = str(issue.get("body") or "")
+    return any(marker in body for marker in ROOT_MARKERS)
+
 
 def generation(issue):
     data = [issue.get('title'), issue.get('body'), issue.get('state'),
@@ -42,6 +49,8 @@ async def scan_issues(store, github, repository):
             status = 'needs_triage'
         if not str(issue.get('body') or '').strip():
             status = 'needs_task_spec'
+        elif not is_root_task(issue):
+            status = 'not_agent_root'
         if any(x.startswith(('approval:', 'blocker:')) or x in {'status:blocked', 'status:review', 'status:done'}
                for x in label_names(issue.get('labels'))):
             status = 'human_wait'
