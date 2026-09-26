@@ -87,11 +87,19 @@ require(
         "Wait for exact current-SHA ordinary CI",
         "owner_approval_required",
         "release_enabled=false",
+        "Verify resolved OpenAI API key",
+        'OPENAI_API_KEY_RUNTIME: ${{ steps.openai_key.outputs.openai_api_key }}',
+        'test -n "$OPENAI_API_KEY_RUNTIME"',
     ],
 )
 forbid(
     ".github/workflows/shared-agent-runtime.yml",
-    ["gh pr merge", "agent_execute_deployment", "status:done"],
+    [
+        "gh pr merge",
+        "agent_execute_deployment",
+        "status:done",
+        'test -n "${{ steps.openai_key.outputs.openai_api_key }}"',
+    ],
 )
 
 require(
