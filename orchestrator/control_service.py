@@ -17,10 +17,20 @@ from .queue_discovery import discovery_loop
 from .state_store import StateStore
 
 
+def secret_file(path) -> str:
+    """Read a dedicated controller credential file without accepting multiline data."""
+    value = Path(path).read_text().strip()
+    if len(value) < 32 or any(c.isspace() for c in value):
+        raise ValueError("invalid control-service credential file")
+    return value
+
+
 def secret_value(path: str, env_name: str) -> str:
     """Prefer a mounted secret file; fall back to the protected server env."""
     candidate = Path(path)
-    value = candidate.read_text().strip() if candidate.exists() else os.environ.get(env_name, "").strip()
+    if candidate.exists():
+        return secret_file(candidate)
+    value = os.environ.get(env_name, "").strip()
     if len(value) < 20 or any(c.isspace() for c in value):
         raise ValueError(f"invalid controller credential: {env_name}")
     return value
