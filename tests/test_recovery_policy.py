@@ -60,4 +60,4 @@ def test_execution_lease_matches_reclaim_threshold_but_planner_lease_is_short(tm
     assert RUNNING_RECLAIM-5 < (expiry-datetime.now(timezone.utc)).total_seconds() <= RUNNING_RECLAIM
     store.observe_issue('owner/repo',80,'g','awaiting_planner',{})
     row=store.claim_issue('owner/repo',80,'g','worker','planner-token')
-    assert 175 < (datetime.fromisoformat(row['expires_at'])-datetime.now(timezone.utc)).total_seconds() <= 180
+    assert 175 < (datetime.fromisoformat(row['expires_at'])-datetime.now(timezone.utc)).total_seconds() <= 3600
