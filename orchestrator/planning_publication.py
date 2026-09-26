@@ -72,43 +72,52 @@ def install_publication_routes(router, store, github, repository):
         if (not row or row['publication_id']!=value.publication_id or row['owner_hash']!=owner(value)
             or row['generation']!=value.generation or (row['pr_number'] and row['pr_number']!=value.pr_number)):
             raise HTTPException(409,'PUBLICATION_IDENTITY_CHANGED')
-        intent=json.loads(row['intent_json'])
-        issues=await github.list_open_issues(repo)
-        issue=next((x for x in issues if x['number']==value.issue_number),None)
-        if not issue or generation(issue)!=value.generation:
-            raise HTTPException(409,'ISSUE_CHANGED')
-        prs=await github.list_open_prs(repo)
-        associated=[p for p in prs if value.issue_number in set.union(*references(p,repo))]
-        if len(associated)!=1 or associated[0]['number']!=value.pr_number:
-            raise HTTPException(409,'PUBLICATION_ASSOCIATION_AMBIGUOUS')
-        pr=await github.get_pr_snapshot(repo,value.pr_number)
-        head,base=pr.get('head') or {},pr.get('base') or {}
-        default=await github.get_default_branch(repo)
-        body=pr.get('body') or ''
-        if (pr.get('state')!='open' or pr.get('merged_at')
-            or head.get('ref')!=intent['head_ref'] or head.get('sha')!=intent['head_sha']
-            or (head.get('repo') or {}).get('full_name')!=repo
-            or base.get('ref')!=intent['base_ref'] or head.get('ref') in {'main',default,base.get('ref')}
-            or set(TASK_MARKER.findall(body))!={f'GH-ISSUE-{value.issue_number}'}
-            or hashlib.sha256(body.encode()).hexdigest()!=intent['body_sha256']
-            or any(x.startswith('approval:') or x=='status:review' for x in label_names(pr.get('labels')))):
-            raise HTTPException(409,'PUBLICATION_CONTENT_CHANGED')
-        # Re-read issue generation after the PR reads. Confirmation observes
-        # already-published work, never grants an expired planner another write.
-        current=next((x for x in await github.list_open_issues(repo) if x['number']==value.issue_number),None)
-        if not current or generation(current)!=value.generation:
-            raise HTTPException(409,'ISSUE_CHANGED')
-        with store.lock, store.conn() as db:
-            db.execute('BEGIN IMMEDIATE')
-            lease=db.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
-                             (repo,value.issue_number)).fetchone()
-            if (not lease or lease['generation']!=value.generation
-                or (lease['status']=='leased' and lease['lease_id']!=value.lease_id)):
-                raise HTTPException(409,'PLANNER_OWNERSHIP_CHANGED')
-            db.execute("UPDATE planning_publications SET status='applied',pr_number=?,updated_at=? WHERE publication_id=?",
-                       (value.pr_number,now(),value.publication_id))
-            payload=json.loads(lease['payload_json']);payload['linked_prs']=[value.pr_number]
-            db.execute("""UPDATE issue_intake SET status='linked',payload_json=?,worker_id=NULL,lease_id=NULL,
-                expires_at=NULL,updated_at=? WHERE repository=? AND issue_number=?""",
-                (json.dumps(payload),now(),repo,value.issue_number))
-        return {'publication_id':value.publication_id,'status':'applied','pr_number':value.pr_number}
+        return await verify_publication(store, github, dict(row), value.pr_number)
+
+
+async def verify_publication(store, github, row, pr_number):
+    """Observe immutable publication evidence; performs no GitHub mutation."""
+    repo=row['repository']
+    intent=json.loads(row['intent_json'])
+    issues=await github.list_open_issues(repo)
+    issue=next((x for x in issues if x['number']==row['issue_number']),None)
+    if not issue or generation(issue)!=row['generation']:
+        raise HTTPException(409,'ISSUE_CHANGED')
+    prs=await github.list_open_prs(repo)
+    associated=[p for p in prs if row['issue_number'] in set.union(*references(p,repo))]
+    if len(associated)!=1 or associated[0]['number']!=pr_number:
+        raise HTTPException(409,'PUBLICATION_ASSOCIATION_AMBIGUOUS')
+    pr=await github.get_pr_snapshot(repo,pr_number)
+    head,base=pr.get('head') or {},pr.get('base') or {}
+    default=await github.get_default_branch(repo)
+    body=pr.get('body') or ''
+    if (pr.get('state')!='open' or pr.get('merged_at')
+        or head.get('ref')!=intent['head_ref'] or head.get('sha')!=intent['head_sha']
+        or (head.get('repo') or {}).get('full_name')!=repo
+        or base.get('ref')!=intent['base_ref'] or head.get('ref') in {'main',default,base.get('ref')}
+        or set(TASK_MARKER.findall(body))!={f"GH-ISSUE-{row['issue_number']}"}
+        or hashlib.sha256(body.encode()).hexdigest()!=intent['body_sha256']
+        or any(x.startswith('approval:') or x=='status:review' for x in label_names(pr.get('labels')))):
+        raise HTTPException(409,'PUBLICATION_CONTENT_CHANGED')
+    # Re-read issue generation after the PR reads. Confirmation observes
+    # already-published work, never grants an expired planner another write.
+    current=next((x for x in await github.list_open_issues(repo) if x['number']==row['issue_number']),None)
+    if not current or generation(current)!=row['generation']:
+        raise HTTPException(409,'ISSUE_CHANGED')
+    with store.lock, store.conn() as db:
+        db.execute('BEGIN IMMEDIATE')
+        live=db.execute('SELECT * FROM planning_publications WHERE publication_id=?',(row['publication_id'],)).fetchone()
+        if not live or live['generation']!=row['generation'] or (live['pr_number'] and live['pr_number']!=pr_number):
+            raise HTTPException(409,'PUBLICATION_IDENTITY_CHANGED')
+        lease=db.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
+                         (repo,row['issue_number'])).fetchone()
+        if (not lease or lease['generation']!=row['generation']
+            or (lease['status']=='leased' and hashlib.sha256(json.dumps([lease['worker_id'],lease['lease_id']]).encode()).hexdigest()!=row['owner_hash'])):
+            raise HTTPException(409,'PLANNER_OWNERSHIP_CHANGED')
+        db.execute("UPDATE planning_publications SET status='applied',pr_number=?,updated_at=? WHERE publication_id=?",
+                   (pr_number,now(),row['publication_id']))
+        payload=json.loads(lease['payload_json']);payload['linked_prs']=[pr_number]
+        db.execute("""UPDATE issue_intake SET status='linked',payload_json=?,worker_id=NULL,lease_id=NULL,
+            expires_at=NULL,updated_at=? WHERE repository=? AND issue_number=?""",
+            (json.dumps(payload),now(),repo,row['issue_number']))
+    return {'publication_id':row['publication_id'],'status':'applied','pr_number':pr_number}

@@ -283,3 +283,13 @@ See [planning-timeouts-state-writer.md](planning-timeouts-state-writer.md) for t
 prepare/confirm planning protocol, common timing policy and native/controller
 writer migration. PR execution leases now use the 60-minute R04 expiry; planning
 leases remain 180 seconds. Earlier execution-lease durations are superseded.
+
+## Host adapter and abandoned confirmation recovery
+
+`orchestrator.phase_host.run_one` provides an opt-in common account/Actions host
+adapter. The scanner can now verify an abandoned prepared publication against an
+existing exact-match PR without the original host. See
+[phase-host-migration.md](phase-host-migration.md) for actual migration targets,
+executor requirements, unsupported external QA report commits and the remaining
+uncertain/unpublished reservation boundary. Live worker and workflow configuration
+remain unchanged.

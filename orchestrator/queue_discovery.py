@@ -13,6 +13,7 @@ from .external_recovery import recover_external_once
 from .issue_intake import scan_issues
 from .blocker_recovery import recover_blockers_once
 from .timeout_monitor import monitor_timeouts
+from .planning_recovery import recover_publications
 
 ROUTES = {
     'phase:implementation': 'agent:chatgpt',
@@ -68,7 +69,7 @@ async def scan_once(store, github, repository):
 
 
 async def discovery_loop(stop, store, github, repository, interval=60, *, native_queue=True):
-    actions = (scan_issues, monitor_timeouts, recover_external_once, recover_blockers_once)
+    actions = (scan_issues, recover_publications, monitor_timeouts, recover_external_once, recover_blockers_once)
     if native_queue:
         actions += (scan_once,)
     while not stop.is_set():
