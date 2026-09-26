@@ -3,12 +3,6 @@ name: Deploy Shared Control Runtime
 on:
   push:
     branches: [main]
-    paths:
-      - "orchestrator/**"
-      - "scripts/shared_*.py"
-      - "Dockerfile"
-      - "docker-compose.yml"
-      - ".github/workflows/bootstrap-orchestrator.yml"
   workflow_dispatch:
     inputs:
       confirm:
