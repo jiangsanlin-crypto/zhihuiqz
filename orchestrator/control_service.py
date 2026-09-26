@@ -1,5 +1,6 @@
 """Standalone shared queue/claim controller. No model executor is loaded."""
 import asyncio
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from .claim_api import create_claim_router
 from .control_api import create_control_router
+from .control_dispatch import dispatch_ready
 from .github_client import GitHubClient
 from .issue_intake import create_intake_router
 from .queue_discovery import discovery_loop
@@ -64,29 +66,44 @@ def create_app(*, store=None, github=None, settings=None, writes_enabled=None, b
     if not re.fullmatch(r"[0-9a-f]{40}", build_sha):
         raise ValueError("CONTROL_BUILD_SHA must identify the reviewed commit")
 
+    async def dispatch_loop(stop):
+        while not stop.is_set():
+            try:
+                await dispatch_ready(store, github, settings, build_sha)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "controller dispatch deferred: %s", type(exc).__name__
+                )
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                pass
+
     @asynccontextmanager
     async def lifespan(app):
         stop = asyncio.Event()
-        task = (
-            asyncio.create_task(
-                discovery_loop(
-                    stop,
-                    store,
-                    github,
-                    settings.github_repository,
-                    native_queue=False,
-                )
-            )
-            if writes_enabled
-            else None
-        )
+        tasks = []
+        if writes_enabled:
+            tasks = [
+                asyncio.create_task(
+                    discovery_loop(
+                        stop,
+                        store,
+                        github,
+                        settings.github_repository,
+                        native_queue=False,
+                    )
+                ),
+                asyncio.create_task(dispatch_loop(stop)),
+            ]
         try:
             yield
         finally:
             stop.set()
-            if task:
+            for task in tasks:
                 task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     app = FastAPI(
         lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
