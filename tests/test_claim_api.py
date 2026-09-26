@@ -568,6 +568,59 @@ def test_new_human_wait_during_external_recovery_is_preserved(projection_setup):
     assert pr['labels'] == ['status:review', 'approval:production-required']
 
 
+def test_worker_decision_escalates_review_to_repair(projection_setup):
+    client, store, pr, _, _, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+    result = client.post('/claims/decision', json=dict(
+        owned(claim), decision='repair', reason_code='REVIEW_DEFECT'
+    ), headers=AUTH)
+    assert result.status_code == 200
+    assert pr['labels'] == ['agent:workreview', 'phase:escalation-repair', 'status:todo']
+    assert store.get(claim['delivery_id'])['status'] == 'done'
+    assert len(writes) == 2
+
+
+def test_worker_decision_escalates_exhausted_implementation(projection_setup):
+    client, store, pr, _, _, _, writes = projection_setup
+    pr['labels'] = ['agent:chatgpt', 'phase:implementation', 'status:todo']
+    claim = client.post('/claims/acquire', json=dict(
+        payload(), phase='phase:implementation'
+    ), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+    result = client.post('/claims/decision', json=dict(
+        owned(claim), decision='repair', reason_code='IMPLEMENTATION_RETRY_EXHAUSTED'
+    ), headers=AUTH)
+    assert result.status_code == 200
+    assert pr['labels'] == ['agent:workreview', 'phase:escalation-repair', 'status:todo']
+    assert store.get(claim['delivery_id'])['status'] == 'done'
+    assert len(writes) == 2
+
+
+def test_worker_decision_retry_and_block_are_controller_projected(projection_setup):
+    client, store, pr, _, _, _, _ = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+    retry = client.post('/claims/decision', json=dict(
+        owned(claim), decision='retry', reason_code='TRANSIENT_TOOL'
+    ), headers=AUTH)
+    assert retry.status_code == 200
+    assert pr['labels'] == ['agent:workreview', 'phase:code-review', 'status:todo']
+
+    claim2 = client.post('/claims/acquire', json=dict(
+        payload(), request_id='request-block'
+    ), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim2), headers=AUTH).status_code == 200
+    blocked = client.post('/claims/decision', json=dict(
+        owned(claim2), decision='block', reason_code='HUMAN_POLICY'
+    ), headers=AUTH)
+    assert blocked.status_code == 200
+    assert set(pr['labels']) == {
+        'agent:workreview', 'phase:code-review', 'status:blocked', 'blocker:human-policy'
+    }
+    assert store.get(claim2['delivery_id'])['status'] == 'done'
+
+
 @pytest.fixture
 def publication_setup(projection_setup):
     client, store, pr, github, comments, runs, writes = projection_setup
