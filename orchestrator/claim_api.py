@@ -52,6 +52,11 @@ class PublishReports(OwnedClaim):
     files: list[ReportFile] = Field(min_length=1, max_length=8)
 
 
+class WorkerDecision(OwnedClaim):
+    decision: Literal["retry", "block", "repair"]
+    reason_code: str = Field(pattern=r"^[A-Z0-9_]{2,80}$")
+
+
 REPORT_PATHS = {
     "phase:prototype": {
         "reports/prototype_review.md",
@@ -335,6 +340,79 @@ def create_claim_router(store, github, settings):
             "head_changed": publication["from_sha"] != publication["to_sha"],
             **response(store.get(value.delivery_id)),
         }
+
+
+    @router.post("/decision")
+    async def worker_decision(value: WorkerDecision):
+        row, binding = owned(value)
+        pr = await current(binding, resumed=True)
+        before = labels(pr)
+        if "status:running" not in before:
+            raise HTTPException(409, "WORKER_NOT_STARTED")
+        workflow = {
+            item for item in before
+            if item.startswith(("agent:", "phase:", "status:", "approval:"))
+        }
+        running = {binding["agent"], binding["phase"], "status:running"}
+        if workflow != running:
+            raise HTTPException(409, "STATE_CHANGED")
+
+        if value.decision == "retry":
+            target = {binding["agent"], binding["phase"], "status:todo"}
+            reason = "worker requested bounded same-phase retry"
+        elif value.decision == "repair":
+            if binding["phase"] != "phase:code-review" or binding["agent"] != "agent:workreview":
+                raise HTTPException(409, "REPAIR_DECISION_NOT_ALLOWED")
+            target = {"agent:workreview", "phase:escalation-repair", "status:todo"}
+            reason = "independent review found a repository-fixable defect"
+        else:
+            blocker = "blocker:" + value.reason_code.lower().replace("_", "-")
+            target = {binding["agent"], binding["phase"], "status:blocked", blocker}
+            reason = "worker reported a non-automatic blocker"
+
+        after = {
+            item for item in before
+            if not item.startswith(
+                ("agent:", "phase:", "status:", "approval:", "blocker:", "recovery:", "watchdog:")
+            )
+        } | target
+        audit = {
+            "rule_id": "LEASED_WORKER_DECISION",
+            "lease_id": value.lease_id,
+            "repository": binding["repository"],
+            "pr_number": binding["pr_number"],
+            "task_id": binding["task_id"],
+            "phase": binding["phase"],
+            "worker_id": value.worker_id,
+            "source_sha": binding["source_sha"],
+            "action_type": value.decision,
+            "reason": reason + ": " + value.reason_code,
+            "status": "planned",
+            "created_at": now(),
+            "labels_before": sorted(before),
+            "labels_after": sorted(after),
+            "evidence_generation": hashlib.sha256(
+                json.dumps([binding["operation_key"], value.decision, value.reason_code]).encode()
+            ).hexdigest(),
+        }
+        checkpoint = json.loads(row.get("checkpoint_json") or "{}")
+        checkpoint["worker_decision"] = audit
+        store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
+        store.record_recovery_audit(value.delivery_id, audit)
+        owned(value)
+        if before != after:
+            await write_labels(
+                store, github, binding, value.delivery_id, value.lease_id, before, after
+            )
+        verified = await github.get_pr_snapshot(binding["repository"], binding["pr_number"])
+        if labels(verified) != after:
+            raise HTTPException(409, "PROJECTION_UNVERIFIED")
+        audit["status"] = "applied"
+        audit["applied_at"] = now()
+        store.record_recovery_audit(value.delivery_id, audit)
+        if not store.finish(value.delivery_id, "done", lease_id=value.lease_id):
+            raise HTTPException(409, "WORKER_LEASE_LOST")
+        return {"status": "applied", "audit": audit}
 
 
     @router.post("/release")
