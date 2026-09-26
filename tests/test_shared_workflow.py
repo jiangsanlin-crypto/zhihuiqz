@@ -75,7 +75,7 @@ def test_workflow_migration_is_exclusive_read_only_and_revision_pinned(name,lega
     import yaml
     data=yaml.safe_load((Path('.github/workflows')/name).read_text())
     jobs=data['jobs'];shared=jobs['shared-control']
-    assert shared['if']=="vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared'"
+    assert shared['if']=="(vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared')"
     assert shared['permissions']=={'contents':'read'}
     assert jobs['invalid-control-mode']['permissions']=={}
     for old in legacy:
