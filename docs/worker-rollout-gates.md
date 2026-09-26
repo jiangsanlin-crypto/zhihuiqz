@@ -56,3 +56,22 @@ lease IDs, worker identity and links to CI/handoff/audit evidence. Verify:
 PR #78 is a protected owner-wait case, not permission to bypass its missing
 final-SHA evidence. Re-fetch its state before any separately authorized action.
 Keep #80 open and #83 draft until the complete acceptance evidence is available.
+
+## Read-only connection preflight
+
+Before replacing either enabled worker's prompt, run the checked-in
+`scripts/check_worker_service.py` from **each actual worker runtime** with the
+approved HTTPS URL and a dedicated claim-service credential file:
+
+```sh
+python scripts/check_worker_service.py --url https://CLAIM_SERVICE --token-file /secure/claim-service-token
+```
+
+The URL/path are placeholders, not a discovered server. The program only GETs
+`/claims/ready` and `/intake/issues`; it does not acquire, change labels, execute a
+planner, dispatch Actions or use an OpenAI credential. It rejects redirects,
+unauthorized/missing endpoints and malformed responses. Output omits credentials
+and task contents. A PASS proves interface/auth reachability only; lease/content
+writes and E2E still need the authorized acceptance above. Do not replace the
+current workers until this passes and their execution host can heartbeat/use the
+shared client. A text prompt alone is not a deployed worker integration.

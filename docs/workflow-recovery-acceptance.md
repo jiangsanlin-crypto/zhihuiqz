@@ -136,3 +136,14 @@ deduplicated and active operation leases are skipped.
 226 isolated tests pass at this batch, including 33 new regressions. This proves
 branch behavior with mocked GitHub; it does not prove live adoption or full R01–R10
 conformance. See [worker-rollout-gates.md](worker-rollout-gates.md).
+
+## Follow-up recovery isolation and R05 cadence
+
+Registered blocker evidence now follows the requested persisted ten-minute
+cadence across restarts. A new SHA or changed label generation is evaluated
+immediately. One inaccessible PR no longer prevents recovery of subsequent PRs;
+failed projections retain their checkpoint for ordinary lease recovery.
+The earlier one-minute evidence cadence note is superseded by this follow-up.
+R01/R04 timing escalation, unregistered blocker policies and actual worker
+adoption remain unaccepted. The read-only service preflight is preparation for
+integration, not evidence of a deployed/reachable service.

@@ -59,7 +59,7 @@ def test_lost_put_response_recovered_from_durable_checkpoint(blocked):
         await original(*args)
         raise RuntimeError('response lost')
     github.set_labels=lose
-    with pytest.raises(RuntimeError): recover(blocked)
+    assert recover(blocked) == 0
     with store.conn() as db:
         delivery=db.execute("SELECT delivery_id FROM events WHERE status='running'").fetchone()[0]
     expire_claim(store,delivery)
@@ -93,3 +93,46 @@ def test_repair_requires_exact_sha_and_verified_mergeability(blocked,record_sha,
         assert 'phase:qa' not in pr['labels']
     else:
         assert not blocked[-1]
+
+
+def test_one_failed_pr_does_not_starve_other_blockers(blocked):
+    store, pr, github, _, _, writes = blocked
+    async def listing(*args):
+        bad = copy.deepcopy(pr)
+        bad['number'] = 79
+        return [bad, copy.deepcopy(pr)]
+    original = github.get_pr_snapshot
+    async def snapshot(repo, number):
+        if number == 79:
+            raise RuntimeError('unavailable')
+        return await original(repo, number)
+    github.list_open_prs, github.get_pr_snapshot = listing, snapshot
+    assert recover(blocked) == 1
+    assert len(writes) == 1
+
+
+def test_blocker_rechecks_after_ten_minutes_and_immediately_on_new_sha(blocked):
+    from datetime import datetime, timedelta, timezone
+    store, pr, github, _, runs, writes = blocked
+    calls = []
+    original = github.list_workflow_runs
+    async def evidence(*args):
+        calls.append(True)
+        return await original(*args)
+    github.list_workflow_runs = evidence
+    runs['workflow_runs'][0]['conclusion'] = 'failure'
+    assert recover(blocked) == 0
+    assert recover(blocked) == 0
+    assert len(calls) == 1
+    # Cadence persists across service restarts, not just in process memory.
+    from orchestrator.state_store import StateStore
+    assert asyncio.run(recover_blockers_once(StateStore(store.path), github, 'owner/repo')) == 0
+    assert len(calls) == 1
+    record = observation(store)
+    record['last_evaluated_at'] = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
+    store.observe_blocker('owner/repo', 78, SHA, 'recovery:qa-evidence', record)
+    assert recover(blocked) == 0
+    assert len(calls) == 2
+    pr['head']['sha'] = 'b' * 40
+    assert recover(blocked) == 0
+    assert len(calls) == 3

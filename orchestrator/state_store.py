@@ -528,3 +528,20 @@ class StateStore:
                     and target <= set(audit.get('labels_after', []))):
                     return row['event_id']
         return 'initial'
+
+    def blocker_due(self, repository, number, sha, code, labels):
+        """R05: persisted ten-minute evidence cadence, scoped to SHA/label generation."""
+        with self.lock, self.conn() as connection:
+            row = connection.execute("""SELECT payload_json FROM blocker_observations
+                WHERE repository=? AND pr_number=? AND head_sha=? AND code=?""",
+                (repository, number, sha, code)).fetchone()
+        if not row:
+            return True
+        value = json.loads(row['payload_json'])
+        if value.get('labels_before') != labels or value.get('status') == 'resolved':
+            return True
+        try:
+            previous = datetime.fromisoformat(value['last_evaluated_at'])
+            return (datetime.now(timezone.utc) - previous).total_seconds() >= 600
+        except (KeyError, TypeError, ValueError):
+            return True
