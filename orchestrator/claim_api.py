@@ -10,12 +10,13 @@ from pydantic import BaseModel, Field
 
 from .security import verify_bearer
 from .handoff_gate import HandoffGateError
-from .evidence_gate import validate_qa_evidence
+from .evidence_gate import successful_current_ci, validate_qa_evidence
 from .state_projection import verified_next_workflow
 from .state_store import now
 from .queue_discovery import discover
 from .head_transition import publication_audit, refresh_declared_head
 from .task_router import TASK_MARKER
+from .models import FileChange
 
 
 class AcquireClaim(BaseModel):
@@ -39,6 +40,33 @@ class OwnedClaim(BaseModel):
 
 class PrepareHead(OwnedClaim):
     target_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class ReportFile(BaseModel):
+    model_config = {"extra": "forbid"}
+    path: str = Field(min_length=1, max_length=220)
+    content: str = Field(max_length=250_000)
+
+
+class PublishReports(OwnedClaim):
+    files: list[ReportFile] = Field(min_length=1, max_length=8)
+
+
+REPORT_PATHS = {
+    "phase:prototype": {
+        "reports/prototype_review.md",
+        "reports/data_analysis.md",
+        "reports/classification_validation.md",
+        "reports/uiux_prototype.md",
+        "reports/prototype_gate.json",
+    },
+    "phase:qa": {
+        "reports/test_report.md",
+        "reports/uiux_acceptance.md",
+        "reports/classification_validation.md",
+        "reports/qa_summary.json",
+    },
+}
 
 
 def create_claim_router(store, github, settings):
@@ -201,6 +229,114 @@ def create_claim_router(store, github, settings):
             raise HTTPException(409, "WORKER_LEASE_LOST")
         return response(store.get(value.delivery_id))
 
+    @router.post("/publish-reports")
+    async def publish_reports(value: PublishReports):
+        row, binding = owned(value)
+        if binding["phase"] not in REPORT_PATHS:
+            raise HTTPException(409, "PHASE_CANNOT_PUBLISH_REPORTS")
+        supplied = {item.path for item in value.files}
+        if len(supplied) != len(value.files) or not supplied <= REPORT_PATHS[binding["phase"]]:
+            raise HTTPException(409, "REPORT_PATH_NOT_ALLOWED")
+
+        checkpoint = json.loads(row.get("checkpoint_json") or "{}")
+        started = checkpoint.get("start_projection") or {}
+        if started.get("status") != "applied" or started.get("lease_id") != value.lease_id:
+            raise HTTPException(409, "WORKER_NOT_STARTED")
+        if checkpoint.get("projection"):
+            raise HTTPException(409, "PHASE_ALREADY_ADVANCING")
+
+        digest = hashlib.sha256(json.dumps(
+            [{"path": item.path, "content": item.content} for item in value.files],
+            sort_keys=True, ensure_ascii=False
+        ).encode()).hexdigest()
+        previous = checkpoint.get("report_publication") or {}
+        if previous.get("status") == "applied":
+            if previous.get("content_sha256") != digest:
+                raise HTTPException(409, "REPORT_PUBLICATION_ALREADY_APPLIED")
+            return {
+                "status": "already_applied",
+                "head_changed": previous["from_sha"] != previous["to_sha"],
+                **response(row),
+            }
+
+        pr = await current(binding, resumed=True)
+        if "status:running" not in labels(pr):
+            raise HTTPException(409, "WORKER_NOT_STARTED")
+        request = {
+            "status": "prepared",
+            "phase": binding["phase"],
+            "from_sha": binding["source_sha"],
+            "content_sha256": digest,
+            "files": [{"path": item.path, "content": item.content} for item in value.files],
+        }
+        prior_request = checkpoint.get("report_request")
+        if prior_request and prior_request != request:
+            raise HTTPException(409, "REPORT_PUBLICATION_REQUEST_CHANGED")
+        checkpoint["report_request"] = request
+        store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
+
+        changes = [FileChange(path=item.path, content=item.content) for item in value.files]
+        try:
+            new_sha = await github.update_pr_files(
+                binding["repository"],
+                binding["pr_number"],
+                changes,
+                message_prefix=f"reports: {binding['phase'].removeprefix('phase:')}",
+                expected_head_sha=binding["source_sha"],
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        # Recheck ownership after the GitHub write. A retry with the same lease
+        # can recover a lost response because update_pr_files recognizes the
+        # exact direct-child report commit.
+        owned(value)
+        publication = {
+            "status": "applied",
+            "phase": binding["phase"],
+            "from_sha": binding["source_sha"],
+            "to_sha": new_sha,
+            "content_sha256": digest,
+        }
+        checkpoint["report_publication"] = publication
+        checkpoint["report_request"]["status"] = "applied"
+        if new_sha != binding["source_sha"]:
+            checkpoint.pop("projection", None)
+            checkpoint.pop("recovery_projection", None)
+            row = store.move_external_head(
+                value.delivery_id,
+                value.lease_id,
+                binding["source_sha"],
+                new_sha,
+                checkpoint,
+            )
+            binding = json.loads(row["payload_json"])
+            store.record_recovery_audit(value.delivery_id, {
+                "rule_id": "REPORT_HEAD_PUBLICATION",
+                "lease_id": value.lease_id,
+                "repository": binding["repository"],
+                "pr_number": binding["pr_number"],
+                "worker_id": value.worker_id,
+                "phase": binding["phase"],
+                "source_sha": publication["from_sha"],
+                "target_sha": publication["to_sha"],
+                "action_type": "invalidate_old_sha",
+                "status": "applied",
+                "reason": "report commit changed HEAD; all prior advancement evidence is stale",
+                "created_at": now(),
+                "evidence_generation": digest,
+            })
+        else:
+            store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
+
+        await current(binding, resumed=True)
+        return {
+            "status": "applied",
+            "head_changed": publication["from_sha"] != publication["to_sha"],
+            **response(store.get(value.delivery_id)),
+        }
+
+
     @router.post("/release")
     async def release(value: OwnedClaim):
         owned(value)
@@ -295,8 +431,49 @@ def create_claim_router(store, github, settings):
         pr = await current(binding, resumed=True, projected_route=previous_target)
         comments = await github.list_comments(binding["repository"], binding["pr_number"])
         runs = await github.list_workflow_runs(binding["repository"], binding["source_sha"])
+        report_publication = checkpoint.get("report_publication") or {}
+        qa_head_changed = (
+            binding["phase"] == "phase:qa"
+            and report_publication.get("status") == "applied"
+            and report_publication.get("from_sha") != report_publication.get("to_sha")
+            and report_publication.get("to_sha") == binding["source_sha"]
+        )
         try:
-            target = verified_next_workflow(binding, comments, runs)
+            if qa_head_changed:
+                if successful_current_ci(
+                    runs, head_sha=binding["source_sha"], head_ref=binding["head_ref"]
+                ) is None:
+                    raise HandoffGateError("current-SHA ordinary CI has not passed")
+                target = {"agent:workreview", "phase:code-review", "status:todo"}
+                marker = "<!-- qa-postwrite-review:v1 -->"
+                required = {
+                    f"task_id={binding['task_id']}",
+                    f"source_sha={binding['source_sha']}",
+                    "next=NEW_INDEPENDENT_WORK_CODE_REVIEW",
+                }
+                marker_exists = any(
+                    (item.get("user") or {}).get("login")
+                    in {binding["repository"].split("/", 1)[0], "github-actions[bot]"}
+                    and marker in str(item.get("body") or "")
+                    and required <= set(str(item.get("body") or "").splitlines())
+                    for item in comments
+                )
+                if not marker_exists:
+                    owned(value)
+                    await github.comment(
+                        binding["repository"],
+                        binding["pr_number"],
+                        marker + "\n"
+                        + f"task_id={binding['task_id']}\n"
+                        + f"source_sha={binding['source_sha']}\n"
+                        + f"previous_sha={report_publication['from_sha']}\n"
+                        + "next=NEW_INDEPENDENT_WORK_CODE_REVIEW",
+                    )
+                    comments = await github.list_comments(
+                        binding["repository"], binding["pr_number"]
+                    )
+            else:
+                target = verified_next_workflow(binding, comments, runs)
         except HandoffGateError as exc:
             raise HTTPException(409, str(exc)) from exc
         before = labels(pr)
@@ -313,7 +490,8 @@ def create_claim_router(store, github, settings):
             "evidence_generation": hashlib.sha256(json.dumps(
                 [binding["source_sha"], comments, runs], sort_keys=True).encode()).hexdigest(),
         }
-        store.checkpoint(value.delivery_id, {"projection": audit}, value.lease_id)
+        checkpoint["projection"] = audit
+        store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
         store.record_recovery_audit(value.delivery_id, audit)
         live = await current(binding, resumed=True, projected_route=previous_target)
         if labels(live) != before:
@@ -328,7 +506,8 @@ def create_claim_router(store, github, settings):
         audit["status"] = "applied"
         audit["applied_at"] = now()
         store.record_recovery_audit(value.delivery_id, audit)
-        store.checkpoint(value.delivery_id, {"projection": audit}, value.lease_id)
+        checkpoint["projection"] = audit
+        store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
         if not store.finish(value.delivery_id, "done", lease_id=value.lease_id):
             raise HTTPException(409, "WORKER_LEASE_LOST")
         return {"status": "applied", "audit": audit}
