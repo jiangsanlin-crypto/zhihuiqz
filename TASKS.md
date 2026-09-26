@@ -1,5 +1,27 @@
 # TASKS
 
+## GH-ISSUE-18 — Synthetic handoff notification check
+
+Status: todo
+
+Scope:
+- run one coordination-only notification test with synthetic task and handoff
+  evidence;
+- verify automatic notification and dispatch through this requested sequence:
+  Codex product planning -> WorkBuddy prototype validation -> ChatGPT
+  implementation -> WorkBuddy QA -> Codex release review -> human review;
+- stop at human review; do not merge to main or deploy.
+
+Acceptance:
+- each next work body receives its notification and is dispatched automatically;
+- each handoff identifies GH-ISSUE-18, the sending and receiving work bodies,
+  the expected phase, successful status, empty blockers, and the current source
+  SHA;
+- the test uses no real candidate or payment data and no production
+  credentials;
+- completion evidence confirms all requested transitions and that the workflow
+  stopped for human review.
+
 ## JOB-001 — Multilingual recruitment matching
 
 Owner sequence:
