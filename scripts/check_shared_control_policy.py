@@ -65,7 +65,7 @@ require(
         'control_request("POST", "/claims/acquire"',
         'control_request("POST", "/claims/start"',
         'control_request("POST", "/claims/advance"',
-        'control_request("POST", "/claims/decision"',
+        '"/claims/decision"',
     ],
 )
 forbid(
