@@ -133,6 +133,20 @@ def test_push_during_claim_acquisition_cannot_return_a_live_lease(setup):
 def projection_setup(setup):
     client, store, pr, github = setup
     comments = [
+        {"id": -1, "created_at": "2026-09-25T00:10:00Z", "user": {"login": "owner"},
+         "body": "<!-- agent-handoff:v1 -->\n```json\n" + json.dumps({
+             "task_id": "GH-ISSUE-77", "from_agent": "workbuddy", "to_agent": "chatgpt",
+             "phase": "prototype_validation", "source_sha": SHA, "status": "success",
+             "blockers": [], "checks": [{"name": "prototype_gate", "status": "passed"}],
+             "pr_number": 78,
+         }) + "\n```"},
+        {"id": 0, "created_at": "2026-09-25T00:20:00Z", "user": {"login": "owner"},
+         "body": "<!-- agent-handoff:v1 -->\n```json\n" + json.dumps({
+             "task_id": "GH-ISSUE-77", "from_agent": "chatgpt", "to_agent": "workreview",
+             "phase": "implementation", "source_sha": SHA, "status": "success",
+             "blockers": [], "checks": [{"name": "implementation", "status": "passed"}],
+             "pr_number": 78,
+         }) + "\n```"},
         {"id": 1, "created_at": "2026-09-25T01:00:00Z", "user": {"login": "owner"},
          "body": "<!-- agent-claim:v1 -->\ntask_id=GH-ISSUE-77\n"
                  f"agent=workreview\nphase=code-review\nsource_sha={SHA}"},
@@ -191,10 +205,11 @@ def test_failed_ci_and_missing_independent_review_do_not_write(projection_setup)
     runs["workflow_runs"][0]["conclusion"] = "action_required"
     assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 409
     runs["workflow_runs"][0]["conclusion"] = "success"
-    old_claim = comments.pop(0)
+    claim_index = next(i for i,x in enumerate(comments) if "<!-- agent-claim:v1 -->" in x["body"])
+    old_claim = comments.pop(claim_index)
     assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 409
     assert writes == []
-    comments.insert(0, old_claim)
+    comments.insert(claim_index, old_claim)
     assert client.post("/claims/advance", json=owned(claim), headers=AUTH).status_code == 200
 
 
@@ -372,10 +387,11 @@ def test_start_qa_requires_live_independent_review_and_ci(projection_setup):
     runs['workflow_runs'][0]['conclusion'] = 'failure'
     assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 409
     runs['workflow_runs'][0]['conclusion'] = 'success'
-    review_claim = comments.pop(0)
+    claim_index = next(i for i,x in enumerate(comments) if "<!-- agent-claim:v1 -->" in x["body"])
+    review_claim = comments.pop(claim_index)
     assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 409
     assert writes == []
-    comments.insert(0, review_claim)
+    comments.insert(claim_index, review_claim)
     assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
 
 
