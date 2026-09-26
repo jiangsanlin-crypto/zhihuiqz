@@ -214,6 +214,36 @@ jobs:
           fi
           tail -c 12000 "$RUNNER_TEMP/qa-tests.txt"
           echo "status=passed" >> "$GITHUB_OUTPUT"
+      - name: Materialize trusted incoming handoff
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" --paginate             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/comments.json"
+          PYTHONPATH=_control python - "$RUNNER_TEMP/comments.json" "$RUNNER_TEMP/incoming-handoff.json" <<'PY'
+          import json,os,sys
+          from orchestrator.handoff_gate import validate_handoff
+
+          comments=json.load(open(sys.argv[1]))
+          phase=os.environ["PHASE"]
+          if phase=="phase:prototype":
+              from_agent,to_agent,handoff_phase="codex","workbuddy","product_planning"
+          elif phase=="phase:qa":
+              from_agent,to_agent,handoff_phase="workreview","workbuddy","code_review"
+          else:
+              raise SystemExit("unsupported validation phase")
+          payload=validate_handoff(
+              comments,
+              task_id=os.environ["TASK_ID"],
+              from_agent=from_agent,
+              to_agent=to_agent,
+              phase=handoff_phase,
+              source_sha=os.environ["SOURCE_SHA"],
+              trusted_logins={os.environ["REPOSITORY_OWNER"],"github-actions[bot]"},
+          )
+          json.dump(payload,open(sys.argv[2],"w"),ensure_ascii=False,indent=2)
+          PY
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+
       - name: Build validation prompt
         run: |
           set -euo pipefail
@@ -224,6 +254,12 @@ jobs:
             echo "PR #$PR_NUMBER"
             echo "Exact SHA: $SOURCE_SHA"
             echo "Phase: $PHASE"
+            echo
+            echo "The shared controller already validated the exact-SHA incoming handoff before this model run."
+            echo "Use the following trusted handoff as authoritative prior-stage evidence."
+            cat "$RUNNER_TEMP/incoming-handoff.json"
+            echo
+            echo "Do not block solely because direct GitHub API/network access is unavailable; the controller and this embedded handoff are the ownership/evidence boundary."
             if [ "$PHASE" = "phase:qa" ] && [ "${{ steps.pass.outputs.second }}" = "true" ]; then
               echo "This is the second, final-SHA QA pass after an independent Review."
               echo "Do not edit any repository file."
