@@ -563,15 +563,22 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Require reviewed controller revision
-        env:
-          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA || github.sha }}
-        run: |
-          [[ "$CONTROL_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
       - uses: actions/checkout@v4
         with:
-          ref: ${{ vars.CONTROL_BUILD_SHA || github.sha }}
+          ref: ${{ vars.CONTROL_BUILD_SHA || github.event.repository.default_branch }}
           persist-credentials: false
+      - name: Resolve reviewed controller revision
+        env:
+          CONTROL_BUILD_SHA_OVERRIDE: ${{ vars.CONTROL_BUILD_SHA }}
+        run: |
+          set -euo pipefail
+          RESOLVED_SHA="$(git rev-parse HEAD)"
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "$CONTROL_BUILD_SHA_OVERRIDE" ] && [ "$RESOLVED_SHA" != "$CONTROL_BUILD_SHA_OVERRIDE" ]; then
+            echo "Pinned controller revision did not resolve exactly."
+            exit 1
+          fi
+          echo "CONTROL_BUILD_SHA=$RESOLVED_SHA" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -579,7 +586,6 @@ jobs:
       - name: Delegate to shared controller without legacy fallback
         env:
           CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
-          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA || github.sha }}
           CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
           ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
           ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
