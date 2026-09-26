@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 REPO = os.environ["GITHUB_REPOSITORY"]
 TOKEN = os.environ["GH_TOKEN"]
 OWNER = os.environ["REPOSITORY_OWNER"]
+EXPECTED_CONTROL_SHA = os.environ.get("EXPECTED_CONTROL_SHA", "")
 API = "https://api.github.com"
 MARKER = "<!-- shared-control-request:v1 -->"
 TASK_RE = re.compile(r"<!-- agent-task-id:([A-Za-z0-9._:-]+) -->")
@@ -39,6 +40,21 @@ def gh(path: str):
     )
     response.raise_for_status()
     return response.json()
+
+
+def ensure_controller_identity() -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", EXPECTED_CONTROL_SHA):
+        raise ValueError("expected controller SHA is unavailable")
+    identity = control_request("GET", "/readyz")
+    if (
+        not isinstance(identity, dict)
+        or identity.get("repository") != REPO
+        or identity.get("build_sha") != EXPECTED_CONTROL_SHA
+        or identity.get("protocol") != "shared-claims:v1"
+        or identity.get("writes_enabled") is not True
+        or identity.get("agents_enabled") is not False
+    ):
+        raise RuntimeError("controller identity does not match trusted default branch")
 
 
 def parse_request(text: str) -> dict:
@@ -179,6 +195,7 @@ def main():
     if args.author != OWNER:
         raise SystemExit("only repository owner control requests are accepted")
     try:
+        ensure_controller_identity()
         request = parse_request(Path(args.comment_file).read_text())
         result = execute(args.pr_number, request)
     except Exception as exc:
