@@ -463,7 +463,7 @@ jobs:
           exit 1
 
   shared-control:
-    if: vars.CONTROL_WORKFLOW_MODE == 'shared'
+    if: (vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -471,12 +471,12 @@ jobs:
     steps:
       - name: Require reviewed controller revision
         env:
-          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA }}
+          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA || github.sha }}
         run: |
           [[ "$CONTROL_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
       - uses: actions/checkout@v4
         with:
-          ref: ${{ vars.CONTROL_BUILD_SHA }}
+          ref: ${{ vars.CONTROL_BUILD_SHA || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
@@ -485,6 +485,12 @@ jobs:
       - name: Delegate to shared controller without legacy fallback
         env:
           CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
-          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA }}
+          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA || github.sha }}
           CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+          ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
         run: python scripts/shared_workflow_entry.py --source watchdog
