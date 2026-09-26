@@ -66,9 +66,12 @@ async def scan_once(store, github, repository):
     return queued
 
 
-async def discovery_loop(stop, store, github, repository, interval=60):
+async def discovery_loop(stop, store, github, repository, interval=60, *, native_queue=True):
+    actions = (scan_issues, recover_external_once, recover_blockers_once)
+    if native_queue:
+        actions += (scan_once,)
     while not stop.is_set():
-        for action in (scan_issues, recover_external_once, recover_blockers_once, scan_once):
+        for action in actions:
             try:
                 await action(store, github, repository)
             except Exception:

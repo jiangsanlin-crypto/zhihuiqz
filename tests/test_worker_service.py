@@ -31,3 +31,18 @@ def test_http_200_with_wrong_service_is_not_success():
     result=asyncio.run(check_service('https://service.test','test-only',transport=httpx.MockTransport(
         lambda request:httpx.Response(200,json={'ok':True}))))
     assert result['status']=='BLOCKED'
+
+
+@pytest.mark.parametrize('change',['none','sha','repository','agent','protocol'])
+def test_preflight_verifies_reviewed_build_and_repository(change):
+    identity=dict(protocol='shared-claims:v1',agents_enabled=False,build_sha='a'*40,repository='owner/repo')
+    if change=='sha': identity['build_sha']='b'*40
+    elif change=='repository': identity['repository']='other/repo'
+    elif change=='agent': identity['agents_enabled']=True
+    elif change=='protocol': identity['protocol']='legacy'
+    def transport(request):
+        if request.url.path.endswith('readyz'): return httpx.Response(200,json=identity)
+        return httpx.Response(200,json={'candidates':[],'issues':[]})
+    result=asyncio.run(check_service('https://service.test','test-only',transport=httpx.MockTransport(transport),
+        expected_sha='a'*40,expected_repository='owner/repo'))
+    assert result['status']==('PASS' if change=='none' else 'BLOCKED')

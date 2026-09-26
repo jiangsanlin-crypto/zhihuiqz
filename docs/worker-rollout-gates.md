@@ -64,14 +64,18 @@ Before replacing either enabled worker's prompt, run the checked-in
 approved HTTPS URL and a dedicated claim-service credential file:
 
 ```sh
-python scripts/check_worker_service.py --url https://CLAIM_SERVICE --token-file /secure/claim-service-token
+python scripts/check_worker_service.py --url https://CLAIM_SERVICE --token-file /secure/claim-service-token --expected-sha REVIEWED_SHA --repository jiangsanlin-crypto/zhihuiqz
 ```
 
 The URL/path are placeholders, not a discovered server. The program only GETs
-`/claims/ready` and `/intake/issues`; it does not acquire, change labels, execute a
+`/readyz`, `/claims/ready` and `/intake/issues`; it does not acquire, change labels, execute a
 planner, dispatch Actions or use an OpenAI credential. It rejects redirects,
 unauthorized/missing endpoints and malformed responses. Output omits credentials
 and task contents. A PASS proves interface/auth reachability only; lease/content
 writes and E2E still need the authorized acceptance above. Do not replace the
 current workers until this passes and their execution host can heartbeat/use the
 shared client. A text prompt alone is not a deployed worker integration.
+
+The isolated service factory and backup/rollback preparation are documented in
+[control-service-predeployment.md](control-service-predeployment.md). No service
+was deployed and no live worker configuration changed during preparation.

@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
@@ -30,6 +31,7 @@ class StateStore:
         self.lock = threading.Lock()
         self._init()
 
+    @contextmanager
     def conn(self):
         connection = sqlite3.connect(
             self.path,
@@ -37,7 +39,11 @@ class StateStore:
             isolation_level=None,
         )
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _init(self) -> None:
         with self.conn() as connection:
