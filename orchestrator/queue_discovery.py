@@ -9,6 +9,7 @@ import logging
 import re
 
 from .task_router import TASK_MARKER, label_names
+from .external_recovery import recover_external_once
 
 ROUTES = {
     'phase:implementation': 'agent:chatgpt',
@@ -63,6 +64,7 @@ async def scan_once(store, github, repository):
 async def discovery_loop(stop, store, github, repository, interval=60):
     while not stop.is_set():
         try:
+            await recover_external_once(store, github, repository)
             await scan_once(store, github, repository)
         except Exception:
             # Do not log credentials, headers, payloads or exception text.

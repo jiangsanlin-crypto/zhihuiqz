@@ -159,8 +159,9 @@ Do not silently fall back to direct label writes after adopting this protocol.
 A phase that commits and changes HEAD cannot advance under its old lease. The
 client stops on that change. A verified publication/new-SHA recovery protocol
 for external implementation/repair workers is still required before declaring
-those workers fully migrated. Expired external RUNNING recovery and arbitrary
-machine-blocker recovery are also not supplied by this client.
+those workers fully migrated. The client does not itself recover expired RUNNING tasks; the service scanner
+now handles tracked same-SHA expired claims as described below. Arbitrary
+machine-blocker recovery remains incomplete.
 
 Native workers now persist a `starting` checkpoint before projecting RUNNING.
 After a crash on either side of that write, the same durable event is reclaimed
@@ -168,3 +169,27 @@ under a new lease and revalidates the live branch/state and phase evidence.
 All returned agent results are saved, including failures or results with no file
 changes, so a comment failure does not rerun completed work. A crash before an
 adapter returns may still require adapter-level idempotency on replay.
+
+
+## Expired external lease recovery
+
+Each discovery cycle also checks up to 100 expired external leases. A database
+CAS gives one reconciler a fresh lease and changes ownership so acquisition
+retries from the old worker cannot adopt the recovery lease. The controller
+checks the live branch, SHA, task and canonical state, and shares the operation
+and per-PR projection locks. It never starts an agent.
+
+- With no trusted current-SHA phase result, a tracked RUNNING task returns to
+  its phase's READY state, enabling a new worker request to claim it.
+- With a durable result, the controller validates fresh CI/handoff/review/policy
+  gates and applies the verified next phase. It does not rerun completed work.
+- If the result does not authorize advancement, it retains the state, audits
+  waiting_evidence and reevaluates after the recovery lease expires. A failed
+  result is not automatically retried as if it had succeeded.
+- Planned/applied recovery records let a lost label-write response resume without
+  repeating the PUT. HEAD changes and human wait stop old-phase recovery.
+
+Unknown legacy RUNNING tasks without service start/projection evidence are not
+reclaimed. Global blocker routing, cross-SHA publication recovery and removal of
+nonparticipating label writers remain separate acceptance gates. GitHub label
+PUT still has no CAS against those writers.

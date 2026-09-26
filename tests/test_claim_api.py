@@ -424,3 +424,125 @@ def test_account_consumer_end_to_end_with_real_claim_router(projection_setup):
     assert len(writes) == 2  # READY -> RUNNING -> verified QA READY.
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT count(*) FROM events WHERE status='running'").fetchone()[0] == 0
+
+
+def expire_claim(store, delivery):
+    with sqlite3.connect(store.path) as connection:
+        connection.execute('UPDATE events SET lease_expires_at=? WHERE delivery_id=?',
+                           ('2000-01-01T00:00:00+00:00', delivery))
+
+
+def test_external_expiry_without_result_requeues_and_fences_old_worker(projection_setup):
+    import asyncio
+    from orchestrator.external_recovery import recover_external_once
+    client, store, pr, github, comments, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+    comments.clear()
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
+    expire_claim(store, claim['delivery_id'])
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 1
+    assert 'status:todo' in pr['labels']
+    assert client.post('/claims/heartbeat', json=owned(claim), headers=AUTH).status_code == 409
+    assert client.post('/claims/acquire', json=payload(), headers=AUTH).status_code == 409
+    replacement = client.post('/claims/acquire', json=dict(payload(), request_id='new'), headers=AUTH)
+    assert replacement.status_code == 200
+    assert len(writes) == 2
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
+
+
+def test_external_expiry_uses_durable_pass_without_rerunning_worker(projection_setup):
+    import asyncio
+    from orchestrator.external_recovery import recover_external_once
+    client, store, pr, github, _, runs, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    client.post('/claims/start', json=owned(claim), headers=AUTH)
+    expire_claim(store, claim['delivery_id'])
+    runs['workflow_runs'][0]['conclusion'] = 'action_required'
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
+    assert 'status:running' in pr['labels']  # Result exists: no duplicate execution.
+    assert client.post('/claims/acquire', json=payload(), headers=AUTH).status_code == 409
+    runs['workflow_runs'][0]['conclusion'] = 'success'
+    expire_claim(store, claim['delivery_id'])
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 1
+    assert pr['labels'] == ['agent:workbuddy', 'phase:qa', 'status:todo']
+    assert len(writes) == 2
+
+
+@pytest.mark.parametrize('change', ['head', 'human', 'untracked_running'])
+def test_external_recovery_does_not_guess_ownership_or_override_new_state(projection_setup, change):
+    import asyncio
+    from orchestrator.external_recovery import recover_external_once
+    client, store, pr, github, _, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    if change == 'head': pr['head']['sha'] = 'b' * 40
+    elif change == 'human': pr['labels'] = ['status:review', 'approval:production-required']
+    else: pr['labels'][-1] = 'status:running'
+    before = copy.deepcopy(pr)
+    expire_claim(store, claim['delivery_id'])
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
+    assert pr == before
+    assert writes == []
+
+
+def test_external_recovery_label_response_loss_is_replay_safe(projection_setup):
+    import asyncio
+    from orchestrator.external_recovery import recover_external_once
+    client, store, pr, github, comments, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    client.post('/claims/start', json=owned(claim), headers=AUTH)
+    comments.clear()
+    expire_claim(store, claim['delivery_id'])
+    original = github.set_labels
+    async def lost(*args):
+        await original(*args)
+        raise RuntimeError('response lost')
+    github.set_labels = lost
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
+    assert 'status:todo' in pr['labels']
+    assert store.get(claim['delivery_id'])['status'] == 'running'
+    github.set_labels = original
+    expire_claim(store, claim['delivery_id'])
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 1
+    assert len(writes) == 2
+
+
+def test_external_recovery_cas_only_one_reconciler_can_take_lease(projection_setup):
+    client, store, _, _, _, _, _ = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    expire_claim(store, claim['delivery_id'])
+    assert store.reclaim_external(claim['delivery_id'], claim['lease_id']) is not None
+    assert store.reclaim_external(claim['delivery_id'], claim['lease_id']) is None
+    assert client.post('/claims/acquire', json=payload(), headers=AUTH).status_code == 409
+
+
+def test_external_durable_failure_never_requeues_or_advances(projection_setup):
+    import asyncio
+    from orchestrator.external_recovery import recover_external_once
+    client, store, pr, github, comments, _, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    client.post('/claims/start', json=owned(claim), headers=AUTH)
+    comments[-1]['body'] = comments[-1]['body'].replace('"status": "success"', '"status": "failed"')
+    expire_claim(store, claim['delivery_id'])
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
+    assert len(writes) == 1
+    assert 'status:running' in pr['labels']
+    with sqlite3.connect(store.path) as connection:
+        audits = [json.loads(x[0]) for x in connection.execute('SELECT payload_json FROM recovery_audit')]
+    assert any(a['status'] == 'waiting_evidence' for a in audits)
+
+
+def test_new_human_wait_during_external_recovery_is_preserved(projection_setup):
+    import asyncio
+    from orchestrator.external_recovery import recover_external_once
+    client, store, pr, github, _, runs, writes = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    client.post('/claims/start', json=owned(claim), headers=AUTH)
+    expire_claim(store, claim['delivery_id'])
+    async def runs_with_human_wait(*args):
+        pr['labels'] = ['status:review', 'approval:production-required']
+        return runs
+    github.list_workflow_runs = runs_with_human_wait
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
+    assert len(writes) == 1
+    assert pr['labels'] == ['status:review', 'approval:production-required']

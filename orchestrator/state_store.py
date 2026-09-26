@@ -352,6 +352,37 @@ class StateStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def expired_external_claims(self) -> list[dict]:
+        with self.lock, self.conn() as connection:
+            rows = connection.execute(
+                """SELECT * FROM events WHERE event_name='external_claim'
+                   AND status='running' AND lease_expires_at<=?
+                   ORDER BY lease_expires_at LIMIT 100""", (now(),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def reclaim_external(self, delivery_id: str, old_lease_id: str) -> dict | None:
+        """CAS an expired external lease for reconciliation, never execution."""
+        lease_id = str(uuid.uuid4())
+        timestamp = now()
+        expiry = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            old = connection.execute("SELECT payload_json FROM events WHERE delivery_id=?",
+                                     (delivery_id,)).fetchone()
+            if old is None:
+                return None
+            payload = json.loads(old["payload_json"])
+            payload["worker_id"] = "lease-reconciler"
+            cursor = connection.execute(
+                """UPDATE events SET lease_id=?, lease_expires_at=?, updated_at=?, payload_json=?
+                   WHERE delivery_id=? AND event_name='external_claim'
+                     AND status='running' AND lease_id=? AND lease_expires_at<=?""",
+                (lease_id, expiry, timestamp, json.dumps(payload), delivery_id, old_lease_id, timestamp))
+            connection.commit()
+            if cursor.rowcount != 1:
+                return None
+        return self.get(delivery_id)
+
     def record_recovery_audit(self, delivery_id: str, audit: dict) -> None:
         identity = [delivery_id, audit["lease_id"], audit["evidence_generation"], audit["status"]]
         event_id = hashlib.sha256(json.dumps(identity).encode()).hexdigest()

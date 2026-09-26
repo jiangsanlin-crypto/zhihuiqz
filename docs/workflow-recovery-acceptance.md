@@ -78,8 +78,9 @@ Implemented and wired into the service:
   workers and verified Review -> QA transition. GitHub and agents are mocked.
 
 Still not implemented/accepted globally:
-- Issue ingestion into a planned PR, all machine-blocker lifecycles and external
-  stale-RUNNING recovery; a PR scanner does not cover these.
+- Issue ingestion into a planned PR and all machine-blocker lifecycles; a PR
+  scanner does not cover these. Legacy RUNNING tasks without authoritative lease
+  evidence are not automatically adopted.
 - External worker publication across HEAD changes and adoption by actual account
   schedules/Actions. No account model or live client is started by these tests.
 - A sole state writer across existing Actions/native workers/account workers.
@@ -87,3 +88,10 @@ Still not implemented/accepted globally:
 
 The branch can be reviewed and tested without modifying workflow YAML or
 starting production. None of these tests authorizes rollout, merge or deployment.
+
+Tracked external claims now have expiry CAS/recovery in the scanner. Without a
+durable current-SHA result they requeue safely; with a result they reevaluate
+advance gates without rerunning work. Tests cover old-worker fencing, one recovery
+owner, response loss, pending/failed evidence, HEAD movement and human wait. This
+requires workers to have adopted the shared service; it does not recover legacy
+workers or claim that every blocker has an automatic resolution policy.
