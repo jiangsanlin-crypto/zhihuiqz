@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .claim_api import create_claim_router
+from .control_api import create_control_router
 from .github_client import GitHubClient
 from .issue_intake import create_intake_router
 from .queue_discovery import discovery_loop
@@ -69,6 +70,7 @@ def create_app(*, store=None, github=None, settings=None, writes_enabled=None, b
                 'writes_enabled': writes_enabled, 'agents_enabled': False,
                 'repository': settings.github_repository, 'protocol': 'shared-claims:v1'}
 
+    app.include_router(create_control_router(store, github, settings, build_sha))
     app.include_router(create_claim_router(store, github, settings))
     app.include_router(create_intake_router(store, github, settings))
     return app

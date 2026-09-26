@@ -30,7 +30,7 @@ async def recover_publications(store, github, repository):
                 reason='PUBLICATION_ASSOCIATION_AMBIGUOUS'
             elif len(associated)==1:
                 number=associated[0]['number']
-                await verify_publication(store,github,row,number)
+                await verify_publication(store,github,row,number,allow_descendant=True)
                 status='applied';reason='VERIFIED_ABANDONED_CONFIRMATION';recovered+=1
         except HTTPException as exc:
             # Validator reasons are enumerated and contain no response bodies.

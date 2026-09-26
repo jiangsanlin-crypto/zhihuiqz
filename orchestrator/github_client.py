@@ -339,3 +339,23 @@ class GitHubClient:
         response = await self._request('GET', f'{self.base}/repos/{repo}')
         response.raise_for_status()
         return response.json()['default_branch']
+
+    async def list_branch_prs(self, repo: str, head_ref: str) -> list[dict]:
+        results=[];page=1
+        while True:
+            response=await self._request('GET',f'{self.base}/repos/{repo}/pulls',
+                params={'state':'all','head':repo.split('/')[0]+':'+head_ref,'per_page':100,'page':page})
+            response.raise_for_status();batch=response.json();results.extend(batch)
+            if len(batch)<100:return results
+            page+=1
+
+    async def get_branch_sha(self, repo: str, head_ref: str) -> str | None:
+        response=await self._request('GET',f'{self.base}/repos/{repo}/git/ref/heads/{quote(head_ref,safe="")}')
+        if response.status_code==404:return None
+        response.raise_for_status()
+        return response.json()['object']['sha']
+
+    async def compare_commits(self, repo: str, base_sha: str, head_sha: str) -> dict:
+        response=await self._request('GET',f'{self.base}/repos/{repo}/compare/{base_sha}...{head_sha}')
+        response.raise_for_status()
+        return response.json()

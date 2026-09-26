@@ -17,6 +17,10 @@ class PreparePlan(IntakeClaim):
     body_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
+class ResumePlan(IntakeClaim):
+    publication_id: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
 class ConfirmPlan(IntakeClaim):
     publication_id: str = Field(pattern=r'^[0-9a-f]{64}$')
     pr_number: int = Field(gt=0)
@@ -63,6 +67,65 @@ def install_publication_routes(router, store, github, repository):
                        (repo,value.issue_number,identity,value.generation,owner(value),encoded,'prepared',None,now(),now()))
         return {'publication_id':identity,'status':'prepared'}
 
+    @router.get('/publications')
+    async def publications():
+        with store.conn() as db:
+            rows=db.execute("SELECT publication_id,intent_json,status,pr_number FROM planning_publications WHERE repository=?",(repository(),)).fetchall()
+        return {'publications':[dict(publication_id=row['publication_id'],intent=json.loads(row['intent_json']),
+                                    status=row['status'],pr_number=row['pr_number']) for row in rows]}
+
+    @router.post('/resume-publication')
+    async def resume(value: ResumePlan):
+        repo=repository()
+        with store.conn() as db:
+            initial=db.execute('SELECT * FROM planning_publications WHERE repository=? AND issue_number=?',
+                (repo,value.issue_number)).fetchone()
+        if not initial or initial['publication_id']!=value.publication_id or initial['status']!='prepared':
+            raise HTTPException(409,'PUBLICATION_NOT_PENDING')
+        if initial['generation']!=value.generation:raise HTTPException(409,'ISSUE_CHANGED')
+        intent=json.loads(initial['intent_json'])
+        await scan_issues(store,github,repo)
+        # Include closed PRs and unmatched bodies. A closed publication is an
+        # owner decision, not proof that a second PR should be created.
+        if await github.list_branch_prs(repo,intent['head_ref']):
+            raise HTTPException(409,'PUBLICATION_HISTORY_REQUIRES_RECONCILIATION')
+        actual=await github.get_branch_sha(repo,intent['head_ref'])
+        if actual is not None and actual!=intent['head_sha']:
+            raise HTTPException(409,'PUBLICATION_BRANCH_CONFLICT')
+        default=await github.get_default_branch(repo)
+        if intent['head_ref'] in {'main',default,intent['base_ref']}:
+            raise HTTPException(409,'PROTECTED_PUBLICATION_BRANCH')
+        latest=next((item for item in await github.list_open_issues(repo) if item['number']==value.issue_number),None)
+        if not latest or generation(latest)!=value.generation:
+            raise HTTPException(409,'ISSUE_CHANGED')
+        with store.lock,store.conn() as db:
+            db.execute('BEGIN IMMEDIATE')
+            live=db.execute('SELECT * FROM planning_publications WHERE publication_id=?',(value.publication_id,)).fetchone()
+            lease=db.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',(repo,value.issue_number)).fetchone()
+            if not live or live['status']!='prepared' or live['owner_hash']!=initial['owner_hash']:
+                raise HTTPException(409,'PUBLICATION_OWNERSHIP_CHANGED')
+            if not lease or lease['generation']!=value.generation or lease['status'] not in {'awaiting_planner','leased'}:
+                raise HTTPException(409,'ISSUE_NOT_READY')
+            if lease['status']=='leased' and lease['expires_at']>now():
+                if lease['worker_id']!=value.worker_id or lease['lease_id']!=value.lease_id:
+                    raise HTTPException(409,'ANOTHER_PLANNER_OWNS_LEASE')
+            elif lease['lease_id']==value.lease_id:
+                raise HTTPException(409,'PLANNER_LEASE_EXPIRED')
+            from datetime import datetime,timedelta,timezone
+            from .state_store import PLANNER_LEASE_SECONDS
+            expiry=(datetime.now(timezone.utc)+timedelta(seconds=PLANNER_LEASE_SECONDS)).isoformat()
+            db.execute("UPDATE planning_publications SET owner_hash=?,updated_at=? WHERE publication_id=?",
+                (owner(value),now(),value.publication_id))
+            db.execute("""UPDATE issue_intake SET status='leased',worker_id=?,lease_id=?,expires_at=?,updated_at=?
+                WHERE repository=? AND issue_number=?""",(value.worker_id,value.lease_id,expiry,now(),repo,value.issue_number))
+        store.record_recovery_audit('planning:'+value.publication_id,dict(rule_id='PLANNING_RESUME',
+            repository=repo,issue_number=value.issue_number,lease_id=value.lease_id,status='applied',
+            action_type='resume_same_intent',reason='same generation and branch; no historical publication',
+            evidence_generation=value.publication_id,created_at=now()))
+        return {'publication_id':value.publication_id,'status':'prepared','intent':intent,
+                'expires_at':expiry,'new_branch_allowed':False,'force_push_allowed':False,
+                'declared_branch_creation_allowed':actual is None}
+
     @router.post('/confirm-publication')
     async def confirm(value: ConfirmPlan):
         repo=repository()
@@ -75,7 +138,7 @@ def install_publication_routes(router, store, github, repository):
         return await verify_publication(store, github, dict(row), value.pr_number)
 
 
-async def verify_publication(store, github, row, pr_number):
+async def verify_publication(store, github, row, pr_number, *, allow_descendant=False):
     """Observe immutable publication evidence; performs no GitHub mutation."""
     repo=row['repository']
     intent=json.loads(row['intent_json'])
@@ -91,8 +154,15 @@ async def verify_publication(store, github, row, pr_number):
     head,base=pr.get('head') or {},pr.get('base') or {}
     default=await github.get_default_branch(repo)
     body=pr.get('body') or ''
+    head_matches=head.get('sha')==intent['head_sha']
+    if (not head_matches and allow_descendant
+        and (head.get('repo') or {}).get('full_name')==repo):
+        ancestry=await github.compare_commits(repo,intent['head_sha'],head.get('sha'))
+        head_matches=(ancestry.get('status')=='ahead'
+            and (ancestry.get('base_commit') or {}).get('sha')==intent['head_sha']
+            and (ancestry.get('merge_base_commit') or {}).get('sha')==intent['head_sha'])
     if (pr.get('state')!='open' or pr.get('merged_at')
-        or head.get('ref')!=intent['head_ref'] or head.get('sha')!=intent['head_sha']
+        or head.get('ref')!=intent['head_ref'] or not head_matches
         or (head.get('repo') or {}).get('full_name')!=repo
         or base.get('ref')!=intent['base_ref'] or head.get('ref') in {'main',default,base.get('ref')}
         or set(TASK_MARKER.findall(body))!={f"GH-ISSUE-{row['issue_number']}"}

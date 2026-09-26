@@ -37,16 +37,16 @@ whole workflow unchanged: it contains its own claims/labels/dispatch behavior.
 | --- | --- | --- |
 | Account Chat Sol GitHub Worker | Run implementation callback through run_one; remove direct label claims | Adapter ready; live task unchanged |
 | Work Review Consumer v2 | Run independent review/repair callbacks under owned client | Adapter ready; live task unchanged |
-| openai-validator.yml | Extract validation callback; remove direct claim/phase label writes; retain native path for report commits | Workflow unchanged |
-| handoff-reconciler.yml | Delegate projection to the service; never write labels independently | Workflow unchanged |
-| agent-watchdog.yml | Consume recovery observations; no independent label replacement | Workflow unchanged |
-| codex-task.yml | Integrate Issue reservation and confirmation; checkpoint immutable publication receipt | Workflow unchanged |
+| openai-validator.yml | Extract validation callback; remove direct claim/phase label writes; retain native path for report commits | Shared-mode bridge implemented; activation deferred |
+| handoff-reconciler.yml | Delegate projection to the service; never write labels independently | Shared-mode bridge implemented; activation deferred |
+| agent-watchdog.yml | Consume recovery observations; no independent label replacement | Shared-mode bridge implemented; activation deferred |
+| codex-task.yml | Integrate Issue reservation and confirmation; checkpoint immutable publication receipt | Shared-mode bridge implemented; activation deferred |
 
-The existing instruction forbids modifying `.github/workflows`. This change
-therefore supplies tested integration code and the concrete migration boundary;
-it does not pretend the independent Actions callers have been switched. Do not
-activate both legacy and service state writers. Final cutover needs a separately
-reviewed workflow patch and host configuration under the owner's authorization.
+The owner subsequently authorized the four workflow edits on PR #83. Their
+shared-mode bridge is now implemented, while actual activation remains deferred.
+See [shared-workflow-cutover.md](shared-workflow-cutover.md) for mode isolation,
+required host callbacks and same-intent planning takeover. This does not mean
+live workers or repository variables were switched.
 
 ## Abandoned planning confirmation recovery
 

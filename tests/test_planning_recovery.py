@@ -41,3 +41,19 @@ def test_uncertain_or_changed_publication_never_republishes(publication,change):
     # Same observation is audited once across repeated scans.
     assert recover(publication)==0
     with data[0].conn() as db:assert db.execute('SELECT COUNT(*) FROM recovery_audit').fetchone()[0]==1
+
+@pytest.mark.parametrize('ancestor',[True,False])
+def test_legitimate_descendant_resolves_association_without_advancing_old_evidence(publication,ancestor):
+    publish(publication);expire(publication)
+    pr=publication[0][2][0];pr['head']['sha']='b'*40
+    before=pr['labels'][:]
+    async def compare(*args):
+        return dict(status='ahead' if ancestor else 'diverged',base_commit={'sha':'a'*40},
+                    merge_base_commit={'sha':'a'*40 if ancestor else 'c'*40})
+    publication[0][3].compare_commits=compare
+    assert recover(publication)==int(ancestor)
+    assert pr['labels']==before and pr['head']['sha']=='b'*40
+    with publication[0][0].conn() as db:
+        row=db.execute('SELECT * FROM planning_publications').fetchone()
+        assert row['status']==('applied' if ancestor else 'prepared')
+        assert json.loads(row['intent_json'])['head_sha']=='a'*40

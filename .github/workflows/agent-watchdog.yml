@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   watchdog:
+    if: vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'legacy'
     runs-on: ubuntu-latest
     steps:
       - name: Ensure watchdog policy labels exist
@@ -451,3 +452,39 @@ jobs:
               fi
             fi
           done < "$RUNNER_TEMP/timeout-blocked.txt"
+ 
+  invalid-control-mode:
+    if: vars.CONTROL_WORKFLOW_MODE != '' && vars.CONTROL_WORKFLOW_MODE != 'legacy' && vars.CONTROL_WORKFLOW_MODE != 'shared'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          echo "Invalid CONTROL_WORKFLOW_MODE; no writer was started."
+          exit 1
+
+  shared-control:
+    if: vars.CONTROL_WORKFLOW_MODE == 'shared'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Require reviewed controller revision
+        env:
+          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA }}
+        run: |
+          [[ "$CONTROL_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.CONTROL_BUILD_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Delegate to shared controller without legacy fallback
+        env:
+          CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA }}
+          CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+        run: python scripts/shared_workflow_entry.py --source watchdog

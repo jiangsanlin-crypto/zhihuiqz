@@ -89,3 +89,19 @@ fully present.
 
 On blocked/failed review, add `status:blocked`, leave the PR open, explain the
 blocker precisely and do not advance to QA.
+
+## Shared-control migration contract
+
+When the operator explicitly enables shared-control mode, use the approved
+host adapter and dedicated control-service authentication. Never claim by editing
+labels/comments or fall back to the legacy writer if the service is unavailable.
+The server's acquire/start/heartbeat/advance interfaces own workflow-state writes.
+Keep the exact repository/PR/SHA binding, stop on lost ownership, and publish
+trusted handoff evidence before requesting advancement. Preserve Human Approval.
+A successful controller wake-up is not proof of phase completion.
+
+Use orchestrator.phase_host with a persistent retry journal and the existing authorized cooperative executor. The callback must not run a nested legacy workflow or dispatch an agent chain. Head-changing implementation/repair uses the owned publication protocol. External prototype/QA callbacks are evidence-only; QA report commits use the native shared-writer path.
+
+These are repository-side integration instructions, not an instruction to deploy
+or change live task configuration. See docs/shared-workflow-cutover.md. Release,
+merge, deployment and retired API implementation remain outside this migration.

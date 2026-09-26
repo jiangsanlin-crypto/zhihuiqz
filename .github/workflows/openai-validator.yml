@@ -30,11 +30,9 @@ permissions:
 
 jobs:
   validate:
-    if: >
-      github.event_name != 'pull_request' ||
-      (github.event.label.name == 'status:todo' &&
-       contains(github.event.pull_request.labels.*.name, 'agent:workbuddy') &&
-       contains(github.event.pull_request.labels.*.name, 'phase:qa'))
+    if: >-
+      (vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'legacy') &&
+      (github.event_name != 'pull_request' || (github.event.label.name == 'status:todo' && contains(github.event.pull_request.labels.*.name, 'agent:workbuddy') && contains(github.event.pull_request.labels.*.name, 'phase:qa')))
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -614,3 +612,39 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --remove-label "recovery:technical"             --add-label "status:blocked" || true
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "❌ OpenAI validation gate blocked phase $PHASE. This is a gate/content blocker, not an automatic technical retry."
           exit 1
+ 
+  invalid-control-mode:
+    if: vars.CONTROL_WORKFLOW_MODE != '' && vars.CONTROL_WORKFLOW_MODE != 'legacy' && vars.CONTROL_WORKFLOW_MODE != 'shared'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          echo "Invalid CONTROL_WORKFLOW_MODE; no writer was started."
+          exit 1
+
+  shared-control:
+    if: vars.CONTROL_WORKFLOW_MODE == 'shared'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Require reviewed controller revision
+        env:
+          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA }}
+        run: |
+          [[ "$CONTROL_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.CONTROL_BUILD_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Delegate to shared controller without legacy fallback
+        env:
+          CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+          CONTROL_BUILD_SHA: ${{ vars.CONTROL_BUILD_SHA }}
+          CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+        run: python scripts/shared_workflow_entry.py --source validator

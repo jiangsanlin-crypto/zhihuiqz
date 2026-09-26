@@ -77,6 +77,9 @@ class StateStore:
                   payload_json TEXT NOT NULL,
                   created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS control_requests(
+                    repository TEXT,delivery_id TEXT,source TEXT,status TEXT,expires_at TEXT,result_json TEXT,
+                    PRIMARY KEY(repository,delivery_id));
                 CREATE TABLE IF NOT EXISTS timeout_observations(
                     operation_key TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT,
                     action TEXT, active INTEGER, payload_json TEXT);
