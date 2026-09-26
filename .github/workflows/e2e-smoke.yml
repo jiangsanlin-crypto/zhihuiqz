@@ -47,10 +47,19 @@ jobs:
         id: issue
         run: |
           set -euo pipefail
-          ISSUE_URL="$(gh issue create             --repo "$GITHUB_REPOSITORY"             --title "[E2E] shared exact-SHA automation ${{ github.run_id }}"             --body "<!-- synthetic-e2e:true -->
-terminal_policy: owner_approval_required
+          cat > "$RUNNER_TEMP/e2e-issue.md" <<'EOF'
+          <!-- synthetic-e2e:true -->
+          terminal_policy: owner_approval_required
 
-Clean full-auto acceptance task. Implementation acceptance: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK. Do not use production data. The machine chain must stop at Human Approval; never merge or deploy this synthetic task.")"
+          Clean full-auto acceptance task.
+          Implementation acceptance: create tests/agent_e2e_marker.txt with exact content AGENT_E2E_OK.
+          Do not use production data.
+          The machine chain must stop at Human Approval; never merge or deploy this synthetic task.
+          EOF
+          ISSUE_URL="$(gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "[E2E] shared exact-SHA automation ${{ github.run_id }}" \
+            --body-file "$RUNNER_TEMP/e2e-issue.md")"
           ISSUE_NUMBER="${ISSUE_URL##*/}"
           echo "number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
           echo "task_id=GH-ISSUE-$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
