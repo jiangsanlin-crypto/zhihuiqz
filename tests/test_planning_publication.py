@@ -7,8 +7,20 @@ from test_issue_intake import intake, claim, AUTH
 def publication(intake):
     store,issues,prs,github,client=intake
     async def default(*args): return 'main'
+    async def branch_sha(*args): return '0'*40
+    async def commit(*args): return {
+        'sha':'a'*40,'parents':[{'sha':'0'*40}],
+        'files':[{'filename':'docs/PRD.md'}],
+    }
     async def snapshot(*args): return copy.deepcopy(prs[0])
-    github.get_default_branch=default;github.get_pr_snapshot=snapshot
+    async def set_labels(repo,number,labels):
+        target=next(p for p in prs if p['number']==number)
+        target['labels']=list(labels)
+    github.get_default_branch=default
+    github.get_branch_sha=branch_sha
+    github.get_publication_commit=commit
+    github.get_pr_snapshot=snapshot
+    github.set_labels=set_labels
     value=claim(intake)
     assert client.post('/intake/acquire',json=value,headers=AUTH).status_code==200
     body='<!-- agent-task-id:GH-ISSUE-80 -->\nCloses #80\nPlan: add queue discovery.'
