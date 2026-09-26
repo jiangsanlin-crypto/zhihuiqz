@@ -361,10 +361,14 @@ def create_claim_router(store, github, settings):
             target = {binding["agent"], binding["phase"], "status:todo"}
             reason = "worker requested bounded same-phase retry"
         elif value.decision == "repair":
-            if binding["phase"] != "phase:code-review" or binding["agent"] != "agent:workreview":
+            if binding["phase"] == "phase:code-review" and binding["agent"] == "agent:workreview":
+                target = {"agent:workreview", "phase:escalation-repair", "status:todo"}
+                reason = "independent review found a repository-fixable defect"
+            elif binding["phase"] == "phase:implementation" and binding["agent"] == "agent:chatgpt":
+                target = {"agent:workreview", "phase:escalation-repair", "status:todo"}
+                reason = "implementation exhausted bounded self-repair and escalated technical repair"
+            else:
                 raise HTTPException(409, "REPAIR_DECISION_NOT_ALLOWED")
-            target = {"agent:workreview", "phase:escalation-repair", "status:todo"}
-            reason = "independent review found a repository-fixable defect"
         else:
             blocker = "blocker:" + value.reason_code.lower().replace("_", "-")
             target = {binding["agent"], binding["phase"], "status:blocked", blocker}
