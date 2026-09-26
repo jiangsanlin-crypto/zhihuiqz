@@ -1,0 +1,76 @@
+name: Account Worker Control Broker
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: account-control-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  broker:
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login == github.repository_owner &&
+      contains(github.event.comment.body, '<!-- shared-control-request:v1 -->')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+      ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+      ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+      ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+      ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+      ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+      CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+      CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Materialize trusted request
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          printf '%s' "$COMMENT_BODY" > "$RUNNER_TEMP/request.md"
+      - name: Execute shared control request
+        id: control
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+        run: |
+          python scripts/account_worker_broker.py             --comment-file "$RUNNER_TEMP/request.md"             --pr-number "$PR_NUMBER"             --author "$AUTHOR"             --output "$RUNNER_TEMP/result.json"
+      - name: Reply with machine-readable receipt
+        if: always()
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$RUNNER_TEMP/result.json" ]; then
+            printf '%s' '{"status":"blocked","reason":"BROKER_EXECUTION_FAILED"}' > "$RUNNER_TEMP/result.json"
+          fi
+          {
+            echo '<!-- shared-control-result:v1 -->'
+            echo '~~~json'
+            cat "$RUNNER_TEMP/result.json"
+            echo
+            echo '~~~'
+          } > "$RUNNER_TEMP/result.md"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/result.md"
+      - name: Fail closed when controller rejected the request
+        if: steps.control.outcome != 'success'
+        run: exit 1
