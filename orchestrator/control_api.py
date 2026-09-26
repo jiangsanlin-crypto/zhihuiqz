@@ -95,6 +95,10 @@ def create_control_router(store, github, settings, build_sha):
     async def dispatch_ready() -> int:
         repo = settings.github_repository
         count = 0
+        # Unit/preflight callers may intentionally provide a read-only GitHub
+        # stub. Production GitHubClient always exposes repository_dispatch.
+        if not hasattr(github, "repository_dispatch"):
+            return 0
 
         with store.conn() as db:
             publications = {
