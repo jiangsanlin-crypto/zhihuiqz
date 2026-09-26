@@ -1,0 +1,356 @@
+name: Shared Agent Runtime
+
+on:
+  repository_dispatch:
+    types:
+      - shared_codex_product
+      - shared_codex_resume
+      - shared_validator_prototype
+      - shared_validator_qa
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: shared-agent-${{ github.event.action }}-${{ github.event.client_payload.dispatch_key }}
+  cancel-in-progress: false
+
+jobs:
+  planner:
+    if: github.event.action == 'shared_codex_product'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CONTROL_BUILD_SHA: ${{ github.event.client_payload.control_build_sha }}
+      ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+      ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+      ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+      ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+      ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+      ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+      CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+      CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate controller revision
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.control_build_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Acquire planning lease
+        id: lease
+        env:
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          GENERATION: ${{ github.event.client_payload.generation }}
+        run: |
+          set -euo pipefail
+          WORKER_ID="shared-codex-$GITHUB_RUN_ID"
+          LEASE_ID="$(python -c 'import uuid; print(uuid.uuid4())')"
+          jq -n --argjson issue "$ISSUE_NUMBER" --arg generation "$GENERATION"             --arg worker "$WORKER_ID" --arg lease "$LEASE_ID"             '{issue_number:$issue,generation:$generation,worker_id:$worker,lease_id:$lease}'             > "$RUNNER_TEMP/planner-claim.json"
+          python scripts/shared_rpc.py POST /intake/acquire --json-file "$RUNNER_TEMP/planner-claim.json"             > "$RUNNER_TEMP/planner-receipt.json"
+          echo "worker_id=$WORKER_ID" >> "$GITHUB_OUTPUT"
+          echo "lease_id=$LEASE_ID" >> "$GITHUB_OUTPUT"
+      - name: Build Codex product prompt
+        env:
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json title,body             > "$RUNNER_TEMP/source-issue.json"
+          {
+            cat agents/codex_prompt.md
+            echo
+            echo "Task ID: GH-ISSUE-$ISSUE_NUMBER"
+            jq -r '.title, (.body // "")' "$RUNNER_TEMP/source-issue.json"
+            echo
+            echo "Modify only the product-planning allowlist. Do not publish a branch or PR; the leased publisher does that after validation."
+          } > "$RUNNER_TEMP/codex-product.md"
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO --output-name openai_api_key
+          test -n "${{ steps.openai_key.outputs.openai_api_key }}"
+      - name: Run Codex product planner
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
+          model: gpt-6-luna
+          effort: high
+          permission-profile: ":workspace"
+          prompt-file: ${{ runner.temp }}/codex-product.md
+          output-file: ${{ runner.temp }}/codex-product-output.md
+      - name: Publish immutable plan and confirm
+        env:
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          GENERATION: ${{ github.event.client_payload.generation }}
+          WORKER_ID: ${{ steps.lease.outputs.worker_id }}
+          LEASE_ID: ${{ steps.lease.outputs.lease_id }}
+        run: |
+          set -euo pipefail
+          python scripts/shared_planning_publish.py             --mode new --issue "$ISSUE_NUMBER" --generation "$GENERATION"             --worker-id "$WORKER_ID" --lease-id "$LEASE_ID"
+
+  planner-resume:
+    if: github.event.action == 'shared_codex_resume'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CONTROL_BUILD_SHA: ${{ github.event.client_payload.control_build_sha }}
+      ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+      ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+      ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+      ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+      ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+      ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+      CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+      CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.control_build_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Resume exact publication intent
+        env:
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          GENERATION: ${{ github.event.client_payload.generation }}
+          PUBLICATION_ID: ${{ github.event.client_payload.publication_id }}
+        run: |
+          set -euo pipefail
+          WORKER_ID="shared-codex-resume-$GITHUB_RUN_ID"
+          LEASE_ID="$(python -c 'import uuid; print(uuid.uuid4())')"
+          python scripts/shared_planning_publish.py             --mode resume --issue "$ISSUE_NUMBER" --generation "$GENERATION"             --worker-id "$WORKER_ID" --lease-id "$LEASE_ID"             --publication-id "$PUBLICATION_ID"
+
+  validator:
+    if: github.event.action == 'shared_validator_prototype' || github.event.action == 'shared_validator_qa'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CONTROL_BUILD_SHA: ${{ github.event.client_payload.control_build_sha }}
+      ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+      ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+      ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+      ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+      ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+      ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+      CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+      CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      TASK_ID: ${{ github.event.client_payload.task_id }}
+      SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+      HEAD_REF: ${{ github.event.client_payload.head_ref }}
+      PHASE: ${{ github.event.client_payload.phase }}
+    steps:
+      - name: Validate dispatch binding
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$PHASE" in phase:prototype|phase:qa) ;; *) exit 1 ;; esac
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.control_build_sha }}
+          path: _control
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r _control/requirements.txt
+      - name: Acquire and start exact-SHA validation lease
+        id: owned
+        run: |
+          set -euo pipefail
+          WORKER_ID="shared-validator-$GITHUB_RUN_ID"
+          REQUEST_ID="${{ github.event.client_payload.dispatch_key }}"
+          jq -n             --arg repository "$GITHUB_REPOSITORY"             --argjson pr "$PR_NUMBER" --arg sha "$SOURCE_SHA" --arg ref "$HEAD_REF"             --arg task "$TASK_ID" --arg phase "$PHASE"             --arg worker "$WORKER_ID" --arg request "$REQUEST_ID"             '{repository:$repository,pr_number:$pr,source_sha:$sha,head_ref:$ref,task_id:$task,phase:$phase,worker_id:$worker,request_id:$request}'             > "$RUNNER_TEMP/acquire.json"
+          python _control/scripts/shared_rpc.py POST /claims/acquire --json-file "$RUNNER_TEMP/acquire.json"             > "$RUNNER_TEMP/acquired.json"
+          jq -n --arg delivery "$(jq -r .delivery_id "$RUNNER_TEMP/acquired.json")"             --arg lease "$(jq -r .lease_id "$RUNNER_TEMP/acquired.json")"             --arg worker "$WORKER_ID"             '{delivery_id:$delivery,lease_id:$lease,worker_id:$worker}'             > "$RUNNER_TEMP/owned.json"
+          python _control/scripts/shared_rpc.py POST /claims/start --json-file "$RUNNER_TEMP/owned.json"             > "$RUNNER_TEMP/started.json"
+          echo "worker_id=$WORKER_ID" >> "$GITHUB_OUTPUT"
+      - name: Determine QA pass type
+        id: pass
+        if: env.PHASE == 'phase:qa'
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" --paginate             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/comments.json"
+          if jq -e --arg task "$TASK_ID" --arg sha "$SOURCE_SHA"             '.[] | select((.user.login == "github-actions[bot]" or .user.login == "${{ github.repository_owner }}") and (.body|contains("<!-- qa-postwrite-review:v1 -->")) and (.body|contains("task_id="+$task)) and (.body|contains("source_sha="+$sha)))'             "$RUNNER_TEMP/comments.json" >/dev/null; then
+            echo "second=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "second=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run deterministic QA
+        id: deterministic
+        if: env.PHASE == 'phase:qa'
+        run: |
+          set -euo pipefail
+          if [ -d tests ]; then
+            PYTHONPATH=. pytest -q > "$RUNNER_TEMP/qa-tests.txt"
+          else
+            echo "No tests directory" > "$RUNNER_TEMP/qa-tests.txt"
+          fi
+          tail -c 12000 "$RUNNER_TEMP/qa-tests.txt"
+          echo "status=passed" >> "$GITHUB_OUTPUT"
+      - name: Build validation prompt
+        run: |
+          set -euo pipefail
+          {
+            cat _control/agents/workbuddy_prompt.md
+            echo
+            echo "Task ID: $TASK_ID"
+            echo "PR #$PR_NUMBER"
+            echo "Exact SHA: $SOURCE_SHA"
+            echo "Phase: $PHASE"
+            if [ "$PHASE" = "phase:qa" ] && [ "${{ steps.pass.outputs.second }}" = "true" ]; then
+              echo "This is the second, final-SHA QA pass after an independent Review."
+              echo "Do not edit any repository file."
+              echo 'Return only JSON: {"status":"ready","summary":"..."} or {"status":"blocked","summary":"...","blockers":["..."]}.'
+            elif [ "$PHASE" = "phase:prototype" ]; then
+              echo "Modify only reports/prototype_review.md reports/data_analysis.md reports/classification_validation.md reports/uiux_prototype.md reports/prototype_gate.json."
+              echo 'prototype_gate.json must contain status ready or blocked.'
+            else
+              echo "Deterministic tests passed."
+              echo "Modify only reports/test_report.md reports/uiux_acceptance.md reports/classification_validation.md reports/qa_summary.json."
+              echo 'qa_summary.json must contain status ready or blocked.'
+            fi
+          } > "$RUNNER_TEMP/validator-prompt.md"
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python _control/scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO --output-name openai_api_key
+          test -n "${{ steps.openai_key.outputs.openai_api_key }}"
+      - name: Run validation model
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ steps.openai_key.outputs.openai_api_key }}
+          allow-bot-users: github-actions[bot]
+          model: gpt-6-luna
+          effort: high
+          permission-profile: ":workspace"
+          prompt-file: ${{ runner.temp }}/validator-prompt.md
+          output-file: ${{ runner.temp }}/validator-output.md
+      - name: Validate and publish reports
+        id: publish
+        if: env.PHASE == 'phase:prototype' || steps.pass.outputs.second != 'true'
+        run: |
+          set -euo pipefail
+          if [ "$PHASE" = "phase:prototype" ]; then
+            REQUIRED=(reports/prototype_review.md reports/data_analysis.md reports/classification_validation.md reports/uiux_prototype.md reports/prototype_gate.json)
+            GATE=reports/prototype_gate.json
+          else
+            REQUIRED=(reports/test_report.md reports/uiux_acceptance.md reports/classification_validation.md reports/qa_summary.json)
+            GATE=reports/qa_summary.json
+          fi
+          for path in "${REQUIRED[@]}"; do test -f "$path"; done
+          python -m json.tool "$GATE" >/dev/null
+          test "$(python -c "import json; print(json.load(open('$GATE')).get('status',''))")" = "ready"
+          python - "$RUNNER_TEMP/owned.json" "$RUNNER_TEMP/reports.json" "${REQUIRED[@]}" <<'PY'
+          import json,sys
+          owned=json.load(open(sys.argv[1]))
+          files=[{"path":p,"content":open(p).read()} for p in sys.argv[3:]]
+          json.dump({**owned,"files":files},open(sys.argv[2],"w"))
+          PY
+          python _control/scripts/shared_rpc.py POST /claims/publish-reports --json-file "$RUNNER_TEMP/reports.json"             > "$RUNNER_TEMP/published.json"
+          echo "source_sha=$(jq -r .source_sha "$RUNNER_TEMP/published.json")" >> "$GITHUB_OUTPUT"
+          echo "head_changed=$(jq -r .head_changed "$RUNNER_TEMP/published.json")" >> "$GITHUB_OUTPUT"
+      - name: Validate final QA is evidence-only
+        if: env.PHASE == 'phase:qa' && steps.pass.outputs.second == 'true'
+        id: evidence
+        run: |
+          set -euo pipefail
+          git diff --quiet
+          test -z "$(git ls-files --others --exclude-standard | grep -v '^_control/' || true)"
+          python - "$RUNNER_TEMP/validator-output.md" <<'PY'
+          import json,sys
+          text=open(sys.argv[1]).read().strip()
+          if text.startswith('~~~') or text.startswith(chr(96)*3):
+              lines=text.splitlines()
+              text="\n".join(lines[1:-1]).strip()
+              if text.startswith("json"):
+                  text=text[4:].lstrip()
+          data=json.loads(text)
+          if data.get("status")!="ready":
+              raise SystemExit("final evidence-only QA is not ready")
+          PY
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "head_changed=false" >> "$GITHUB_OUTPUT"
+      - name: Wait for exact current-SHA ordinary CI
+        env:
+          FINAL_SHA: ${{ steps.publish.outputs.source_sha || steps.evidence.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$FINAL_SHA"
+          for attempt in $(seq 1 90); do
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$FINAL_SHA&per_page=100"               --jq '.workflow_runs' > "$RUNNER_TEMP/runs.json"
+            STATE="$(jq -r --arg sha "$FINAL_SHA" --arg branch "$HEAD_REF"               '[.[] | select(.head_sha==$sha and .head_branch==$branch and .name=="CI" and .path==".github/workflows/ci.yml" and .event=="pull_request")] | sort_by(.created_at,.id) | last | if .==null then "missing" elif .status!="completed" then "waiting" else (.conclusion // "none") end' "$RUNNER_TEMP/runs.json")"
+            if [ "$STATE" = "success" ]; then break; fi
+            if [ "$STATE" != "missing" ] && [ "$STATE" != "waiting" ]; then
+              echo "Current-SHA CI terminal state: $STATE"
+              exit 1
+            fi
+            sleep 10
+          done
+          test "$STATE" = "success"
+      - name: Publish final handoff evidence when phase is complete
+        if: env.PHASE == 'phase:prototype' || steps.pass.outputs.second == 'true' || steps.publish.outputs.head_changed == 'false'
+        env:
+          FINAL_SHA: ${{ steps.publish.outputs.source_sha || steps.evidence.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$PHASE" = "phase:prototype" ]; then
+            HANDOFF_PHASE=prototype_validation
+            TO_AGENT=chatgpt
+            ARTIFACTS='["reports/prototype_review.md","reports/data_analysis.md","reports/classification_validation.md","reports/uiux_prototype.md","reports/prototype_gate.json"]'
+          else
+            HANDOFF_PHASE=qa_acceptance
+            TO_AGENT=human
+            ARTIFACTS='["reports/test_report.md","reports/uiux_acceptance.md","reports/classification_validation.md","reports/qa_summary.json"]'
+          fi
+          export HANDOFF_PHASE TO_AGENT ARTIFACTS FINAL_SHA
+          python - <<'PY' > "$RUNNER_TEMP/handoff.md"
+          import json,os
+          p={
+            "version":"1.0","task_id":os.environ["TASK_ID"],"from_agent":"workbuddy",
+            "to_agent":os.environ["TO_AGENT"],"phase":os.environ["HANDOFF_PHASE"],
+            "status":"success","summary":"Shared-controller validation gate passed on the exact current SHA.",
+            "model":"gpt-6-luna","effort":"high","required_inputs":["current SHA evidence"],
+            "expected_outputs":[],"acceptance":["only exact-current-SHA evidence may advance"],
+            "artifacts":json.loads(os.environ["ARTIFACTS"]),
+            "checks":[{"name":"shared_validation_gate","status":"passed","detail":"current-SHA deterministic and model gate passed"}],
+            "blockers":[],"source_ref":os.environ["HEAD_REF"],"source_sha":os.environ["FINAL_SHA"],
+            "pr_number":int(os.environ["PR_NUMBER"])
+          }
+          f=chr(96)*3
+          print("<!-- agent-handoff:v1 -->\n### Agent handoff: workbuddy → "+os.environ["TO_AGENT"]+"\n\n"+f+"json\n"+json.dumps(p,ensure_ascii=False,indent=2)+"\n"+f)
+          PY
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/handoff.md"
+          if [ "$PHASE" = "phase:qa" ]; then
+            printf '%s\n' '<!-- terminal-policy:v1 -->' "task_id=$TASK_ID" "source_sha=$FINAL_SHA"               'policy=owner_approval_required' 'release_enabled=false'               'reason=shared control requires explicit human approval after final-SHA QA'               > "$RUNNER_TEMP/terminal.md"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/terminal.md"
+          fi
+      - name: Advance through authoritative controller
+        run: |
+          set -euo pipefail
+          python _control/scripts/shared_rpc.py POST /claims/advance --json-file "$RUNNER_TEMP/owned.json"

@@ -35,8 +35,6 @@ jobs:
           python - <<'PY'
           import json
           policy=json.load(open("config/automation_policy.json"))
-          if policy.get("auto_production_enabled") is not True:
-              raise SystemExit("auto production is disabled by repository policy")
           if policy.get("emergency_stop") is True:
               raise SystemExit("emergency stop is active")
           print("repository automation policy allows full-auto execution")
@@ -68,17 +66,15 @@ jobs:
           -> Account ChatGPT implementation (Chat 5.6 Sol High)
           -> Work GPT-6 code review / targeted repair
           -> OpenAI Validator QA/UIUX/classification acceptance
-          -> Codex release review (API Luna)
-          -> OpenAI Validator deployment gate
-          -> automatic merge
-          -> automatic production deployment
-          -> health verification / rollback
-          -> done.
+          -> Human Approval.
+
+          No merge, release or deployment is authorized until the human owner
+          explicitly acts on the exact final SHA.
 
           ## Safety
 
           - Use synthetic data unless the human owner explicitly authorizes real data.
-          - Automatic merge/deployment is allowed only after every policy gate succeeds.
+          - Machine execution stops at Human Approval; merge/deployment requires explicit owner action.
           - Stop immediately if AUTO_PRODUCTION_ENABLED is not true or EMERGENCY_STOP is true.
           - Preserve the stable task ID and all agent-handoff records.
           - Normal implementation must not dispatch the retired API Sol workflow.
@@ -91,24 +87,20 @@ jobs:
           echo "number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
           echo "url=$ISSUE_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare task state
+      - name: Wake shared controller
+        id: wake
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
-        run: |
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "phase:product-plan"             --add-label "status:todo"
-
-      - name: Dispatch to Codex
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
-        run: |
-          gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}"             --add-label "agent:codex"
-
-          jq -n             --argjson issue_number "$ISSUE_NUMBER"             '{
-              event_type:"agent_codex_product",
-              client_payload:{issue_number:$issue_number}
-            }' | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
+          CONTROL_BUILD_SHA: ${{ github.sha }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+          ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+          CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+        run: python scripts/shared_workflow_entry.py --source planner
 
       - name: Summary
         run: |
@@ -116,7 +108,7 @@ jobs:
             echo "## Agent task started"
             echo
             echo "- Issue: #${{ steps.issue.outputs.number }}"
-            echo "- First owner: Codex"
-            echo "- First phase: product-plan"
-            echo "- Automatic chain ends at production deployment + health verification"
+            echo "- Shared controller discovers and leases the Issue"
+            echo "- First executor: Codex product planning"
+            echo "- Machine chain ends at exact-SHA Human Approval"
           } >> "$GITHUB_STEP_SUMMARY"

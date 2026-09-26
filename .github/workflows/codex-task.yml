@@ -13,13 +13,9 @@ permissions:
 
 jobs:
   product-plan:
-    if: >
-      (github.event_name == 'issues' &&
-       github.event.label.name == 'agent:codex' &&
-       contains(github.event.issue.labels.*.name, 'phase:product-plan') &&
-       contains(github.event.issue.labels.*.name, 'status:todo')) ||
-      (github.event_name == 'repository_dispatch' &&
-       github.event.action == 'agent_codex_product')
+    if: >-
+      vars.CONTROL_WORKFLOW_MODE == 'legacy' &&
+      ((github.event_name == 'issues' && github.event.label.name == 'agent:codex' && contains(github.event.issue.labels.*.name, 'phase:product-plan') && contains(github.event.issue.labels.*.name, 'status:todo')) || (github.event_name == 'repository_dispatch' && github.event.action == 'agent_codex_product'))
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -258,7 +254,9 @@ jobs:
           exit 1
 
   release-review:
-    if: github.event_name == 'repository_dispatch'
+    if: >-
+      vars.CONTROL_WORKFLOW_MODE == 'legacy' &&
+      (github.event_name == 'repository_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -548,3 +546,51 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --add-label "status:blocked"             --add-label "recovery:technical" || true
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "<!-- agent-technical-failure:v1:codex:phase:release:$SOURCE_SHA --> Codex release-review execution failed or produced invalid workflow output. This technical phase may be retried by the bounded watchdog at the same exact SHA."
           exit 1
+ 
+  invalid-control-mode:
+    if: vars.CONTROL_WORKFLOW_MODE != '' && vars.CONTROL_WORKFLOW_MODE != 'legacy' && vars.CONTROL_WORKFLOW_MODE != 'shared'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          echo "Invalid CONTROL_WORKFLOW_MODE; no writer was started."
+          exit 1
+
+  shared-control:
+    if: (vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.CONTROL_BUILD_SHA || github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Resolve reviewed controller revision
+        env:
+          CONTROL_BUILD_SHA_OVERRIDE: ${{ vars.CONTROL_BUILD_SHA }}
+        run: |
+          set -euo pipefail
+          RESOLVED_SHA="$(git rev-parse HEAD)"
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "$CONTROL_BUILD_SHA_OVERRIDE" ] && [ "$RESOLVED_SHA" != "$CONTROL_BUILD_SHA_OVERRIDE" ]; then
+            echo "Pinned controller revision did not resolve exactly."
+            exit 1
+          fi
+          echo "CONTROL_BUILD_SHA=$RESOLVED_SHA" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Delegate to shared controller without legacy fallback
+        env:
+          CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+          CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+          ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+        run: python scripts/shared_workflow_entry.py --source planner

@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+
+
+from .recovery_policy import CLAIM_RETRY_DELAYS, BLOCKER_REEVALUATE, RUNNING_RECLAIM
+LEASE_SECONDS = RUNNING_RECLAIM
+PLANNER_LEASE_SECONDS = 60 * 60
+RETRY_DELAYS_SECONDS = CLAIM_RETRY_DELAYS
 
 
 def now() -> str:
@@ -14,10 +23,8 @@ def now() -> str:
 class StateStore:
     """Durable single-orchestrator event queue.
 
-    SQLite is local to one orchestrator deployment. If the process exits while
-    an event is marked running, no live worker can still own that lease. On the
-    next process start we therefore return such events to retry, preserving the
-    attempt counter and exact original delivery payload.
+    SQLite claims are fenced by a renewable lease. A second process sharing
+    this database must never reclaim a live worker on startup.
     """
 
     def __init__(self, path: str):
@@ -25,8 +32,8 @@ class StateStore:
         self.path = path
         self.lock = threading.Lock()
         self._init()
-        self.recover_interrupted()
 
+    @contextmanager
     def conn(self):
         connection = sqlite3.connect(
             self.path,
@@ -34,7 +41,11 @@ class StateStore:
             isolation_level=None,
         )
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _init(self) -> None:
         with self.conn() as connection:
@@ -48,12 +59,72 @@ class StateStore:
                   attempts INTEGER DEFAULT 0,
                   error TEXT,
                   created_at TEXT,
-                  updated_at TEXT
+                  updated_at TEXT,
+                  checkpoint_json TEXT,
+                  lease_id TEXT,
+                  lease_expires_at TEXT,
+                  next_retry_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS operation_claims(
+                  operation_key TEXT PRIMARY KEY,
+                  delivery_id TEXT NOT NULL,
+                  lease_id TEXT NOT NULL,
+                  claimed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS recovery_audit(
+                  event_id TEXT PRIMARY KEY,
+                  delivery_id TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS control_requests(
+                    repository TEXT,delivery_id TEXT,source TEXT,status TEXT,expires_at TEXT,result_json TEXT,
+                    PRIMARY KEY(repository,delivery_id));
+                CREATE TABLE IF NOT EXISTS timeout_observations(
+                    operation_key TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT,
+                    action TEXT, active INTEGER, payload_json TEXT);
+                CREATE TABLE IF NOT EXISTS timeout_audit(
+                    event_id TEXT PRIMARY KEY,operation_key TEXT,action TEXT,created_at TEXT);
+                CREATE TABLE IF NOT EXISTS planning_publications(
+                    repository TEXT, issue_number INTEGER, publication_id TEXT UNIQUE,
+                    generation TEXT, owner_hash TEXT, intent_json TEXT,
+                    status TEXT, pr_number INTEGER, created_at TEXT, updated_at TEXT,
+                    PRIMARY KEY(repository,issue_number));
+                CREATE TABLE IF NOT EXISTS issue_intake(
+                  repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
+                  generation TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL,
+                  worker_id TEXT, lease_id TEXT, expires_at TEXT,
+                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                  PRIMARY KEY(repository,issue_number)
+                );
+                CREATE TABLE IF NOT EXISTS blocker_observations(
+                  repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+                  head_sha TEXT NOT NULL, code TEXT NOT NULL, payload_json TEXT NOT NULL,
+                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                  PRIMARY KEY(repository,pr_number,head_sha,code)
                 );"""
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(events)")
+            }
+            if "checkpoint_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE events ADD COLUMN checkpoint_json TEXT"
+                )
+            if "lease_id" not in columns:
+                connection.execute("ALTER TABLE events ADD COLUMN lease_id TEXT")
+            if "lease_expires_at" not in columns:
+                connection.execute(
+                    "ALTER TABLE events ADD COLUMN lease_expires_at TEXT"
+                )
+            if "next_retry_at" not in columns:
+                connection.execute(
+                    "ALTER TABLE events ADD COLUMN next_retry_at TEXT"
+                )
 
     def recover_interrupted(self) -> int:
-        """Requeue events left running by a previous process instance."""
+        """Requeue only expired (or pre-migration unleased) events."""
         timestamp = now()
         with self.lock, self.conn() as connection:
             cursor = connection.execute(
@@ -64,9 +135,12 @@ class StateStore:
                          THEN 'recovered after orchestrator restart'
                          ELSE error || '; recovered after orchestrator restart'
                        END,
-                       updated_at=?
-                   WHERE status='running'""",
-                (timestamp,),
+                       updated_at=?,
+                       lease_id=NULL, lease_expires_at=NULL,
+                       next_retry_at=NULL
+                   WHERE status='running' AND event_name!='external_claim'
+                     AND (lease_expires_at IS NULL OR lease_expires_at<=?)""",
+                (timestamp, timestamp),
             )
             return cursor.rowcount
 
@@ -92,21 +166,38 @@ class StateStore:
     def claim_next(self):
         with self.lock, self.conn() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            timestamp = now()
+            connection.execute(
+                """UPDATE events SET status='retry', lease_id=NULL,
+                       lease_expires_at=NULL, next_retry_at=NULL, updated_at=?,
+                       error='worker lease expired'
+                   WHERE status='running' AND event_name!='external_claim'
+                     AND (lease_expires_at IS NULL OR lease_expires_at<=?)""",
+                (timestamp, timestamp),
+            )
             row = connection.execute(
                 """SELECT * FROM events
-                   WHERE status IN ('queued','retry')
+                   WHERE status='queued'
+                      OR (status='retry'
+                          AND (next_retry_at IS NULL OR next_retry_at<=?))
                    ORDER BY created_at
-                   LIMIT 1"""
+                   LIMIT 1""",
+                (timestamp,),
             ).fetchone()
             if not row:
                 connection.execute("COMMIT")
                 return None
 
+            lease_id = str(uuid.uuid4())
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)
+            ).isoformat()
             connection.execute(
                 """UPDATE events
-                   SET status='running', attempts=attempts+1, updated_at=?
+                   SET status='running', attempts=attempts+1, updated_at=?,
+                       lease_id=?, lease_expires_at=?
                    WHERE delivery_id=?""",
-                (now(), row["delivery_id"]),
+                (timestamp, lease_id, expires_at, row["delivery_id"]),
             )
             connection.execute("COMMIT")
             return {
@@ -114,21 +205,178 @@ class StateStore:
                 "event_name": row["event_name"],
                 "payload": json.loads(row["payload_json"]),
                 "attempts": row["attempts"] + 1,
+                "lease_id": lease_id,
+                "checkpoint": (
+                    json.loads(row["checkpoint_json"])
+                    if row["checkpoint_json"] else None
+                ),
             }
+
+    def heartbeat(self, delivery_id: str, lease_id: str) -> bool:
+        with self.lock, self.conn() as connection:
+            timestamp = now()
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)
+            ).isoformat()
+            return connection.execute(
+                """UPDATE events SET lease_expires_at=?, updated_at=?
+                   WHERE delivery_id=? AND lease_id=? AND status='running'
+                     AND lease_expires_at>?""",
+                (expires_at, timestamp, delivery_id, lease_id, timestamp),
+            ).rowcount == 1
+
+    def claim_operation(self, operation_key: str, delivery_id: str, lease_id: str) -> bool:
+        """Fence duplicate deliveries for one repo/PR/SHA/phase in this DB.
+
+        The owning event's renewable lease is authoritative. A second process
+        sharing this database cannot acquire the operation until that lease
+        expires or the event reaches a terminal state.
+        """
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            timestamp = now()
+            own = connection.execute(
+                """SELECT 1 FROM events WHERE delivery_id=? AND lease_id=?
+                   AND status='running' AND lease_expires_at>?""",
+                (delivery_id, lease_id, timestamp),
+            ).fetchone()
+            if own is None:
+                raise RuntimeError("WORKER_LEASE_LOST")
+            active = connection.execute(
+                """SELECT c.delivery_id, c.lease_id FROM operation_claims c
+                   JOIN events e ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND e.status='running'
+                     AND e.lease_expires_at>?""",
+                (operation_key, timestamp),
+            ).fetchone()
+            if active is not None:
+                owned = active["delivery_id"] == delivery_id and active["lease_id"] == lease_id
+                connection.execute("COMMIT")
+                return owned
+            connection.execute(
+                """INSERT INTO operation_claims(operation_key,delivery_id,lease_id,claimed_at)
+                   VALUES(?,?,?,?) ON CONFLICT(operation_key) DO UPDATE SET
+                     delivery_id=excluded.delivery_id, lease_id=excluded.lease_id,
+                     claimed_at=excluded.claimed_at""",
+                (operation_key, delivery_id, lease_id, timestamp),
+            )
+            connection.execute("COMMIT")
+            return True
+
+    def assert_operation(self, operation_key: str, delivery_id: str, lease_id: str) -> None:
+        with self.lock, self.conn() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM operation_claims c JOIN events e
+                   ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND c.delivery_id=? AND c.lease_id=?
+                     AND e.status='running' AND e.lease_expires_at>?""",
+                (operation_key, delivery_id, lease_id, now()),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("WORKER_OPERATION_LEASE_LOST")
+
+    @staticmethod
+    def external_delivery_id(worker_id: str, request_id: str) -> str:
+        value = json.dumps([worker_id, request_id], separators=(",", ":"))
+        return "external:" + hashlib.sha256(value.encode()).hexdigest()
+
+    def claim_external(self, binding: dict, worker_id: str, request_id: str) -> dict:
+        """Acquire the same operation lock without enqueueing a runner event."""
+        delivery_id = self.external_delivery_id(worker_id, request_id)
+        payload = dict(binding, worker_id=worker_id)
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            timestamp = now()
+            existing = connection.execute(
+                "SELECT * FROM events WHERE delivery_id=?", (delivery_id,),
+            ).fetchone()
+            active = connection.execute(
+                """SELECT c.delivery_id,c.lease_id FROM operation_claims c JOIN events e
+                   ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND e.status='running' AND e.lease_expires_at>?""",
+                (binding["operation_key"], timestamp),
+            ).fetchone()
+            if existing:
+                if json.loads(existing["payload_json"]) != payload:
+                    raise RuntimeError("CLAIM_REQUEST_REUSED")
+                if (existing["status"] != "running" or not existing["lease_expires_at"]
+                    or existing["lease_expires_at"] <= timestamp or active is None
+                    or active["delivery_id"] != delivery_id
+                    or active["lease_id"] != existing["lease_id"]):
+                    raise RuntimeError("WORKER_LEASE_LOST")
+                connection.execute("COMMIT")
+                return dict(existing)
+            if active is not None:
+                raise RuntimeError("ANOTHER_WORKER_OWNS_LEASE")
+            lease_id = str(uuid.uuid4())
+            expires_at = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+            connection.execute(
+                """INSERT INTO events(delivery_id,event_name,payload_json,status,attempts,
+                   created_at,updated_at,lease_id,lease_expires_at)
+                   VALUES(?,'external_claim',?,'running',1,?,?,?,?)""",
+                (delivery_id, json.dumps(payload), timestamp, timestamp, lease_id, expires_at),
+            )
+            connection.execute(
+                """INSERT INTO operation_claims(operation_key,delivery_id,lease_id,claimed_at)
+                   VALUES(?,?,?,?) ON CONFLICT(operation_key) DO UPDATE SET
+                   delivery_id=excluded.delivery_id,lease_id=excluded.lease_id,
+                   claimed_at=excluded.claimed_at""",
+                (binding["operation_key"], delivery_id, lease_id, timestamp),
+            )
+            row = connection.execute("SELECT * FROM events WHERE delivery_id=?", (delivery_id,)).fetchone()
+            connection.execute("COMMIT")
+            return dict(row)
+
+    def assert_lease(self, delivery_id: str, lease_id: str) -> None:
+        with self.lock, self.conn() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM events WHERE delivery_id=? AND lease_id=?
+                     AND status='running' AND lease_expires_at>?""",
+                (delivery_id, lease_id, now()),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("WORKER_LEASE_LOST")
+
+    def checkpoint(self, delivery_id: str, payload: dict, lease_id: str | None = None) -> None:
+        """Persist replay data before an external branch mutation."""
+        with self.lock, self.conn() as connection:
+            cursor = connection.execute(
+                """UPDATE events SET checkpoint_json=?, updated_at=?
+                   WHERE delivery_id=? AND status='running'
+                     AND (? IS NULL OR (lease_id=? AND lease_expires_at>?))""",
+                (json.dumps(payload), now(), delivery_id,
+                 lease_id, lease_id, now()),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("WORKER_LEASE_LOST")
 
     def finish(
         self,
         delivery_id: str,
         status: str,
         error: str | None = None,
-    ) -> None:
+        lease_id: str | None = None,
+    ) -> bool:
         with self.lock, self.conn() as connection:
-            connection.execute(
+            row = connection.execute(
+                "SELECT attempts FROM events WHERE delivery_id=?",
+                (delivery_id,),
+            ).fetchone()
+            delay = RETRY_DELAYS_SECONDS[min(max((row["attempts"] if row else 1) - 1, 0), 4)]
+            next_retry_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=delay)
+            ).isoformat() if status == "retry" else None
+            cursor = connection.execute(
                 """UPDATE events
-                   SET status=?, error=?, updated_at=?
-                   WHERE delivery_id=?""",
-                (status, error, now(), delivery_id),
+                   SET status=?, error=?, updated_at=?,
+                       lease_id=NULL, lease_expires_at=NULL, next_retry_at=?
+                   WHERE delivery_id=?
+                     AND (? IS NULL OR (lease_id=? AND status='running'
+                                       AND lease_expires_at>?))""",
+                (status, error, now(), next_retry_at, delivery_id,
+                 lease_id, lease_id, now()),
             )
+            return cursor.rowcount == 1
 
     def get(self, delivery_id: str) -> dict | None:
         with self.lock, self.conn() as connection:
@@ -137,3 +385,189 @@ class StateStore:
                 (delivery_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def expired_external_claims(self) -> list[dict]:
+        with self.lock, self.conn() as connection:
+            rows = connection.execute(
+                """SELECT * FROM events WHERE event_name='external_claim'
+                   AND status='running' AND lease_expires_at<=?
+                   ORDER BY lease_expires_at LIMIT 100""", (now(),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def move_external_head(self, delivery_id: str, lease_id: str,
+                           old_sha: str, new_sha: str, checkpoint: dict) -> dict:
+        """Transfer one live worker to its predeclared commit in one DB transaction."""
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT * FROM events WHERE delivery_id=? AND lease_id=?
+                   AND event_name='external_claim' AND status='running' AND lease_expires_at>?""",
+                (delivery_id, lease_id, now())).fetchone()
+            if not row:
+                raise RuntimeError("WORKER_LEASE_LOST")
+            binding = json.loads(row["payload_json"])
+            if binding["source_sha"] != old_sha:
+                existing = json.loads(row["checkpoint_json"] or "{}").get("head_publication") or {}
+                if (binding["source_sha"] == new_sha and existing.get("from_sha") == old_sha
+                    and existing.get("to_sha") == new_sha and existing.get("status") == "applied"):
+                    return dict(row)
+                raise RuntimeError("HEAD_CHANGED")
+            key = json.dumps([binding["repository"], binding["pr_number"], new_sha, binding["phase"]], separators=(",", ":"))
+            active = connection.execute(
+                """SELECT c.delivery_id,c.lease_id FROM operation_claims c JOIN events e
+                   ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND e.status='running' AND e.lease_expires_at>?""",
+                (key, now())).fetchone()
+            if active and (active["delivery_id"], active["lease_id"]) != (delivery_id, lease_id):
+                raise RuntimeError("ANOTHER_WORKER_OWNS_LEASE")
+            binding.update(source_sha=new_sha, operation_key=key)
+            connection.execute(
+                """INSERT INTO operation_claims VALUES(?,?,?,?) ON CONFLICT(operation_key)
+                   DO UPDATE SET delivery_id=excluded.delivery_id, lease_id=excluded.lease_id,
+                                 claimed_at=excluded.claimed_at""", (key, delivery_id, lease_id, now()))
+            connection.execute("UPDATE events SET payload_json=?,checkpoint_json=? WHERE delivery_id=?",
+                (json.dumps(binding), json.dumps(checkpoint), delivery_id))
+            connection.commit()
+        return self.get(delivery_id)
+
+    def reclaim_external(self, delivery_id: str, old_lease_id: str) -> dict | None:
+        """CAS an expired external lease for reconciliation, never execution."""
+        lease_id = str(uuid.uuid4())
+        timestamp = now()
+        expiry = (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            old = connection.execute("SELECT payload_json FROM events WHERE delivery_id=?",
+                                     (delivery_id,)).fetchone()
+            if old is None:
+                return None
+            payload = json.loads(old["payload_json"])
+            payload["worker_id"] = "lease-reconciler"
+            cursor = connection.execute(
+                """UPDATE events SET lease_id=?, lease_expires_at=?, updated_at=?, payload_json=?
+                   WHERE delivery_id=? AND event_name='external_claim'
+                     AND status='running' AND lease_id=? AND lease_expires_at<=?""",
+                (lease_id, expiry, timestamp, json.dumps(payload), delivery_id, old_lease_id, timestamp))
+            connection.commit()
+            if cursor.rowcount != 1:
+                return None
+        return self.get(delivery_id)
+
+    def record_recovery_audit(self, delivery_id: str, audit: dict) -> None:
+        identity = [delivery_id, audit["lease_id"], audit["evidence_generation"], audit["status"]]
+        event_id = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        with self.lock, self.conn() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO recovery_audit(event_id,delivery_id,payload_json,created_at)
+                   VALUES(?,?,?,?)""", (event_id, delivery_id, json.dumps(audit), now()),
+            )
+
+    def observe_issue(self, repository: str, number: int, generation: str, status: str, payload: dict):
+        with self.lock, self.conn() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            old = connection.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
+                                     (repository, number)).fetchone()
+            previous = json.loads(old['payload_json']) if old else {}
+            association = previous.get('previous_link') or (
+                previous if previous.get('linked_prs') or previous.get('ambiguous_prs') else None)
+            if association:
+                payload['previous_link'] = association
+                if status == 'awaiting_planner':
+                    status = 'needs_link_resolution'
+            if old and old['generation'] == generation and status == 'awaiting_planner' and old['status'] == 'leased':
+                connection.execute('COMMIT')
+                return
+            connection.execute('''INSERT INTO issue_intake
+                (repository,issue_number,generation,status,payload_json,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository,issue_number) DO UPDATE SET
+                generation=excluded.generation,status=excluded.status,payload_json=excluded.payload_json,
+                worker_id=NULL,lease_id=NULL,expires_at=NULL,updated_at=excluded.updated_at''',
+                (repository, number, generation, status, json.dumps(payload), now(), now()))
+            connection.execute('COMMIT')
+
+    def intake_items(self, repository: str):
+        with self.lock, self.conn() as connection:
+            rows = connection.execute('SELECT * FROM issue_intake WHERE repository=? ORDER BY issue_number',
+                                      (repository,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def claim_issue(self, repository: str, number: int, generation: str, worker: str, lease: str):
+        with self.lock, self.conn() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
+                                     (repository, number)).fetchone()
+            if not row or row['generation'] != generation:
+                raise RuntimeError('ISSUE_CHANGED')
+            if row['status'] == 'leased' and row['expires_at'] > now():
+                if row['worker_id'] == worker and row['lease_id'] == lease:
+                    return dict(row)
+                raise RuntimeError('ANOTHER_PLANNER_OWNS_LEASE')
+            reserved = connection.execute(
+                "SELECT 1 FROM planning_publications WHERE repository=? AND issue_number=? AND status='prepared'",
+                (repository, number)).fetchone()
+            if reserved:
+                raise RuntimeError('PUBLICATION_CONFIRMATION_REQUIRED')
+            if row['status'] not in {'awaiting_planner', 'leased'}:
+                raise RuntimeError('ISSUE_NOT_READY')
+            # Callers supply a random attempt token. An expired token never renews.
+            if row['lease_id'] == lease:
+                raise RuntimeError('PLANNER_LEASE_EXPIRED')
+            expiry = (datetime.now(timezone.utc) + timedelta(seconds=PLANNER_LEASE_SECONDS)).isoformat()
+            connection.execute('''UPDATE issue_intake SET status='leased',worker_id=?,lease_id=?,expires_at=?,updated_at=?
+                WHERE repository=? AND issue_number=?''', (worker, lease, expiry, now(), repository, number))
+            result = connection.execute('SELECT * FROM issue_intake WHERE repository=? AND issue_number=?',
+                                        (repository, number)).fetchone()
+            connection.execute('COMMIT')
+        return dict(result)
+
+    def renew_issue(self, repository, number, generation, worker, lease):
+        expiry = (datetime.now(timezone.utc) + timedelta(seconds=PLANNER_LEASE_SECONDS)).isoformat()
+        with self.lock, self.conn() as connection:
+            return connection.execute('''UPDATE issue_intake SET expires_at=?,updated_at=?
+                WHERE repository=? AND issue_number=? AND generation=? AND worker_id=? AND lease_id=?
+                AND status='leased' AND expires_at>?''',
+                (expiry, now(), repository, number, generation, worker, lease, now())).rowcount == 1
+
+    def observe_blocker(self, repository, number, sha, code, payload):
+        with self.lock, self.conn() as connection:
+            connection.execute('''INSERT INTO blocker_observations VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(repository,pr_number,head_sha,code) DO UPDATE SET
+                payload_json=excluded.payload_json,updated_at=excluded.updated_at''',
+                (repository, number, sha, code, json.dumps(payload), now(), now()))
+
+    def operation_active(self, operation_key):
+        with self.lock, self.conn() as connection:
+            return connection.execute('''SELECT 1 FROM operation_claims c JOIN events e
+                ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                WHERE c.operation_key=? AND e.status='running' AND e.lease_expires_at>?''',
+                (operation_key, now())).fetchone() is not None
+
+    def queue_generation(self, binding):
+        target = {binding['phase'], 'status:todo'}
+        with self.lock, self.conn() as connection:
+            for row in connection.execute('SELECT event_id,payload_json FROM recovery_audit ORDER BY rowid DESC'):
+                audit = json.loads(row['payload_json'])
+                if (audit.get('repository') == binding['repository']
+                    and audit.get('pr_number') == binding['pr_number']
+                    and audit.get('source_sha') == binding['source_sha']
+                    and audit.get('status') == 'applied'
+                    and target <= set(audit.get('labels_after', []))):
+                    return row['event_id']
+        return 'initial'
+
+    def blocker_due(self, repository, number, sha, code, labels):
+        """R05: persisted ten-minute evidence cadence, scoped to SHA/label generation."""
+        with self.lock, self.conn() as connection:
+            row = connection.execute("""SELECT payload_json FROM blocker_observations
+                WHERE repository=? AND pr_number=? AND head_sha=? AND code=?""",
+                (repository, number, sha, code)).fetchone()
+        if not row:
+            return True
+        value = json.loads(row['payload_json'])
+        if value.get('labels_before') != labels or value.get('status') == 'resolved':
+            return True
+        try:
+            previous = datetime.fromisoformat(value['last_evaluated_at'])
+            return (datetime.now(timezone.utc) - previous).total_seconds() >= BLOCKER_REEVALUATE
+        except (KeyError, TypeError, ValueError):
+            return True

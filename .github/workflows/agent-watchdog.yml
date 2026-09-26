@@ -6,12 +6,18 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
 
+concurrency:
+  group: agent-watchdog-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   watchdog:
+    if: vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'legacy'
     runs-on: ubuntu-latest
     steps:
       - name: Ensure watchdog policy labels exist
@@ -30,7 +36,8 @@ jobs:
             THRESHOLD="$(date -u -d "$LIMIT minutes ago" '+%Y-%m-%dT%H:%M:%SZ')"
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
 
-            gh api --method GET search/issues               -f q="$QUERY"               --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
+            gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 \
+              --jq '.items[].number' > "$RUNNER_TEMP/queued-$AGENT.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
@@ -40,6 +47,18 @@ jobs:
               PHASE="$(echo "$LABELS" | grep '^phase:' | head -n1 || true)"
               IS_PR="$(gh api "repos/${{ github.repository }}/issues/$NUMBER" --jq 'has("pull_request")')"
               if [ "$IS_PR" = "true" ]; then
+                # Historical synthetic E2E tasks have no active worker. Do not
+                # repeatedly alert on them unless the source issue opted in.
+                ROOT_ISSUE="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" \
+                  --json body --jq '.body // ""' \
+                  | sed -n 's/.*agent-task-id:GH-ISSUE-\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                if [ -n "$ROOT_ISSUE" ]; then
+                  ROOT_TITLE="$(gh issue view "$ROOT_ISSUE" --repo "${{ github.repository }}" --json title --jq '.title' 2>/dev/null || true)"
+                  ROOT_BODY="$(gh issue view "$ROOT_ISSUE" --repo "${{ github.repository }}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                  if [[ "$ROOT_TITLE" == "[E2E]"* ]] && ! printf '%s' "$ROOT_BODY" | grep -Fq '<!-- synthetic-e2e:true -->'; then
+                    continue
+                  fi
+                fi
                 REV="$(gh pr view "$NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
               else
                 REV="issue-$NUMBER"
@@ -62,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           QUERY="repo:${{ github.repository }} is:open label:status:blocked label:recovery:technical"
-          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/technical-blocked.txt"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 --jq '.items[].number' > "$RUNNER_TEMP/technical-blocked.txt"
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
@@ -89,7 +108,8 @@ jobs:
             fi
 
             PREFIX="<!-- agent-watchdog:technical-retry:$AGENT:$PHASE:$REV:"
-            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq ".[] | select(.body | startswith(\"$PREFIX\")) | .id" | wc -l | tr -d ' ')"
             if [ "$COUNT" -ge 2 ]; then
               gh issue edit "$NUMBER" --repo "${{ github.repository }}" --remove-label "recovery:technical" || true
               EXHAUSTED="<!-- agent-watchdog:technical-exhausted:$AGENT:$PHASE:$REV -->"
@@ -114,7 +134,7 @@ jobs:
 
           for AGENT in codex workbuddy; do
             QUERY="repo:${{ github.repository }} is:open label:status:todo label:agent:$AGENT updated:<$THRESHOLD"
-            gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/redispatch-$AGENT.txt"
+            gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 --jq '.items[].number' > "$RUNNER_TEMP/redispatch-$AGENT.txt"
 
             while read -r NUMBER; do
               [ -n "$NUMBER" ] || continue
@@ -176,7 +196,8 @@ jobs:
               fi
 
               PREFIX="<!-- agent-watchdog:redispatch:$AGENT:$PHASE:$REV:"
-              COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+              COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+                --paginate --jq ".[] | select(.body | startswith(\"$PREFIX\")) | .id" | wc -l | tr -d ' ')"
               if [ "$COUNT" -ge 2 ]; then
                 continue
               fi
@@ -236,6 +257,92 @@ jobs:
             done < "$RUNNER_TEMP/workbuddy-${PHASE#phase:}.txt"
           done
 
+      - name: Reclaim orphaned exact-SHA Work review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          QUERY="repo:${{ github.repository }} is:pr is:open label:agent:workreview label:phase:code-review label:status:running"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 \
+            --jq '.items[].number' > "$RUNNER_TEMP/review-running.txt"
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            PR="$RUNNER_TEMP/review-$NUMBER.json"
+            DECISION="$RUNNER_TEMP/review-decision-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$PR"
+            SHA="$(jq -r '.head.sha' "$PR")"
+            gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/review-comments-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' \
+              > "$RUNNER_TEMP/review-ci-$NUMBER.json"
+            PYTHONPATH=. python scripts/plan_review_reclaim.py \
+              --pr-json "$PR" \
+              --comments-json "$RUNNER_TEMP/review-comments-$NUMBER.json" \
+              --ci-runs-json "$RUNNER_TEMP/review-ci-$NUMBER.json" \
+              --repository-owner "${{ github.repository_owner }}" \
+              --now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$DECISION"
+            [ "$(jq -r '.action' "$DECISION")" = "requeue" ] || continue
+
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$RUNNER_TEMP/review-live-$NUMBER.json"
+            [ "$(jq -r '.head.sha' "$RUNNER_TEMP/review-live-$NUMBER.json")" = "$SHA" ] || continue
+            if ! diff -u \
+              <(jq -r '.labels_before[]' "$DECISION") \
+              <(jq -r '.labels[].name' "$RUNNER_TEMP/review-live-$NUMBER.json" | sort); then
+              continue
+            fi
+            jq '{labels: .labels_after}' "$DECISION" | gh api --method PUT \
+              "repos/${{ github.repository }}/issues/$NUMBER/labels" --input - >/dev/null
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}" \
+              --body "<!-- agent-recovery:v1:$NUMBER:$SHA:code-review --> rule_id=R04_EXPIRED_REVIEW_RUNNING source_sha=$SHA last_progress_at=$(jq -r '.last_progress_at' "$DECISION") next=status:todo. No independent PASS was bypassed."
+          done < "$RUNNER_TEMP/review-running.txt"
+
+      - name: Re-evaluate Work repair CI blockers and restore independent review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh label create "recovery:repair-ci" --repo "${{ github.repository }}" \
+            --color B60205 --description "Review repair awaits recoverable current-SHA CI" --force
+          QUERY="repo:${{ github.repository }} is:pr is:open label:agent:workreview label:phase:escalation-repair"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 \
+            --jq '.items[].number' > "$RUNNER_TEMP/repair-prs.txt"
+          while read -r NUMBER; do
+            [ -n "$NUMBER" ] || continue
+            PR="$RUNNER_TEMP/repair-pr-$NUMBER.json"
+            COMMENTS="$RUNNER_TEMP/repair-comments-$NUMBER.json"
+            RUNS="$RUNNER_TEMP/repair-ci-$NUMBER.json"
+            DECISION="$RUNNER_TEMP/repair-decision-$NUMBER.json"
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" > "$PR"
+            SHA="$(jq -r '.head.sha' "$PR")"
+            gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq '.[]' | jq -s '.' > "$COMMENTS"
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' > "$RUNS"
+            PYTHONPATH=. python scripts/plan_repair_recovery.py \
+              --pr-json "$PR" --comments-json "$COMMENTS" --ci-runs-json "$RUNS" \
+              --repository-owner "${{ github.repository_owner }}" \
+              --now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$DECISION"
+            ACTION="$(jq -r '.action' "$DECISION")"
+            [ "$ACTION" = "block" ] || [ "$ACTION" = "requeue_review" ] || continue
+
+            # GitHub issue-label PUT has no conditional write. Re-read HEAD and
+            # the exact label set immediately before projecting a new state.
+            gh api "repos/${{ github.repository }}/pulls/$NUMBER" \
+              > "$RUNNER_TEMP/repair-live-$NUMBER.json"
+            [ "$(jq -r '.head.sha' "$RUNNER_TEMP/repair-live-$NUMBER.json")" = "$SHA" ] || continue
+            if ! diff -u <(jq -r '.labels_before[]' "$DECISION") \
+              <(jq -r '.labels[].name' "$RUNNER_TEMP/repair-live-$NUMBER.json" | sort); then
+              continue
+            fi
+            jq '{labels: .labels_after}' "$DECISION" | gh api --method PUT \
+              "repos/${{ github.repository }}/issues/$NUMBER/labels" --input - >/dev/null
+            REASON="$(jq -r '.reason // "current_sha_ci_success"' "$DECISION")"
+            CI_ID="$(jq -r '.ci_run_id // "none"' "$DECISION")"
+            gh issue comment "$NUMBER" --repo "${{ github.repository }}" \
+              --body "<!-- agent-repair-recovery:v1:$SHA:$ACTION --> rule_id=R05_R06_REPAIR_CI source_sha=$SHA reason=$REASON ci_run_id=$CI_ID action=$ACTION. Requeue requires a new independent Work Review PASS before QA; no release or deployment is authorized."
+          done < "$RUNNER_TEMP/repair-prs.txt"
+
       - name: Block Work review running longer than 120 minutes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -287,7 +394,7 @@ jobs:
         run: |
           set -euo pipefail
           QUERY="repo:${{ github.repository }} is:open label:status:blocked label:watchdog:timeout"
-          gh api --method GET search/issues -f q="$QUERY" --jq '.items[].number' > "$RUNNER_TEMP/timeout-blocked.txt"
+          gh api --method GET search/issues --paginate -f q="$QUERY" -f per_page=100 --jq '.items[].number' > "$RUNNER_TEMP/timeout-blocked.txt"
 
           while read -r NUMBER; do
             [ -n "$NUMBER" ] || continue
@@ -327,7 +434,8 @@ jobs:
             fi
 
             PREFIX="<!-- agent-watchdog:auto-retry:$AGENT:$PHASE:$REV:"
-            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" --paginate --jq "[.[] | select(.body | startswith(\"$PREFIX\"))] | length")"
+            COUNT="$(gh api "repos/${{ github.repository }}/issues/$NUMBER/comments?per_page=100" \
+              --paginate --jq ".[] | select(.body | startswith(\"$PREFIX\")) | .id" | wc -l | tr -d ' ')"
 
             if [ "$COUNT" -eq 0 ]; then
               gh issue edit "$NUMBER" --repo "${{ github.repository }}"                 --remove-label "status:blocked"                 --remove-label "watchdog:timeout"                 --add-label "status:todo"
@@ -344,3 +452,51 @@ jobs:
               fi
             fi
           done < "$RUNNER_TEMP/timeout-blocked.txt"
+ 
+  invalid-control-mode:
+    if: vars.CONTROL_WORKFLOW_MODE != '' && vars.CONTROL_WORKFLOW_MODE != 'legacy' && vars.CONTROL_WORKFLOW_MODE != 'shared'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          echo "Invalid CONTROL_WORKFLOW_MODE; no writer was started."
+          exit 1
+
+  shared-control:
+    if: (vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.CONTROL_BUILD_SHA || github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Resolve reviewed controller revision
+        env:
+          CONTROL_BUILD_SHA_OVERRIDE: ${{ vars.CONTROL_BUILD_SHA }}
+        run: |
+          set -euo pipefail
+          RESOLVED_SHA="$(git rev-parse HEAD)"
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "$CONTROL_BUILD_SHA_OVERRIDE" ] && [ "$RESOLVED_SHA" != "$CONTROL_BUILD_SHA_OVERRIDE" ]; then
+            echo "Pinned controller revision did not resolve exactly."
+            exit 1
+          fi
+          echo "CONTROL_BUILD_SHA=$RESOLVED_SHA" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Delegate to shared controller without legacy fallback
+        env:
+          CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+          CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+          ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+        run: python scripts/shared_workflow_entry.py --source watchdog

@@ -23,17 +23,16 @@ on:
           - deploy
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
 
 jobs:
   validate:
-    if: >
-      github.event_name != 'pull_request' ||
-      (github.event.label.name == 'status:todo' &&
-       contains(github.event.pull_request.labels.*.name, 'agent:workbuddy') &&
-       contains(github.event.pull_request.labels.*.name, 'phase:qa'))
+    if: >-
+      vars.CONTROL_WORKFLOW_MODE == 'legacy' &&
+      (github.event_name != 'pull_request' || (github.event.label.name == 'status:todo' && contains(github.event.pull_request.labels.*.name, 'agent:workbuddy') && contains(github.event.pull_request.labels.*.name, 'phase:qa')))
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -139,17 +138,24 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.context.outputs.head_ref }}
+          ref: ${{ steps.context.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Resolve OpenAI API key
-        id: openai_key
+      - name: Pin trusted gate code from the default branch
         env:
-          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
-          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+          set -euo pipefail
+          CONTROL_SHA="$(gh api "repos/${{ github.repository }}/branches/${{ github.event.repository.default_branch }}" --jq '.commit.sha')"
+          test -n "$CONTROL_SHA"
+          mkdir -p "$RUNNER_TEMP/trusted/scripts" "$RUNNER_TEMP/trusted/orchestrator"
+          for PATH_IN_REPO in scripts/validate_handoff.py scripts/runtime_secret.py \
+            orchestrator/__init__.py orchestrator/handoff_gate.py orchestrator/terminal_policy.py; do
+            gh api "repos/${{ github.repository }}/contents/$PATH_IN_REPO?ref=$CONTROL_SHA" \
+              --jq '.content' | base64 -d > "$RUNNER_TEMP/trusted/$PATH_IN_REPO"
+          done
+          echo "Trusted gate revision: $CONTROL_SHA"
 
       - name: Validate previous handoff
         id: handoff_gate
@@ -161,10 +167,38 @@ jobs:
           PREV_FROM: ${{ steps.context.outputs.prev_from }}
           PREV_TO: ${{ steps.context.outputs.prev_to }}
           PREV_PHASE: ${{ steps.context.outputs.prev_handoff_phase }}
+          PHASE: ${{ steps.context.outputs.phase }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100"             --paginate > "$RUNNER_TEMP/comments.json"
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/live-pr.json"
+          test "$(jq -r '.head.sha' "$RUNNER_TEMP/live-pr.json")" = "$SOURCE_SHA"
+          test "$(jq -r '.head.ref' "$RUNNER_TEMP/live-pr.json")" = "$HEAD_REF"
+          jq -e --arg phase "phase:$PHASE" \
+            '[.labels[].name] as $labels |
+             (($labels | map(select(startswith("agent:")))) == ["agent:workbuddy"]) and
+             (($labels | map(select(startswith("phase:")))) == [$phase]) and
+             (($labels | map(select(startswith("status:")))) == ["status:todo"]) and
+             (($labels | index("approval:production-required")) == null)' \
+            "$RUNNER_TEMP/live-pr.json" >/dev/null
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+            --paginate --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/comments.json"
 
-          PYTHONPATH=. python scripts/validate_handoff.py             --comments "$RUNNER_TEMP/comments.json"             --task-id "$TASK_ID"             --from-agent "$PREV_FROM"             --to-agent "$PREV_TO"             --phase "$PREV_PHASE"             --source-sha "$SOURCE_SHA"             --trusted-login "${{ github.repository_owner }}"             --trusted-login "github-actions[bot]"
+          REVIEW_GATE=()
+          if [ "$PHASE" = "qa" ]; then
+            REVIEW_GATE=(--require-independent-review)
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SOURCE_SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '.' > "$RUNNER_TEMP/ci-runs.json"
+            jq -e --arg sha "$SOURCE_SHA" --arg branch "$HEAD_REF" \
+              '[.[] | select(.head_sha == $sha and .head_branch == $branch and .name == "CI" and .path == ".github/workflows/ci.yml" and .event == "pull_request")] | sort_by(.created_at, .id) | last | .status == "completed" and .conclusion == "success"' \
+              "$RUNNER_TEMP/ci-runs.json" >/dev/null
+          fi
+          PYTHONPATH="$RUNNER_TEMP/trusted" python "$RUNNER_TEMP/trusted/scripts/validate_handoff.py" \
+            --comments "$RUNNER_TEMP/comments.json" --task-id "$TASK_ID" \
+            --from-agent "$PREV_FROM" --to-agent "$PREV_TO" \
+            --phase "$PREV_PHASE" --source-sha "$SOURCE_SHA" \
+            --trusted-login "${{ github.repository_owner }}" \
+            --trusted-login "github-actions[bot]" "${REVIEW_GATE[@]}"
 
           jq -r '.[] | select(.body | contains("<!-- agent-handoff:v1 -->")) | .body'             "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/handoffs.md"
 
@@ -285,6 +319,14 @@ jobs:
             fi
           } > "$RUNNER_TEMP/validator-prompt.md"
 
+      - name: Resolve OpenAI API key
+        id: openai_key
+        env:
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python "$RUNNER_TEMP/trusted/scripts/runtime_secret.py" OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO             --output-name openai_api_key
+
       - name: Run OpenAI validation agent
         id: validator
         continue-on-error: true
@@ -387,7 +429,7 @@ jobs:
             BODY="$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json body --jq '.body // ""')"
           fi
           export BODY
-          PYTHONPATH=. python - <<'PY' > "$RUNNER_TEMP/terminal-policy.env"
+          PYTHONPATH="$RUNNER_TEMP/trusted" python - <<'PY' > "$RUNNER_TEMP/terminal-policy.env"
           import os
           from orchestrator.terminal_policy import resolve_terminal_policy
           decision = resolve_terminal_policy(os.environ.get("BODY", ""))
@@ -426,6 +468,7 @@ jobs:
           QA_RELEASE_ENABLED: ${{ steps.terminal.outputs.release_enabled }}
           QA_TERMINAL_POLICY: ${{ steps.terminal.outputs.policy }}
           QA_TERMINAL_REASON: ${{ steps.terminal.outputs.reason }}
+          SOURCE_SHA: ${{ steps.context.outputs.source_sha }}
         run: |
           set -euo pipefail
 
@@ -490,6 +533,19 @@ jobs:
               --body-file "$RUNNER_TEMP/terminal-policy-comment.md"
 
             if [ "${QA_RELEASE_ENABLED:-false}" != "true" ]; then
+              # QA reports advance HEAD. Earlier CI and Work Review evidence
+              # belongs to the pre-QA commit. Request independent review of
+              # the exact report commit before projecting owner approval.
+              if [ "$SHA" != "$SOURCE_SHA" ]; then
+                gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/post-qa-pr.json"
+                test "$(jq -r '.head.sha' "$RUNNER_TEMP/post-qa-pr.json")" = "$SHA"
+                test "$(jq -r '.head.ref' "$RUNNER_TEMP/post-qa-pr.json")" = "$HEAD_REF"
+                test "$(jq -r '.head.repo.full_name' "$RUNNER_TEMP/post-qa-pr.json")" = "${{ github.repository }}"
+                printf '%s\n' '<!-- qa-postwrite-review:v1 -->' "task_id=$TASK_ID" "source_sha=$SHA" "previous_sha=$SOURCE_SHA" 'next=NEW_INDEPENDENT_WORK_CODE_REVIEW' > "$RUNNER_TEMP/post-qa-review.md"
+                gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/post-qa-review.md"
+                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --remove-label "agent:workbuddy" --remove-label "phase:qa" --remove-label "status:running" --add-label "agent:workreview" --add-label "phase:code-review" --add-label "status:todo"
+                exit 0
+              fi
               gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"                 --remove-label "agent:workbuddy"                 --remove-label "phase:qa"                 --remove-label "status:running"                 --remove-label "status:todo"                 --add-label "status:review"                 --add-label "approval:production-required"
               exit 0
             fi
@@ -556,3 +612,51 @@ jobs:
           gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}"             --remove-label "status:running"             --remove-label "recovery:technical"             --add-label "status:blocked" || true
           gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}"             --body "❌ OpenAI validation gate blocked phase $PHASE. This is a gate/content blocker, not an automatic technical retry."
           exit 1
+ 
+  invalid-control-mode:
+    if: vars.CONTROL_WORKFLOW_MODE != '' && vars.CONTROL_WORKFLOW_MODE != 'legacy' && vars.CONTROL_WORKFLOW_MODE != 'shared'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          echo "Invalid CONTROL_WORKFLOW_MODE; no writer was started."
+          exit 1
+
+  shared-control:
+    if: (vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.CONTROL_BUILD_SHA || github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Resolve reviewed controller revision
+        env:
+          CONTROL_BUILD_SHA_OVERRIDE: ${{ vars.CONTROL_BUILD_SHA }}
+        run: |
+          set -euo pipefail
+          RESOLVED_SHA="$(git rev-parse HEAD)"
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "$CONTROL_BUILD_SHA_OVERRIDE" ] && [ "$RESOLVED_SHA" != "$CONTROL_BUILD_SHA_OVERRIDE" ]; then
+            echo "Pinned controller revision did not resolve exactly."
+            exit 1
+          fi
+          echo "CONTROL_BUILD_SHA=$RESOLVED_SHA" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Delegate to shared controller without legacy fallback
+        env:
+          CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+          CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+          ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+        run: python scripts/shared_workflow_entry.py --source validator

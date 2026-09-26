@@ -6,7 +6,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from orchestrator.handoff_gate import extract_handoff
+from orchestrator.handoff_gate import extract_handoff, independent_review_pass
+from orchestrator.evidence_gate import successful_current_ci as _successful_current_ci
+from orchestrator.evidence_gate import owner_wait_evidence as _owner_wait_evidence
 
 TASK_ID_RE = re.compile(r"<!-- agent-task-id:([A-Za-z0-9._:-]+) -->")
 
@@ -17,7 +19,8 @@ TRANSITIONS = {
 
 STATE_LABELS = {
     "agent:codex", "agent:chatgpt", "agent:workreview", "agent:workbuddy",
-    "phase:prototype", "phase:implementation", "phase:code-review",
+    "phase:product-plan", "phase:prototype", "phase:implementation",
+    "phase:code-review", "phase:escalation-repair",
     "phase:qa", "phase:release", "phase:deploy",
     "status:todo", "status:running", "status:blocked",
 }
@@ -38,11 +41,26 @@ def _task_id(pr: dict[str, Any]) -> str:
     return match.group(1) if match else ""
 
 
+
+
+def _post_qa_marker_exists(
+    comments: list[dict[str, Any]], *, task_id: str, head_sha: str
+) -> bool:
+    return any(
+        (comment.get("user") or {}).get("login") == "github-actions[bot]"
+        and "<!-- qa-postwrite-review:v1 -->" in str(comment.get("body") or "")
+        and f"task_id={task_id}" in str(comment.get("body") or "").splitlines()
+        and f"source_sha={head_sha}" in str(comment.get("body") or "").splitlines()
+        for comment in comments
+    )
+
+
 def decide_reconciliation(
     pr: dict[str, Any],
     comments: list[dict[str, Any]],
     *,
     repository_owner: str,
+    ci_runs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if pr.get("state") != "open" or pr.get("merged_at"):
         return {"action": "noop", "reason": "pr_not_open"}
@@ -55,7 +73,96 @@ def decide_reconciliation(
     if not head_sha:
         return {"action": "noop", "reason": "missing_head_sha"}
 
-    relevant: list[tuple[str, dict[str, Any]]] = []
+    labels = _labels(pr)
+    head_ref = str((pr.get("head") or {}).get("ref") or "")
+    ci_run_id = _successful_current_ci(
+        ci_runs or {}, head_sha=head_sha, head_ref=head_ref
+    )
+    # QA artifacts can advance HEAD after the first Work Review. The final
+    # owner wait needs a fresh independent review of that final QA commit.
+    if ci_run_id and _owner_wait_evidence(
+        comments, task_id=task_id, head_sha=head_sha
+    ):
+        # A later failure on the same SHA revokes an earlier PASS. Select the
+        # latest trusted review outcome before considering owner-wait cleanup.
+        reviews: list[tuple[tuple[str, int], dict[str, Any], dict[str, Any]]] = []
+        for review_comment in comments:
+            if (review_comment.get("user") or {}).get("login") != repository_owner:
+                continue
+            try:
+                review = extract_handoff(str(review_comment.get("body") or ""))
+            except Exception:
+                continue
+            if not (review and review.get("task_id") == task_id
+                and review.get("source_sha") == head_sha
+                and review.get("from_agent") == "workreview"
+                and review.get("to_agent") == "workbuddy"
+                and review.get("phase") == "code_review"):
+                continue
+            reviews.append(((str(review_comment.get("created_at") or ""),
+                             int(review_comment.get("id") or 0)), review_comment, review))
+        if reviews:
+            _, review_comment, review = max(reviews, key=lambda item: item[0])
+            if (review.get("status") == "success" and not review.get("blockers")
+                and independent_review_pass(
+                    comments, handoff=review, handoff_comment=review_comment,
+                    task_id=task_id, source_sha=head_sha,
+                    trusted_login=repository_owner,
+                )):
+                if labels & {"approval:production-approved", "status:blocked"}:
+                    return {"action": "noop", "reason": "owner_wait_has_other_blocker"}
+                canonical = (labels - STATE_LABELS) | {
+                    "status:review", "approval:production-required"
+                }
+                if canonical == labels:
+                    return {"action": "noop", "reason": "intentional_owner_wait"}
+                return {
+                    "action": "converge_owner_wait", "source_sha": head_sha,
+                    "ci_run_id": ci_run_id, "labels_before": sorted(labels),
+                    "labels_after": sorted(canonical),
+                }
+        qa_running = {"agent:workbuddy", "phase:qa"} <= labels and bool(
+            labels & {"status:running", "status:todo"}
+        )
+        review_queued = {
+            "agent:workreview", "phase:code-review", "status:todo"
+        } <= labels
+        if (qa_running or review_queued) and not labels & {
+            "status:blocked", "status:review", "approval:production-required",
+            "approval:production-approved",
+        }:
+            canonical = (labels - STATE_LABELS) | {
+                "agent:workreview", "phase:code-review", "status:todo"
+            }
+            # A complete label projection without its marker is still
+            # incomplete: the Work consumer needs trusted QA evidence to
+            # claim the independent final-SHA review.
+            if canonical != labels or not _post_qa_marker_exists(
+                comments, task_id=task_id, head_sha=head_sha
+            ):
+                return {
+                    "action": "requeue_post_qa_review", "task_id": task_id,
+                    "source_sha": head_sha, "ci_run_id": ci_run_id,
+                    "labels_before": sorted(labels),
+                    "labels_after": sorted(canonical),
+                    "write_marker": not _post_qa_marker_exists(
+                        comments, task_id=task_id, head_sha=head_sha
+                    ),
+                }
+    if "status:review" in labels or "approval:production-required" in labels:
+        # Human wait is protected from automatic exit, but missing evidence
+        # must remain visible as a distinct unresolved state for operators.
+        if ci_run_id is None:
+            return {"action": "noop", "reason": "owner_wait_current_sha_ci_not_success"}
+        if not _owner_wait_evidence(
+            comments, task_id=task_id, head_sha=head_sha
+        ):
+            return {"action": "noop", "reason": "owner_wait_missing_exact_terminal_evidence"}
+        if {"status:review", "approval:production-required"} <= labels and labels & STATE_LABELS:
+            return {"action": "noop", "reason": "owner_wait_requires_final_sha_review"}
+        return {"action": "noop", "reason": "owner_wait_requires_final_sha_review"}
+
+    relevant: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for comment in comments:
         user = comment.get("user") or {}
         if str(user.get("login") or "") != repository_owner:
@@ -72,13 +179,23 @@ def decide_reconciliation(
             str(payload.get("phase") or ""),
         )
         if key in TRANSITIONS:
-            relevant.append((str(comment.get("created_at") or ""), payload))
+            relevant.append((str(comment.get("created_at") or ""), comment, payload))
 
     if not relevant:
         return {"action": "noop", "reason": "no_relevant_owner_handoff"}
 
-    relevant.sort(key=lambda item: item[0], reverse=True)
-    payload = relevant[0][1]
+    # A delayed replay of an old-SHA handoff must not hide valid evidence for
+    # the current HEAD. Among current-SHA handoffs, the latest result still
+    # wins so a later failure cannot be overridden by an earlier PASS.
+    relevant.sort(
+        key=lambda item: (
+            str(item[2].get("source_sha") or "") == head_sha,
+            item[0],
+            int(item[1].get("id") or 0),
+        ),
+        reverse=True,
+    )
+    handoff_comment, payload = relevant[0][1:]
     key = (
         str(payload.get("from_agent") or ""),
         str(payload.get("to_agent") or ""),
@@ -96,36 +213,71 @@ def decide_reconciliation(
         return {"action": "noop", "reason": "source_sha_mismatch"}
     if payload.get("pr_number") not in (None, pr.get("number")):
         return {"action": "noop", "reason": "pr_number_mismatch"}
+    if key == ("workreview", "workbuddy", "code_review") and not independent_review_pass(
+        comments, handoff=payload, handoff_comment=handoff_comment,
+        task_id=task_id, source_sha=head_sha, trusted_login=repository_owner,
+    ):
+        return {"action": "noop", "reason": "missing_independent_current_sha_review_pass"}
 
-    labels = _labels(pr)
-    # Fail closed for terminal/manual states. A previously valid handoff must not
-    # resurrect a PR after a later review blocked it or QA moved it to owner wait.
-    if "status:review" in labels or "approval:production-required" in labels:
-        return {"action": "noop", "reason": "intentional_owner_wait"}
-    if "status:blocked" in labels:
+    # Only identified machine evidence/timeout blockers may auto-recover.
+    # Policy/content blockers remain under explicit ownership.
+    qa_evidence_recovery = (
+        "recovery:qa-evidence" in labels
+        and target_phase == "phase:qa"
+        and "watchdog:timeout" not in labels
+    )
+    if "status:blocked" in labels and (
+        ("watchdog:timeout" not in labels and not qa_evidence_recovery)
+        or ("recovery:qa-evidence" in labels and not qa_evidence_recovery)
+        or "recovery:technical" in labels
+        or any(label.startswith("blocker:") for label in labels)
+    ):
         return {"action": "noop", "reason": "blocked_requires_recovery"}
+
+    # A success handoff is not a substitute for GitHub's current-head CI.
+    # In particular, a Work Review handoff alone must not wake Validator QA.
+    ci_run_id = _successful_current_ci(
+        ci_runs or {},
+        head_sha=head_sha,
+        head_ref=str((pr.get("head") or {}).get("ref") or ""),
+    )
+    if ci_run_id is None:
+        return {"action": "noop", "reason": "current_sha_ci_not_success"}
 
     desired_status = (
         "status:running"
         if {target_agent, target_phase, "status:running"}.issubset(labels)
         else "status:todo"
     )
+    if "status:blocked" in labels:
+        desired_status = "status:todo"
+    resolved_labels = (
+        ({"recovery:qa-evidence"} if qa_evidence_recovery else {"watchdog:timeout"})
+        if "status:blocked" in labels else set()
+    )
     canonical = {target_agent, target_phase, desired_status}
     current_state = labels & STATE_LABELS
 
     if current_state == canonical:
+        # A successful label projection is not proof that the downstream
+        # dispatch succeeded. Revisit an idle QA handoff on the next scan.
         return {
-            "action": "noop",
-            "reason": "already_canonical",
+            "action": "ensure_qa_dispatch" if target_phase == "phase:qa" and desired_status == "status:todo" else "noop",
+            "reason": "canonical_qa_may_need_dispatch" if target_phase == "phase:qa" and desired_status == "status:todo" else "already_canonical",
+            "task_id": task_id,
             "source_sha": head_sha,
             "target_agent": target_agent,
             "target_phase": target_phase,
             "desired_status": desired_status,
+            "ci_run_id": ci_run_id,
+            "labels_before": sorted(labels),
         }
 
     return {
         "action": "reconcile",
-        "reason": "valid_handoff_requires_state_convergence",
+        "reason": ("validated_qa_evidence_resolved" if qa_evidence_recovery
+                   else "validated_timeout_resolved" if "status:blocked" in labels
+                   else "valid_handoff_requires_state_convergence"),
         "task_id": task_id,
         "source_sha": head_sha,
         "from_agent": key[0],
@@ -134,7 +286,10 @@ def decide_reconciliation(
         "target_agent": target_agent,
         "target_phase": target_phase,
         "desired_status": desired_status,
-        "remove_labels": sorted(current_state - canonical),
+        "ci_run_id": ci_run_id,
+        "labels_before": sorted(labels),
+        "remove_labels": sorted((current_state - canonical) | resolved_labels),
+        "labels_after": sorted((labels - STATE_LABELS - resolved_labels) | canonical),
     }
 
 
@@ -143,17 +298,21 @@ def main() -> int:
     parser.add_argument("--pr-json", required=True)
     parser.add_argument("--comments-json", required=True)
     parser.add_argument("--repository-owner", required=True)
+    parser.add_argument("--ci-runs-json", required=True)
     args = parser.parse_args()
 
     pr = json.loads(Path(args.pr_json).read_text())
     comments = json.loads(Path(args.comments_json).read_text())
+    ci_runs = json.loads(Path(args.ci_runs_json).read_text())
     if not isinstance(pr, dict):
         raise SystemExit("PR JSON must be an object")
     if not isinstance(comments, list):
         raise SystemExit("comments JSON must be an array")
+    if not isinstance(ci_runs, dict):
+        raise SystemExit("CI runs JSON must be an object")
 
     decision = decide_reconciliation(
-        pr, comments, repository_owner=args.repository_owner
+        pr, comments, repository_owner=args.repository_owner, ci_runs=ci_runs
     )
     print(json.dumps(decision, ensure_ascii=False, sort_keys=True))
     return 0

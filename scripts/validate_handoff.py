@@ -4,7 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
-from orchestrator.handoff_gate import HandoffGateError, validate_handoff
+from orchestrator.handoff_gate import (
+    HandoffGateError, extract_handoff, independent_review_pass, validate_handoff,
+)
 
 
 def main() -> int:
@@ -16,6 +18,7 @@ def main() -> int:
     parser.add_argument("--phase", required=True)
     parser.add_argument("--source-sha", default="")
     parser.add_argument("--trusted-login", action="append", default=[])
+    parser.add_argument("--require-independent-review", action="store_true")
     args = parser.parse_args()
 
     comments = json.loads(Path(args.comments).read_text())
@@ -32,6 +35,25 @@ def main() -> int:
             source_sha=args.source_sha or None,
             trusted_logins=set(args.trusted_login) if args.trusted_login else None,
         )
+        if args.require_independent_review:
+            matches = []
+            for comment in comments:
+                if (comment.get("user") or {}).get("login") != args.trusted_login[0]:
+                    continue
+                try:
+                    candidate = extract_handoff(str(comment.get("body") or ""))
+                except HandoffGateError:
+                    continue
+                if candidate == payload:
+                    matches.append(comment)
+            if not matches or not independent_review_pass(
+                comments, handoff=payload, handoff_comment=max(
+                    matches, key=lambda item: (str(item.get("created_at") or ""), int(item.get("id") or 0))
+                ),
+                task_id=args.task_id, source_sha=args.source_sha,
+                trusted_login=args.trusted_login[0],
+            ):
+                raise HandoffGateError("independent current-SHA Work Review PASS missing")
     except HandoffGateError as exc:
         print(f"HANDOFF_GATE=BLOCKED: {exc}")
         return 1

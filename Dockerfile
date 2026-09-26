@@ -35,4 +35,4 @@ COPY tests ./tests
 RUN mkdir -p /app/data
 
 EXPOSE 8080
-CMD ["uvicorn","orchestrator.main:app","--host","0.0.0.0","--port","8080"]
+CMD ["uvicorn","orchestrator.control_service:create_app","--factory","--host","0.0.0.0","--port","8080"]

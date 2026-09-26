@@ -1,4 +1,5 @@
 from orchestrator.task_router import build, next_labels
+import pytest
 
 
 def pr_payload(phase: str):
@@ -13,6 +14,32 @@ def test_prototype_routes_to_workbuddy():
 def test_qa_routes_to_workbuddy():
     req, _ = build("pull_request", pr_payload("phase:qa"), "a/b")
     assert req.phase == "phase:qa"
+
+
+@pytest.mark.parametrize("last_label", ["agent:workbuddy", "phase:qa", "status:todo"])
+def test_any_final_routing_label_discovers_ready_qa(last_label):
+    payload = pr_payload("phase:qa")
+    payload["label"]["name"] = last_label
+    assert build("pull_request", payload, "a/b")[0].phase == "phase:qa"
+
+
+@pytest.mark.parametrize("extra_label", [
+    "status:running", "status:blocked", "status:review",
+    "agent:chatgpt", "phase:prototype", "approval:production-required",
+])
+def test_ambiguous_or_human_wait_state_is_not_routed(extra_label):
+    payload = pr_payload("phase:qa")
+    payload["pull_request"]["labels"].append({"name": extra_label})
+    assert build("pull_request", payload, "a/b") is None
+
+
+def test_unrelated_label_or_foreign_repository_cannot_start_worker():
+    payload = pr_payload("phase:qa")
+    payload["label"]["name"] = "priority:high"
+    assert build("pull_request", payload, "a/b") is None
+    payload["label"]["name"] = "status:todo"
+    payload["repository"] = {"full_name": "other/repo"}
+    assert build("pull_request", payload, "a/b") is None
 
 
 def test_non_workbuddy_agent_is_not_routed_by_orchestrator():

@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   issues: write
   pull-requests: write
@@ -19,12 +20,8 @@ concurrency:
 jobs:
   reconcile:
     if: >-
-      github.event_name != 'issue_comment' ||
-      (
-        github.event.issue.pull_request != null &&
-        github.event.comment.user.login == github.repository_owner &&
-        contains(github.event.comment.body, '<!-- agent-handoff:v1 -->')
-      )
+      vars.CONTROL_WORKFLOW_MODE == 'legacy' &&
+      (github.event_name != 'issue_comment' || ( github.event.issue.pull_request != null && github.event.comment.user.login == github.repository_owner && contains(github.event.comment.body, '<!-- agent-handoff:v1 -->') ))
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -42,8 +39,8 @@ jobs:
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             printf '%s\n' "$EVENT_PR" > "$RUNNER_TEMP/prs.txt"
           else
-            gh pr list --repo "${{ github.repository }}" --state open --limit 100 \
-              --json number --jq '.[].number' > "$RUNNER_TEMP/prs.txt"
+            gh api "repos/${{ github.repository }}/pulls?state=open&per_page=100" \
+              --paginate --jq '.[].number' > "$RUNNER_TEMP/prs.txt"
           fi
 
       - name: Reconcile validated handoff state
@@ -59,23 +56,63 @@ jobs:
             gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" \
               > "$RUNNER_TEMP/pr-$PR_NUMBER.json"
             gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
-              --paginate > "$RUNNER_TEMP/comments-$PR_NUMBER.json"
+              --paginate --jq '.[]' | jq -s '.' \
+              > "$RUNNER_TEMP/comments-$PR_NUMBER.json"
+            HEAD_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/pr-$PR_NUMBER.json")"
+            gh api "repos/${{ github.repository }}/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+              --paginate --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' \
+              > "$RUNNER_TEMP/ci-$PR_NUMBER.json"
 
             PYTHONPATH=. python scripts/reconcile_handoff_state.py \
               --pr-json "$RUNNER_TEMP/pr-$PR_NUMBER.json" \
               --comments-json "$RUNNER_TEMP/comments-$PR_NUMBER.json" \
+              --ci-runs-json "$RUNNER_TEMP/ci-$PR_NUMBER.json" \
               --repository-owner "$REPOSITORY_OWNER" \
               > "$RUNNER_TEMP/decision-$PR_NUMBER.json"
 
             ACTION="$(jq -r '.action' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            if [ "$ACTION" != "reconcile" ]; then
+            if [ "$ACTION" != "reconcile" ] && [ "$ACTION" != "ensure_qa_dispatch" ] && [ "$ACTION" != "converge_owner_wait" ] && [ "$ACTION" != "requeue_post_qa_review" ]; then
               continue
             fi
 
             EXPECTED_SHA="$(jq -r '.source_sha' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            LIVE_SHA="$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq '.head.sha')"
+            gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/live-$PR_NUMBER.json"
+            LIVE_SHA="$(jq -r '.head.sha' "$RUNNER_TEMP/live-$PR_NUMBER.json")"
             if [ "$LIVE_SHA" != "$EXPECTED_SHA" ]; then
               echo "PR #$PR_NUMBER advanced during reconciliation; skip stale decision."
+              continue
+            fi
+
+            # Labels are a single projection write, not a sequence of partial
+            # remove/add operations. Do not overwrite a concurrent label edit.
+            if ! diff -u \
+              <(jq -r '.labels_before[]' "$RUNNER_TEMP/decision-$PR_NUMBER.json") \
+              <(jq -r '.labels[].name' "$RUNNER_TEMP/live-$PR_NUMBER.json" | sort); then
+              echo "PR #$PR_NUMBER labels changed; retry at next reconciliation."
+              continue
+            fi
+            if [ "$ACTION" = "requeue_post_qa_review" ]; then
+              TASK_ID="$(jq -r '.task_id' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              if [ "$(jq -r '.write_marker' "$RUNNER_TEMP/decision-$PR_NUMBER.json")" = "true" ]; then
+                printf '%s\n' '<!-- qa-postwrite-review:v1 -->' "task_id=$TASK_ID" "source_sha=$EXPECTED_SHA" 'next=NEW_INDEPENDENT_WORK_CODE_REVIEW' > "$RUNNER_TEMP/post-qa-$PR_NUMBER.md"
+                gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/post-qa-$PR_NUMBER.md"
+              fi
+              # A comment can race with another actor. Verify the PR again
+              # after publishing the marker and before projecting READY.
+              gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > "$RUNNER_TEMP/live-$PR_NUMBER.json"
+              test "$(jq -r '.head.sha' "$RUNNER_TEMP/live-$PR_NUMBER.json")" = "$EXPECTED_SHA"
+              diff -u <(jq -r '.labels_before[]' "$RUNNER_TEMP/decision-$PR_NUMBER.json") <(jq -r '.labels[].name' "$RUNNER_TEMP/live-$PR_NUMBER.json" | sort)
+              jq '{labels: .labels_after}' "$RUNNER_TEMP/decision-$PR_NUMBER.json" | gh api --method PUT "repos/${{ github.repository }}/issues/$PR_NUMBER/labels" --input - >/dev/null
+              continue
+            fi
+            if [ "$ACTION" = "reconcile" ] || [ "$ACTION" = "converge_owner_wait" ]; then
+              jq '{labels: .labels_after}' "$RUNNER_TEMP/decision-$PR_NUMBER.json" \
+                | gh api --method PUT \
+                    "repos/${{ github.repository }}/issues/$PR_NUMBER/labels" --input - >/dev/null
+            fi
+
+            # Validated QA owner wait has no downstream worker to start.
+            if [ "$ACTION" = "converge_owner_wait" ]; then
               continue
             fi
 
@@ -83,40 +120,88 @@ jobs:
             TARGET_PHASE="$(jq -r '.target_phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
             DESIRED_STATUS="$(jq -r '.desired_status' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
 
-            CURRENT_LABELS="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --json labels --jq '.labels[].name')
+            if [ "$ACTION" = "reconcile" ]; then
+              FROM_AGENT="$(jq -r '.from_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              PHASE="$(jq -r '.phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              MARKER="<!-- agent-handoff-reconciler:$FROM_AGENT:$PHASE:$EXPECTED_SHA -->"
+              EXISTING="$(gh api \
+                "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+                --paginate \
+                --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" \
+                | head -n1)"
 
-            for LABEL in \
-              agent:codex agent:chatgpt agent:workreview agent:workbuddy \
-              phase:prototype phase:implementation phase:code-review phase:qa phase:release phase:deploy \
-              status:todo status:running status:blocked
-            do
-              if printf '%s\n' "$CURRENT_LABELS" | grep -Fxq "$LABEL"; then
-                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-                  --remove-label "$LABEL"
+              if [ -z "$EXISTING" ]; then
+                gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+                  --body "$MARKER Reconciled the validated handoff to $TARGET_AGENT + $TARGET_PHASE + $DESIRED_STATUS at exact head $EXPECTED_SHA."
               fi
-            done
+            fi
 
-            # Ownership and phase must exist before status:todo is emitted, because
-            # OpenAI Validator uses that final label event as the QA trigger.
-            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --add-label "$TARGET_AGENT"
-            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --add-label "$TARGET_PHASE"
-            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --add-label "$DESIRED_STATUS"
-
-            FROM_AGENT="$(jq -r '.from_agent' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            PHASE="$(jq -r '.phase' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
-            MARKER="<!-- agent-handoff-reconciler:$FROM_AGENT:$PHASE:$EXPECTED_SHA -->"
-            EXISTING="$(gh api \
-              "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
-              --paginate \
-              --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" \
-              | head -n1)
-
-            if [ -z "$EXISTING" ]; then
+            # GITHUB_TOKEN-created label events do not wake ordinary Actions
+            # pull_request:labeled consumers. repository_dispatch is explicit
+            # and Validator revalidates the live exact-SHA handoff itself.
+            if [ "$TARGET_PHASE" = "phase:qa" ] && [ "$DESIRED_STATUS" = "status:todo" ]; then
+              DISPATCH_MARKER="<!-- agent-handoff-qa-dispatch:v1:$EXPECTED_SHA -->"
+              DISPATCHED="$(gh api \
+                "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" \
+                --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$DISPATCH_MARKER\"))) | .id" \
+                | head -n1)"
+              if [ -n "$DISPATCHED" ]; then
+                continue
+              fi
+              TASK_ID="$(jq -r '.task_id' "$RUNNER_TEMP/decision-$PR_NUMBER.json")"
+              jq -n --argjson pr_number "$PR_NUMBER" --arg task_id "$TASK_ID" \
+                --arg source_sha "$EXPECTED_SHA" \
+                '{event_type:"agent_workbuddy_qa",client_payload:{pr_number:$pr_number,task_id:$task_id,source_sha:$source_sha,phase:"qa"}}' \
+                | gh api --method POST "repos/${{ github.repository }}/dispatches" --input -
               gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
-                --body "$MARKER Reconciled the validated handoff to $TARGET_AGENT + $TARGET_PHASE + $DESIRED_STATUS at exact head $EXPECTED_SHA."
+                --body "$DISPATCH_MARKER Requested Validator QA for task $TASK_ID at exact head $EXPECTED_SHA."
             fi
           done < "$RUNNER_TEMP/prs.txt"
+ 
+  invalid-control-mode:
+    if: vars.CONTROL_WORKFLOW_MODE != '' && vars.CONTROL_WORKFLOW_MODE != 'legacy' && vars.CONTROL_WORKFLOW_MODE != 'shared'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: |
+          echo "Invalid CONTROL_WORKFLOW_MODE; no writer was started."
+          exit 1
+
+  shared-control:
+    if: (vars.CONTROL_WORKFLOW_MODE == '' || vars.CONTROL_WORKFLOW_MODE == 'shared')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.CONTROL_BUILD_SHA || github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Resolve reviewed controller revision
+        env:
+          CONTROL_BUILD_SHA_OVERRIDE: ${{ vars.CONTROL_BUILD_SHA }}
+        run: |
+          set -euo pipefail
+          RESOLVED_SHA="$(git rev-parse HEAD)"
+          [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [ -n "$CONTROL_BUILD_SHA_OVERRIDE" ] && [ "$RESOLVED_SHA" != "$CONTROL_BUILD_SHA_OVERRIDE" ]; then
+            echo "Pinned controller revision did not resolve exactly."
+            exit 1
+          fi
+          echo "CONTROL_BUILD_SHA=$RESOLVED_SHA" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Delegate to shared controller without legacy fallback
+        env:
+          CONTROL_SERVICE_URL: ${{ vars.CONTROL_SERVICE_URL }}
+          CONTROL_SERVICE_TOKEN: ${{ secrets.CONTROL_SERVICE_TOKEN }}
+          ORCH_SERVER_HOST: ${{ secrets.ORCH_SERVER_HOST }}
+          ORCH_SERVER_USER: ${{ secrets.ORCH_SERVER_USER }}
+          ORCH_SERVER_PORT: ${{ secrets.ORCH_SERVER_PORT }}
+          ORCH_SERVER_SSH_KEY: ${{ secrets.ORCH_SERVER_SSH_KEY }}
+          ORCH_SERVER_KNOWN_HOSTS: ${{ secrets.ORCH_SERVER_KNOWN_HOSTS }}
+          ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+        run: python scripts/shared_workflow_entry.py --source reconciler

@@ -96,10 +96,36 @@ require(
         "issue_comment:",
         'cron: "*/5 * * * *"',
         "scripts/reconcile_handoff_state.py",
-        "agent:workreview",
-        "phase:code-review",
-        "agent:workbuddy",
-        "phase:qa",
-        '--add-label "$DESIRED_STATUS"',
+        "--ci-runs-json",
+        "labels_after",
+        "agent_workbuddy_qa",
+        "ensure_qa_dispatch",
+        "agent-handoff-qa-dispatch:v1",
+        "converge_owner_wait",
+    ],
+)
+
+require(
+    "scripts/reconcile_handoff_state.py",
+    [
+        '("chatgpt", "workreview", "implementation")',
+        '("workreview", "workbuddy", "code_review")',
+        "current_sha_ci_not_success",
+        "canonical_qa_may_need_dispatch",
+        "converge_owner_wait",
+        "missing_independent_current_sha_review_pass",
+        "validated_timeout_resolved",
+    ],
+)
+
+require(
+    ".github/workflows/openai-validator.yml",
+    [
+        "--require-independent-review",
+        '--paginate --jq',
+        'head_sha == $sha',
+        "steps.context.outputs.source_sha",
+        "Pin trusted gate code from the default branch",
+        "PYTHONPATH=\"$RUNNER_TEMP/trusted\"",
     ],
 )

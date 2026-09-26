@@ -29,7 +29,7 @@ class Settings:
         False,
     )
 
-    max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
+    max_retries: int = int(os.getenv("MAX_RETRIES", "6"))
 
 
 settings = Settings()

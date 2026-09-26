@@ -1,6 +1,14 @@
-name: Deploy Automation Runtime
+name: Deploy Shared Control Runtime
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "orchestrator/**"
+      - "scripts/shared_*.py"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".github/workflows/bootstrap-orchestrator.yml"
   workflow_dispatch:
     inputs:
       confirm:
@@ -10,9 +18,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: shared-control-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
-    if: github.event.inputs.confirm == 'DEPLOY-ORCHESTRATOR'
+    if: github.event_name == 'push' || github.event.inputs.confirm == 'DEPLOY-ORCHESTRATOR'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -34,9 +46,10 @@ jobs:
           test -n "$KNOWN_HOSTS"
           test -n "$ENV_B64"
 
-      - name: Validate protected runtime bundle before touching server
+      - name: Build protected controller environment
         env:
           ORCH_ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
+          CONTROL_BUILD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           printf '%s' "$ORCH_ENV_B64" | base64 -d > "$RUNNER_TEMP/server.env"
@@ -45,27 +58,36 @@ jobs:
           import os
           from pathlib import Path
 
+          path=Path(os.environ["RUNNER_TEMP"])/"server.env"
+          lines=path.read_text().splitlines()
           values={}
-          for raw in Path(os.environ["RUNNER_TEMP"],"server.env").read_text().splitlines():
+          for raw in lines:
               line=raw.strip()
               if not line or line.startswith("#") or "=" not in line:
                   continue
               key,value=line.split("=",1)
               values[key.strip()]=value.strip()
 
-          required=[
-              "GITHUB_TOKEN",
-              "GITHUB_REPOSITORY",
-              "ORCHESTRATOR_TOKEN",
-          ]
+          required=["GITHUB_TOKEN","GITHUB_REPOSITORY","ORCHESTRATOR_TOKEN"]
           missing=[key for key in required if not values.get(key)]
           if missing:
               raise SystemExit("server env missing keys: " + ", ".join(missing))
-
           if values["GITHUB_REPOSITORY"] != "jiangsanlin-crypto/zhihuiqz":
               raise SystemExit("server repository binding is incorrect")
 
-          print("server runtime bundle validated")
+          overrides={
+              "CONTROL_REPOSITORY":"jiangsanlin-crypto/zhihuiqz",
+              "CONTROL_BUILD_SHA":os.environ["CONTROL_BUILD_SHA"],
+              "CONTROL_WRITES_ENABLED":"true",
+              "CONTROL_STATE_DB":"/app/data/orchestrator.db",
+          }
+          kept=[
+              raw for raw in lines
+              if raw.split("=",1)[0].strip() not in overrides
+          ]
+          kept.extend(f"{key}={value}" for key,value in overrides.items())
+          path.write_text("\n".join(kept)+"\n")
+          print("protected controller environment validated")
           PY
 
       - name: Configure SSH
@@ -85,28 +107,31 @@ jobs:
           USER: ${{ secrets.ORCH_SERVER_USER }}
           PORT: ${{ secrets.ORCH_SERVER_PORT }}
           TARGET: ${{ secrets.ORCH_SERVER_PATH }}
-          ENV_B64: ${{ secrets.ORCH_ENV_B64 }}
         run: |
+          set -euo pipefail
           PORT="${PORT:-22}"
           TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
-
           ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST" "mkdir -p '$TARGET' && chmod 700 '$TARGET'"
-          printf '%s' "$ENV_B64" |
-            ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST"             "base64 -d > '$TARGET/.env' && chmod 600 '$TARGET/.env'"
+          base64 < "$RUNNER_TEMP/server.env" |
+            ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST" \
+              "base64 -d > '$TARGET/.env' && chmod 600 '$TARGET/.env'"
 
-      - name: Deploy persistent Orchestrator
+      - name: Deploy exact main controller
         env:
           HOST: ${{ secrets.ORCH_SERVER_HOST }}
           USER: ${{ secrets.ORCH_SERVER_USER }}
           PORT: ${{ secrets.ORCH_SERVER_PORT }}
           TARGET: ${{ secrets.ORCH_SERVER_PATH }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
           PORT="${PORT:-22}"
           TARGET="${TARGET:-/opt/zhihuiqz-orchestrator}"
 
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST" bash -s -- "$TARGET" <<'REMOTE'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40 -p "$PORT" "$USER@$HOST" bash -s -- "$TARGET" "$EXPECTED_SHA" <<'REMOTE'
           set -euo pipefail
           TARGET="$1"
+          EXPECTED_SHA="$2"
           REPO="https://github.com/jiangsanlin-crypto/zhihuiqz.git"
 
           if [ ! -d "$TARGET/.git" ]; then
@@ -117,25 +142,31 @@ jobs:
 
           cd "$TARGET"
           PREV_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
-
           git fetch origin main
-          git reset --hard origin/main
+          git reset --hard "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
           set +e
           docker compose up -d --build
           DEPLOY_RC=$?
           set -e
 
-          if [ "$DEPLOY_RC" -ne 0 ]; then
+          rollback() {
+            echo "Rolling back shared controller"
             if [ -n "$PREV_SHA" ]; then
               git reset --hard "$PREV_SHA"
+              sed -i 's/^CONTROL_WRITES_ENABLED=.*/CONTROL_WRITES_ENABLED=false/' .env || true
               docker compose up -d --build || true
             fi
+          }
+
+          if [ "$DEPLOY_RC" -ne 0 ]; then
+            rollback
             exit "$DEPLOY_RC"
           fi
 
           READY=0
-          for delay in 0 5 10 20 30 45; do
+          for delay in 0 3 5 10 20 30; do
             sleep "$delay"
             if curl --fail --silent http://127.0.0.1:8080/readyz >/tmp/readyz.json; then
               READY=1
@@ -144,33 +175,34 @@ jobs:
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "Orchestrator readiness failed; rolling back."
             docker compose ps || true
-            if [ -n "$PREV_SHA" ]; then
-              git reset --hard "$PREV_SHA"
-              docker compose up -d --build || true
-            fi
+            rollback
             exit 1
           fi
 
-          python - <<'PY'
-          import json
+          python - "$EXPECTED_SHA" <<'PY'
+          import json,sys
           data=json.load(open("/tmp/readyz.json"))
-          if data.get("ok") is not True:
-              raise SystemExit("readyz returned ok != true")
-          print("Orchestrator ready")
+          expected=sys.argv[1]
+          assert data.get("status")=="ready"
+          assert data.get("build_sha")==expected
+          assert data.get("writes_enabled") is True
+          assert data.get("agents_enabled") is False
+          assert data.get("protocol")=="shared-claims:v1"
+          assert data.get("repository")=="jiangsanlin-crypto/zhihuiqz"
+          print("shared controller ready")
           PY
-
           docker compose ps
           REMOTE
 
       - name: Deployment summary
         run: |
           {
-            echo "## Automation runtime deployed"
+            echo "## Shared control runtime deployed"
             echo
+            echo "- Revision: \`${{ github.sha }}\`"
             echo "- Transport: GitHub Actions -> SSH -> Docker Compose"
-            echo "- Readiness gate: /readyz"
-            echo "- Rollback: previous Git SHA on failure"
-            echo "- Agent handoffs run directly in GitHub Actions; this runtime is used for deployment health/audit only"
+            echo "- Authority: shared claims/state writer"
+            echo "- Readiness: exact build + writes enabled"
+            echo "- Automatic rollback: enabled"
           } >> "$GITHUB_STEP_SUMMARY"
