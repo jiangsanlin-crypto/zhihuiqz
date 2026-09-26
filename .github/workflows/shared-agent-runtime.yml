@@ -81,7 +81,10 @@ jobs:
           OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO --output-name openai_api_key
-          test -n "${{ steps.openai_key.outputs.openai_api_key }}"
+      - name: Verify resolved OpenAI API key
+        env:
+          OPENAI_API_KEY_RUNTIME: ${{ steps.openai_key.outputs.openai_api_key }}
+        run: test -n "$OPENAI_API_KEY_RUNTIME"
       - name: Run Codex product planner
         uses: openai/codex-action@v1
         with:
@@ -240,7 +243,10 @@ jobs:
           OPENAI_API_KEY_REPO: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python _control/scripts/runtime_secret.py OPENAI_API_KEY             --fallback-env OPENAI_API_KEY_REPO --output-name openai_api_key
-          test -n "${{ steps.openai_key.outputs.openai_api_key }}"
+      - name: Verify resolved OpenAI API key
+        env:
+          OPENAI_API_KEY_RUNTIME: ${{ steps.openai_key.outputs.openai_api_key }}
+        run: test -n "$OPENAI_API_KEY_RUNTIME"
       - name: Run validation model
         uses: openai/codex-action@v1
         with:
