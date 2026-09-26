@@ -93,6 +93,11 @@ def create_plan_commit(paths: list[str], issue_number: int) -> tuple[str, str]:
     base_ref = str(repo["default_branch"])
     base = gh("GET", f"git/ref/heads/{quote(base_ref, safe='')}")
     base_sha = str(base["object"]["sha"])
+    workspace_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
+    if base_sha != workspace_sha:
+        raise RuntimeError("default branch advanced during planning; retry on the new controller build")
     parent = gh("GET", f"git/commits/{base_sha}")
     entries = []
     for path in paths:
