@@ -252,3 +252,27 @@ recheck before publishing, and use the same service/database. The service does
 not execute a planner or create a branch/PR. The existing planning host has not
 been connected; this API alone is not Issue-to-PR completion. GitHub publication
 by an uncooperative host is not fenced by a SQLite lease.
+
+## Durable account-host acquisition journal
+
+Account hosts should construct `ClaimRetryJournal` on a persistent local path
+and pass it as `retry_journal` to `ClaimClient`. It stores only the immutable
+binding hash, worker/request ID, attempt index, enumerated outcome and timestamp;
+never tokens, exception bodies, repository content or model output.
+
+Transport/429/5xx failures consume the bounded retry budget. A restart resumes
+recorded retries rather than starting the same request at attempt zero. Exhausted
+requests persist `WORKER_ACQUISITION_FAILED`; stale/auth responses end that request
+without retry. `consume_one` uses this journal after fresh READY discovery: it
+resumes uncertain attempts, skips ended bindings during a ten-minute cooldown,
+and permits a new request only after another fresh discovery. Each acquisition
+still performs server-side live SHA/state/lease validation. A new SHA has a new
+binding. No labels, fake result or workflow are written by the journal.
+
+This is a durable host-side recoverable acquisition condition, not a GitHub
+`status:blocked` projection. When the service itself is unreachable, pretending
+it durably received a blocker would be incorrect. Hosts must preserve this file;
+without `retry_journal`, compatibility callers retain in-memory retry behavior.
+The journal is not a distributed lock: the authoritative claim service remains
+responsible for excluding competing workers. Multi-host audit aggregation and
+remaining R01/R04 policies still require integration.
