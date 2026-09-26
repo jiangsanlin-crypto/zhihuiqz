@@ -1,0 +1,51 @@
+{
+  "version": "1.0",
+  "task_id": "GH-ISSUE-86",
+  "phase": "prototype_validation",
+  "pr_number": 87,
+  "source_sha": "b0e5905063833322dfd67af52f671958095534dd",
+  "status": "ready",
+  "summary": "The scoped synthetic shared-controller acceptance task is implementable and has explicit exact-SHA, privacy, and Human Approval boundaries. Recruitment taxonomy and localized product UX are not applicable and are not claimed as validated.",
+  "checks": [
+    {
+      "name": "trusted_planning_handoff",
+      "status": "passed",
+      "detail": "Task, PR, phase, source SHA, success status, and empty blockers match the supplied trusted handoff."
+    },
+    {
+      "name": "implementation_scope",
+      "status": "passed",
+      "detail": "The synthetic marker, required phase sequence, SHA-bound evidence, and Human Approval terminal state are specified."
+    },
+    {
+      "name": "privacy_and_synthetic_data",
+      "status": "passed",
+      "detail": "The plan requires synthetic-only data and excludes production candidate data, merge, and deployment."
+    },
+    {
+      "name": "recruitment_taxonomy_and_aliases",
+      "status": "not_applicable",
+      "detail": "No recruitment classifier or Khmer occupation terms/aliases are in scope; none are approved by this gate."
+    },
+    {
+      "name": "multilingual_recruitment_ux",
+      "status": "not_applicable",
+      "detail": "No recruitment-facing UI or localized product copy is proposed."
+    },
+    {
+      "name": "workflow_terminal_safety",
+      "status": "passed",
+      "detail": "The task stops at Human Approval, retains the production-required approval state, and does not merge or deploy."
+    }
+  ],
+  "blockers": [],
+  "next_phase": "implementation",
+  "constraints": [
+    "Use synthetic data only.",
+    "The marker file must contain exactly AGENT_E2E_OK with no trailing newline.",
+    "Bind each handoff and evidence record to GH-ISSUE-86, PR #87, and its exact source SHA.",
+    "After any HEAD change, obtain fresh evidence for that SHA; after QA report publication, follow the specified CI, independent review, and evidence-only QA sequence.",
+    "Use the approved shared-control host adapter and native shared-writer report publication; never fall back to legacy workflow-state writes.",
+    "Stop at Human Approval; do not merge or deploy."
+  ]
+}
