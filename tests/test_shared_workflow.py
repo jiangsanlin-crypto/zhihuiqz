@@ -81,7 +81,10 @@ def test_workflow_migration_is_exclusive_read_only_and_revision_pinned(name,lega
     for old in legacy:
         assert "vars.CONTROL_WORKFLOW_MODE == 'legacy'" in jobs[old]['if']
     checkout=next(s for s in shared['steps'] if s.get('uses','').startswith('actions/checkout'))
-    assert checkout['with']['ref']=='${{ vars.CONTROL_BUILD_SHA || github.sha }}'
+    assert checkout['with']['ref']=='${{ vars.CONTROL_BUILD_SHA || github.event.repository.default_branch }}'
+    resolved=next(s for s in shared['steps'] if s.get('name')=='Resolve reviewed controller revision')
+    assert 'git rev-parse HEAD' in resolved['run']
+    assert 'CONTROL_BUILD_SHA=$RESOLVED_SHA' in resolved['run']
     text=json.dumps(shared)
     for forbidden in ['gh api','gh pr','codex-action','OPENAI_API_KEY','repository_dispatch','workflow_dispatch','continue-on-error']:
         assert forbidden not in text
