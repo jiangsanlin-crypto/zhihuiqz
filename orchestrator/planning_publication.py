@@ -169,6 +169,48 @@ async def verify_publication(store, github, row, pr_number, *, allow_descendant=
         or hashlib.sha256(body.encode()).hexdigest()!=intent['body_sha256']
         or any(x.startswith('approval:') or x=='status:review' for x in label_names(pr.get('labels')))):
         raise HTTPException(409,'PUBLICATION_CONTENT_CHANGED')
+    # Publication confirmation is the only authority that activates a newly
+    # planned PR. Labels are a projection of the verified immutable publication,
+    # never a planner-authored side effect.
+    target_workflow = {"agent:workbuddy", "phase:prototype", "status:todo"}
+    before = set(label_names(pr.get("labels")))
+    workflow = {
+        value for value in before
+        if value.startswith(("agent:", "phase:", "status:", "approval:"))
+    }
+    if workflow not in (set(), target_workflow):
+        raise HTTPException(409, "PUBLICATION_STATE_CHANGED")
+    after = {
+        value for value in before
+        if not value.startswith(("agent:", "phase:", "status:", "approval:",
+                                 "blocker:", "recovery:", "watchdog:"))
+    } | target_workflow
+    if before != after:
+        live = await github.get_pr_snapshot(repo, pr_number)
+        if ((live.get("head") or {}).get("sha") != head.get("sha")
+            or set(label_names(live.get("labels"))) != before):
+            raise HTTPException(409, "PUBLICATION_STATE_CHANGED")
+        await github.set_labels(repo, pr_number, sorted(after))
+        projected = await github.get_pr_snapshot(repo, pr_number)
+        if ((projected.get("head") or {}).get("sha") != head.get("sha")
+            or set(label_names(projected.get("labels"))) != after):
+            raise HTTPException(409, "PUBLICATION_PROJECTION_UNVERIFIED")
+        store.record_recovery_audit("planning:" + row["publication_id"], dict(
+            rule_id="PLANNING_PUBLICATION_ACTIVATE",
+            repository=repo,
+            pr_number=pr_number,
+            issue_number=row["issue_number"],
+            source_sha=head.get("sha"),
+            lease_id="planning-publication",
+            status="applied",
+            action_type="project",
+            reason="verified publication activated through shared controller",
+            labels_before=sorted(before),
+            labels_after=sorted(after),
+            evidence_generation=row["publication_id"],
+            created_at=now(),
+        ))
+
     # Re-read issue generation after the PR reads. Confirmation observes
     # already-published work, never grants an expired planner another write.
     current=next((x for x in await github.list_open_issues(repo) if x['number']==row['issue_number']),None)
