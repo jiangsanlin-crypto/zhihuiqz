@@ -136,6 +136,26 @@ class GitHubClient:
                 return items
             page += 1
 
+    async def get_publication_commit(self, repo: str, sha: str) -> dict:
+        """Read the immutable commit and every changed path (fail on truncation)."""
+        result, files, page = None, [], 1
+        while True:
+            response = await self._request("GET", f"{self.base}/repos/{repo}/commits/{sha}",
+                params={"per_page": 100, "page": page})
+            data = response.json()
+            if result is None:
+                result = data
+            batch = data.get("files")
+            if not isinstance(batch, list):
+                raise ValueError("commit paths unavailable")
+            files.extend(batch)
+            if len(files) >= 3000:
+                raise ValueError("commit path listing may be truncated")
+            if len(batch) < 100:
+                result["files"] = files
+                return result
+            page += 1
+
     async def list_workflow_runs(self, repo: str, head_sha: str) -> dict[str, Any]:
         runs: list[dict[str, Any]] = []
         page = 1

@@ -546,3 +546,157 @@ def test_new_human_wait_during_external_recovery_is_preserved(projection_setup):
     assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 0
     assert len(writes) == 1
     assert pr['labels'] == ['status:review', 'approval:production-required']
+
+
+@pytest.fixture
+def publication_setup(projection_setup):
+    client, store, pr, github, comments, runs, writes = projection_setup
+    pr['labels'] = ['agent:chatgpt', 'phase:implementation', 'status:todo']
+    async def commit(*args):
+        return {'sha': 'b' * 40, 'parents': [{'sha': SHA}], 'files': [{'filename': 'app.py'}]}
+    github.get_publication_commit = commit
+    claim = client.post('/claims/acquire', json=dict(payload(), phase='phase:implementation'), headers=AUTH).json()
+    assert client.post('/claims/start', json=owned(claim), headers=AUTH).status_code == 200
+    return projection_setup, claim
+
+
+def test_declared_head_transfer_requires_new_sha_evidence(publication_setup):
+    (client, store, pr, _, comments, runs, writes), claim = publication_setup
+    assert client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH).status_code == 200
+    assert client.post('/claims/confirm-head', json=owned(claim), headers=AUTH).status_code == 409
+    pr['head']['sha'] = 'b'*40
+    result = client.post('/claims/confirm-head', json=owned(claim), headers=AUTH)
+    assert result.status_code == 200
+    assert result.json()['source_sha'] == 'b'*40
+    assert client.post('/claims/confirm-head', json=owned(claim), headers=AUTH).status_code == 200
+    assert client.post('/claims/heartbeat', json=owned(claim), headers=AUTH).json()['source_sha'] == 'b'*40
+    assert client.post('/claims/advance', json=owned(claim), headers=AUTH).status_code == 409
+    assert len(writes) == 1
+    comments[:] = [{'user': {'login': 'owner'}, 'body': '<!-- agent-handoff:v1 -->\n```json\n' + json.dumps({
+        'task_id': 'GH-ISSUE-77', 'from_agent': 'chatgpt', 'to_agent': 'workreview',
+        'phase': 'implementation', 'status': 'success', 'blockers': [], 'source_sha': 'b'*40,
+        'pr_number': 78}) + '\n```'}]
+    runs['workflow_runs'][0]['head_sha'] = 'b'*40
+    assert client.post('/claims/advance', json=owned(claim), headers=AUTH).status_code == 200
+    assert pr['labels'] == ['agent:workreview', 'phase:code-review', 'status:todo']
+
+
+@pytest.mark.parametrize('invalid', ['parent', 'merge', 'workflow', 'rename'])
+def test_publication_rejects_unrelated_or_workflow_commits(publication_setup, invalid):
+    (client, _, _, github, _, _, _), claim = publication_setup
+    async def commit(*args):
+        parents = [{'sha': SHA}]
+        files = [{'filename': 'app.py'}]
+        if invalid == 'parent': parents = [{'sha': 'c'*40}]
+        elif invalid == 'merge': parents.append({'sha': 'c'*40})
+        elif invalid == 'workflow': files = [{'filename': '.github/workflows/ci.yml'}]
+        else: files = [{'filename': 'old.yml', 'previous_filename': '.github/workflows/ci.yml'}]
+        return {'sha': 'b'*40, 'parents': parents, 'files': files}
+    github.get_publication_commit = commit
+    assert client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH).status_code == 409
+
+
+@pytest.mark.parametrize('change', ['head', 'base', 'human'])
+def test_confirmation_never_adopts_concurrent_changes(publication_setup, change):
+    (client, store, pr, _, _, _, writes), claim = publication_setup
+    client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH)
+    pr['head']['sha'] = 'b'*40
+    if change == 'head': pr['head']['sha'] = 'c'*40
+    elif change == 'base': pr['base']['ref'] = 'another-base'
+    else: pr['labels'] = ['status:review', 'approval:production-required']
+    assert client.post('/claims/confirm-head', json=owned(claim), headers=AUTH).status_code == 409
+    assert json.loads(store.get(claim['delivery_id'])['payload_json'])['source_sha'] == SHA
+    assert len(writes) == 1
+
+
+def test_worker_crash_after_declared_push_recovers_new_sha(publication_setup):
+    import asyncio
+    from orchestrator.external_recovery import recover_external_once
+    (client, store, pr, github, comments, _, writes), claim = publication_setup
+    client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH)
+    pr['head']['sha'] = 'b'*40
+    comments.clear()
+    expire_claim(store, claim['delivery_id'])
+    assert asyncio.run(recover_external_once(store, github, 'owner/repo')) == 1
+    binding = json.loads(store.get(claim['delivery_id'])['payload_json'])
+    assert binding['source_sha'] == 'b'*40
+    assert pr['labels'] == ['agent:chatgpt', 'phase:implementation', 'status:todo']
+    assert client.post('/claims/heartbeat', json=owned(claim), headers=AUTH).status_code == 409
+    assert len(writes) == 2
+
+
+def test_heartbeat_recovers_lost_confirmation(publication_setup):
+    (client, _, pr, _, _, _, _), claim = publication_setup
+    client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH)
+    pr['head']['sha'] = 'b'*40
+    assert client.post('/claims/heartbeat', json=owned(claim), headers=AUTH).json()['source_sha'] == 'b'*40
+
+
+def test_review_phase_cannot_publish_code_using_its_review_lease(projection_setup):
+    client, _, _, _, _, _, _ = projection_setup
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    client.post('/claims/start', json=owned(claim), headers=AUTH)
+    response = client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH)
+    assert response.status_code == 409
+    assert response.json()['detail'] == 'PHASE_CANNOT_PUBLISH_CODE'
+
+
+def test_base_retarget_and_ambiguous_task_revoke_claim(projection_setup):
+    client, _, pr, _, _, _, _ = projection_setup
+    pr['body'] += '\n<!-- agent-task-id:other-task -->'
+    assert client.post('/claims/acquire', json=payload(), headers=AUTH).status_code == 409
+    pr['body'] = '<!-- agent-task-id:GH-ISSUE-77 -->'
+    claim = client.post('/claims/acquire', json=payload(), headers=AUTH).json()
+    pr['base']['ref'] = 'other-base'
+    assert client.post('/claims/heartbeat', json=owned(claim), headers=AUTH).status_code == 409
+
+
+def test_publication_cannot_steal_new_sha_operation(publication_setup):
+    (client, store, pr, _, _, _, _), claim = publication_setup
+    client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH)
+    store.enqueue('competitor', 'pull_request', {})
+    rival = store.claim_next()
+    key = json.dumps(['owner/repo', 78, 'b'*40, 'phase:implementation'], separators=(',', ':'))
+    assert store.claim_operation(key, rival['delivery_id'], rival['lease_id'])
+    pr['head']['sha'] = 'b'*40
+    assert client.post('/claims/confirm-head', json=owned(claim), headers=AUTH).status_code == 409
+    assert json.loads(store.get(claim['delivery_id'])['payload_json'])['source_sha'] == SHA
+
+
+def test_atomic_move_handles_duplicate_confirmation_snapshot(publication_setup):
+    (client, store, pr, _, _, _, _), claim = publication_setup
+    client.post('/claims/prepare-head', json=dict(owned(claim), target_sha='b'*40), headers=AUTH)
+    old_checkpoint = json.loads(store.get(claim['delivery_id'])['checkpoint_json'])
+    pr['head']['sha'] = 'b'*40
+    assert client.post('/claims/confirm-head', json=owned(claim), headers=AUTH).status_code == 200
+    row = store.move_external_head(claim['delivery_id'], claim['lease_id'], SHA, 'b'*40, old_checkpoint)
+    assert json.loads(row['payload_json'])['source_sha'] == 'b'*40
+    assert json.loads(row['checkpoint_json'])['head_publication']['status'] == 'applied'
+
+
+def test_account_consumer_publishes_and_hands_off_new_sha(projection_setup):
+    import asyncio
+    import httpx
+    from orchestrator.claim_client import ClaimClient
+    client, _, pr, github, comments, runs, _ = projection_setup
+    pr['number'] = 78
+    pr['labels'] = ['agent:chatgpt', 'phase:implementation', 'status:todo']
+    async def prs(*args): return [copy.deepcopy(pr)]
+    async def commit(*args): return {'sha': 'b'*40, 'parents': [{'sha': SHA}], 'files': [{'filename': 'app.py'}]}
+    github.list_open_prs, github.get_publication_commit = prs, commit
+    async def run():
+        worker = ClaimClient('https://claims.test', 'test-only-token', transport=httpx.ASGITransport(app=client.app))
+        async def implementation(binding):
+            async def publish(): pr['head']['sha'] = 'b'*40
+            assert await worker.publish_head('b'*40, publish) == 'b'*40
+            assert binding['source_sha'] == 'b'*40
+            runs['workflow_runs'][0]['head_sha'] = 'b'*40
+            comments[:] = [{'user': {'login': 'owner'}, 'body': '<!-- agent-handoff:v1 -->\n```json\n' + json.dumps({
+                'task_id': 'GH-ISSUE-77', 'from_agent': 'chatgpt', 'to_agent': 'workreview',
+                'phase': 'implementation', 'status': 'success', 'blockers': [], 'source_sha': 'b'*40,
+                'pr_number': 78}) + '\n```'}]
+            return 'implemented'
+        assert await worker.consume_one('phase:implementation', 'worker', implementation) == 'implemented'
+        await worker.close()
+    asyncio.run(run())
+    assert pr['labels'] == ['agent:workreview', 'phase:code-review', 'status:todo']

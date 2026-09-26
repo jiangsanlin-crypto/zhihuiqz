@@ -10,6 +10,7 @@ from .handoff_gate import HandoffGateError, extract_handoff
 from .state_projection import verified_next_workflow
 from .state_store import now
 from .task_router import TASK_MARKER, label_names
+from .head_transition import refresh_declared_head
 
 
 def _labels(pr):
@@ -24,6 +25,7 @@ def _identity(pr, binding):
     head, base = pr.get('head') or {}, pr.get('base') or {}
     repo = head.get('repo') or {}
     return (pr.get('state') == 'open' and not pr.get('merged_at')
+        and (not binding.get('base_ref') or base.get('ref') == binding['base_ref'])
         and repo.get('full_name') == binding['repository']
         and head.get('sha') == binding['source_sha']
         and head.get('ref') == binding['head_ref']
@@ -88,6 +90,13 @@ async def _recover(store, github, row, binding):
         return 0
     if not store.claim_operation(projection_key, delivery, lease):
         return 0
+    try:
+        row, binding = await refresh_declared_head(store, github, row, binding)
+    except HandoffGateError:
+        store.finish(delivery, 'superseded', 'DECLARED_PUBLICATION_MISMATCH', lease_id=lease)
+        return 0
+    checkpoint = json.loads(row.get('checkpoint_json') or '{}')
+    op = binding['operation_key']
     pr = await github.get_pr_snapshot(binding['repository'], binding['pr_number'])
     before = _labels(pr)
     # Human wait, HEAD movement and ambiguous routes are never repaired by

@@ -360,6 +360,42 @@ class StateStore:
                    ORDER BY lease_expires_at LIMIT 100""", (now(),)).fetchall()
         return [dict(row) for row in rows]
 
+    def move_external_head(self, delivery_id: str, lease_id: str,
+                           old_sha: str, new_sha: str, checkpoint: dict) -> dict:
+        """Transfer one live worker to its predeclared commit in one DB transaction."""
+        with self.lock, self.conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT * FROM events WHERE delivery_id=? AND lease_id=?
+                   AND event_name='external_claim' AND status='running' AND lease_expires_at>?""",
+                (delivery_id, lease_id, now())).fetchone()
+            if not row:
+                raise RuntimeError("WORKER_LEASE_LOST")
+            binding = json.loads(row["payload_json"])
+            if binding["source_sha"] != old_sha:
+                existing = json.loads(row["checkpoint_json"] or "{}").get("head_publication") or {}
+                if (binding["source_sha"] == new_sha and existing.get("from_sha") == old_sha
+                    and existing.get("to_sha") == new_sha and existing.get("status") == "applied"):
+                    return dict(row)
+                raise RuntimeError("HEAD_CHANGED")
+            key = json.dumps([binding["repository"], binding["pr_number"], new_sha, binding["phase"]], separators=(",", ":"))
+            active = connection.execute(
+                """SELECT c.delivery_id,c.lease_id FROM operation_claims c JOIN events e
+                   ON e.delivery_id=c.delivery_id AND e.lease_id=c.lease_id
+                   WHERE c.operation_key=? AND e.status='running' AND e.lease_expires_at>?""",
+                (key, now())).fetchone()
+            if active and (active["delivery_id"], active["lease_id"]) != (delivery_id, lease_id):
+                raise RuntimeError("ANOTHER_WORKER_OWNS_LEASE")
+            binding.update(source_sha=new_sha, operation_key=key)
+            connection.execute(
+                """INSERT INTO operation_claims VALUES(?,?,?,?) ON CONFLICT(operation_key)
+                   DO UPDATE SET delivery_id=excluded.delivery_id, lease_id=excluded.lease_id,
+                                 claimed_at=excluded.claimed_at""", (key, delivery_id, lease_id, now()))
+            connection.execute("UPDATE events SET payload_json=?,checkpoint_json=? WHERE delivery_id=?",
+                (json.dumps(binding), json.dumps(checkpoint), delivery_id))
+            connection.commit()
+        return self.get(delivery_id)
+
     def reclaim_external(self, delivery_id: str, old_lease_id: str) -> dict | None:
         """CAS an expired external lease for reconciliation, never execution."""
         lease_id = str(uuid.uuid4())

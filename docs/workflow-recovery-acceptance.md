@@ -81,8 +81,8 @@ Still not implemented/accepted globally:
 - Issue ingestion into a planned PR and all machine-blocker lifecycles; a PR
   scanner does not cover these. Legacy RUNNING tasks without authoritative lease
   evidence are not automatically adopted.
-- External worker publication across HEAD changes and adoption by actual account
-  schedules/Actions. No account model or live client is started by these tests.
+- Adoption of declared-commit publication by actual account schedules/Actions;
+  unregistered HEAD changes still stop execution. No account model or live client is started by these tests.
 - A sole state writer across existing Actions/native workers/account workers.
 - Authorized service rollout, independent review and live #78 final-SHA acceptance.
 
@@ -95,3 +95,19 @@ advance gates without rerunning work. Tests cover old-worker fencing, one recove
 owner, response loss, pending/failed evidence, HEAD movement and human wait. This
 requires workers to have adopted the shared service; it does not recover legacy
 workers or claim that every blocker has an automatic resolution policy.
+
+## Declared-publication batch
+
+Implementation/escalation-repair hosts can prepare one immutable direct-child
+commit, publish it themselves under branch safety guards, and confirm its SHA.
+The service transfers the live lease atomically to the exact declared SHA and
+requires new CI/handoff evidence. Heartbeat and expired-worker recovery can
+complete a lost confirmation. Independent Review cannot publish through its
+review lease; workflow file changes are rejected. Claim acquisition now binds
+the base branch and rejects ambiguous task markers.
+
+Tests cover the consumer-to-real-router implementation -> new HEAD -> fresh CI
+-> independent Review READY flow with mocked GitHub, interrupted publication,
+competing new-SHA ownership, duplicate confirmation, base/head/human-wait races
+and commit file pagination. Live hosts still need to adopt the protocol; no
+GitHub ref or workflow is mutated by these tests.

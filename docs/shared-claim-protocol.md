@@ -156,10 +156,9 @@ This client is integrated with the real claim router in mocked-GitHub tests.
 Their host configuration and the authoritative service deployment are required.
 Do not silently fall back to direct label writes after adopting this protocol.
 
-A phase that commits and changes HEAD cannot advance under its old lease. The
-client stops on that change. A verified publication/new-SHA recovery protocol
-for external implementation/repair workers is still required before declaring
-those workers fully migrated. The client does not itself recover expired RUNNING tasks; the service scanner
+A phase that changes HEAD outside the declared publication protocol below stops
+and cannot advance under its old binding. Implementation/repair workers can now
+use the declared-commit protocol; actual host adoption remains required. The client does not itself recover expired RUNNING tasks; the service scanner
 now handles tracked same-SHA expired claims as described below. Arbitrary
 machine-blocker recovery remains incomplete.
 
@@ -190,6 +189,41 @@ and per-PR projection locks. It never starts an agent.
   repeating the PUT. HEAD changes and human wait stop old-phase recovery.
 
 Unknown legacy RUNNING tasks without service start/projection evidence are not
-reclaimed. Global blocker routing, cross-SHA publication recovery and removal of
+reclaimed. Global blocker routing, unregistered/concurrent HEAD changes and removal of
 nonparticipating label writers remain separate acceptance gates. GitHub label
 PUT still has no CAS against those writers.
+
+
+## Declared commit publication and exact-SHA transfer
+
+Only implementation and escalation-repair leases may publish code. Independent
+review leases cannot use this protocol to approve their own edits.
+
+1. The owning host creates an immutable commit object whose single parent is
+   the claimed SHA, without moving any ref. Revalidate the PR identity first.
+2. POST `/claims/prepare-head` with ownership fields plus `target_sha`. The server
+   requires its applied RUNNING start record, validates that exact commit and all
+   changed paths, and saves the intent before branch publication. Workflow files
+   (including renamed-from workflow paths) are forbidden. Missing/truncated path
+   listings and merge/unrelated commits fail closed. No GitHub write is performed.
+3. The host rechecks branch/HEAD/base and publishes only that commit by a
+   non-forced update of the existing PR head ref.
+4. POST `/claims/confirm-head` with ownership fields. The server accepts only
+   the exact predeclared SHA, same branch/base/task and RUNNING phase. It atomically
+   moves ownership to the new operation key, refusing any other live owner.
+5. Publish handoff/check evidence for the returned `source_sha`. Old CI, Review
+   and QA evidence has no advancement eligibility. Implementation and repair
+   still advance only to fresh independent Review, never straight to QA.
+
+`ClaimClient.publish_head(target_sha, publish)` wires steps 2–4 around a
+cooperative host `publish()` callback and updates the binding passed to the
+worker. The callback must be cancellation-aware and perform the ref safety
+checks; the library never performs a GitHub write itself. Heartbeat can confirm
+a declared push if the confirmation response is lost. If the worker dies, the
+expired-lease reconciler verifies that same intent before recovering the new SHA.
+Unregistered concurrent commits, base retargets, task changes or Human Approval
+are not adopted. Confirmations are idempotent, including heartbeat/confirm races.
+
+The server records prepared/applied invalidation audit entries and retains the
+old-SHA history. This proves a controlled publication path in branch tests, not
+that existing account hosts have adopted it or that deployment is authorized.

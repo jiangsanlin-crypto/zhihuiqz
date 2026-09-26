@@ -1,7 +1,8 @@
 """Account-worker client. No GitHub mutations, subprocesses, models or dispatches.
 
 The supplied work coroutine must cooperate with cancellation and revalidate
-HEAD before each write. Only a same-SHA completed phase may auto-advance.
+HEAD before each write. Publication requires a declared direct-child commit;
+advancement always requires evidence for the resulting exact SHA.
 """
 import asyncio
 import time
@@ -32,6 +33,7 @@ class ClaimClient:
         self.ownership = None
         self.deadline = 0
         self.executed = False
+        self.binding = None
 
     async def close(self):
         await self.client.aclose()
@@ -59,7 +61,7 @@ class ClaimClient:
         """Wire a cooperative account worker to discovery and ownership.
 
         work(binding) must publish its trusted exact-SHA handoff before return.
-        This entry point cannot safely auto-complete a phase that changes HEAD.
+        Code-changing phases must use publish_head and fresh final-SHA evidence.
         """
         if phase not in {'phase:implementation', 'phase:code-review', 'phase:escalation-repair'}:
             raise ValueError('only account-owned phases may use this consumer')
@@ -72,7 +74,7 @@ class ClaimClient:
                 if exc.response.status_code == 409:
                     continue  # Another worker or a newer live state won.
                 raise
-            return await self.run(lambda: work(binding), advance=True)
+            return await self.run(lambda: work(self.binding), advance=True)
         return None
 
     async def acquire(self, binding, worker_id, request_id, delays=(0, 120, 300, 600, 1200)):
@@ -88,6 +90,7 @@ class ClaimClient:
                 self._renew(result)
                 self.ownership = dict(delivery_id=result['delivery_id'],
                     lease_id=result['lease_id'], worker_id=worker_id)
+                self.binding = dict(binding)
                 return result
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 429 and exc.response.status_code < 500:
@@ -109,6 +112,28 @@ class ClaimClient:
             # An uncertain heartbeat is not permission to keep writing.
             self.deadline = 0
             raise LeaseLost('lease operation failed; stop worker') from exc
+
+    async def publish_head(self, target_sha, publish):
+        """Declare an immutable direct child, then let the host publish its ref.
+
+        publish() must perform an exact-parent, non-forced PR-head update and
+        obey cancellation. It must not create or modify the declared commit.
+        """
+        if not self.ownership or time.monotonic() >= self.deadline:
+            raise LeaseLost('worker lease is unavailable or expired')
+        try:
+            await asyncio.wait_for(self._post('prepare-head',
+                dict(self.ownership, target_sha=target_sha)),
+                timeout=min(15, self.deadline - time.monotonic()))
+            await asyncio.wait_for(publish(), timeout=max(0, self.deadline - time.monotonic()))
+            result = await self._owned('confirm-head')
+            self._renew(result)
+            if self.binding is not None:
+                self.binding['source_sha'] = result['source_sha']
+            return result['source_sha']
+        except Exception as exc:
+            self.deadline = 0
+            raise LeaseLost('publication uncertain; stop worker and allow recovery') from exc
 
     async def run(self, work, *, advance=False):
         if self.executed:

@@ -76,3 +76,18 @@ def test_transient_scan_error_does_not_kill_discovery(tmp_path):
         await discovery_loop(stop, store, SimpleNamespace(list_open_prs=snapshots), 'owner/repo', .001)
     asyncio.run(run())
     assert store.claim_next()['payload']['number'] == 78
+
+
+def test_publication_commit_checks_paths_beyond_first_page():
+    github = GitHubClient('test-only')
+    calls = []
+    async def request(method, url, **kwargs):
+        page = kwargs['params']['page']
+        calls.append(page)
+        files = [{'filename': f'app/{i}.py'} for i in range(100)] if page == 1 else [{'filename': '.github/workflows/ci.yml'}]
+        return httpx.Response(200, json={'sha': 'b'*40, 'parents': [{'sha': 'a'*40}], 'files': files})
+    github._request = request
+    result = asyncio.run(github.get_publication_commit('owner/repo', 'b'*40))
+    assert len(result['files']) == 101
+    assert result['files'][-1]['filename'] == '.github/workflows/ci.yml'
+    assert calls == [1, 2]

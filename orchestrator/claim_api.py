@@ -13,6 +13,8 @@ from .evidence_gate import validate_qa_evidence
 from .state_projection import verified_next_workflow
 from .state_store import now
 from .queue_discovery import discover
+from .head_transition import publication_audit, refresh_declared_head
+from .task_router import TASK_MARKER
 
 
 class AcquireClaim(BaseModel):
@@ -32,6 +34,10 @@ class OwnedClaim(BaseModel):
     delivery_id: str
     lease_id: str
     worker_id: str
+
+
+class PrepareHead(OwnedClaim):
+    target_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 def create_claim_router(store, github, settings):
@@ -69,11 +75,12 @@ def create_claim_router(store, github, settings):
         if (pr.get("state") != "open" or pr.get("merged_at")
             or (head.get("repo") or {}).get("full_name") != binding["repository"]
             or head.get("ref") != binding["head_ref"]
+            or (binding.get("base_ref") and base.get("ref") != binding["base_ref"])
             or head.get("ref") in {"main", base.get("ref"), (head.get("repo") or {}).get("default_branch")}):
             raise HTTPException(409, "PR_BRANCH_IDENTITY_CHANGED")
         if head.get("sha") != binding["source_sha"]:
             raise HTTPException(409, "HEAD_CHANGED")
-        if f"<!-- agent-task-id:{binding['task_id']} -->" not in str(pr.get("body") or ""):
+        if set(TASK_MARKER.findall(str(pr.get("body") or ""))) != {binding["task_id"]}:
             raise HTTPException(409, "TASK_CHANGED")
         labels = {item["name"] if isinstance(item, dict) else item for item in pr.get("labels", [])}
         route = {x for x in labels if x.startswith(("agent:", "phase:", "status:", "approval:"))}
@@ -87,7 +94,59 @@ def create_claim_router(store, github, settings):
         return pr
 
     def response(row):
-        return {key: row[key] for key in ("delivery_id", "lease_id", "lease_expires_at")}
+        return {**{key: row[key] for key in ("delivery_id", "lease_id", "lease_expires_at")},
+                "source_sha": json.loads(row["payload_json"])["source_sha"]}
+
+    @router.post("/prepare-head")
+    async def prepare_head(value: PrepareHead):
+        row, binding = owned(value)
+        if binding["phase"] not in {"phase:implementation", "phase:escalation-repair"}:
+            raise HTTPException(409, "PHASE_CANNOT_PUBLISH_CODE")
+        pr = await current(binding, resumed=True)
+        if "status:running" not in labels(pr):
+            raise HTTPException(409, "WORKER_NOT_STARTED")
+        checkpoint = json.loads(row.get("checkpoint_json") or "{}")
+        started = checkpoint.get("start_projection") or {}
+        if started.get("status") != "applied" or started.get("lease_id") != value.lease_id:
+            raise HTTPException(409, "WORKER_NOT_STARTED")
+        if checkpoint.get("projection"):
+            raise HTTPException(409, "PHASE_ALREADY_ADVANCING")
+        previous = checkpoint.get("head_publication") or {}
+        if previous and previous["status"] == "prepared":
+            if previous["to_sha"] != value.target_sha:
+                raise HTTPException(409, "PUBLICATION_ALREADY_PREPARED")
+            return {"status": "prepared", **response(row)}
+        commit = await github.get_publication_commit(binding["repository"], value.target_sha)
+        if (commit.get("sha") != value.target_sha
+            or [x.get("sha") for x in commit.get("parents", [])] != [binding["source_sha"]]
+            or not commit.get("files")):
+            raise HTTPException(409, "PUBLICATION_NOT_DIRECT_CHILD")
+        paths = [x.get(key, "") for x in commit["files"] for key in ("filename", "previous_filename")]
+        if any(path.startswith(".github/workflows/") for path in paths):
+            raise HTTPException(409, "WORKFLOW_PUBLICATION_FORBIDDEN")
+        live = await current(binding, resumed=True)
+        if labels(live) != labels(pr) or live["base"]["ref"] != pr["base"]["ref"]:
+            raise HTTPException(409, "STATE_CHANGED")
+        owned(value)
+        intent = dict(from_sha=binding["source_sha"], to_sha=value.target_sha,
+                      base_ref=pr["base"]["ref"], status="prepared")
+        checkpoint["head_publication"] = intent
+        store.checkpoint(value.delivery_id, checkpoint, value.lease_id)
+        store.record_recovery_audit(value.delivery_id, publication_audit(binding, value.lease_id, intent, "prepared"))
+        return {"status": "prepared", **response(row)}
+
+    @router.post("/confirm-head")
+    async def confirm_head(value: OwnedClaim):
+        row, binding = owned(value)
+        try:
+            row, binding = await refresh_declared_head(store, github, row, binding)
+        except (HandoffGateError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        publication = json.loads(row.get("checkpoint_json") or "{}").get("head_publication") or {}
+        if publication.get("status") != "applied":
+            raise HTTPException(409, "HEAD_NOT_PUBLISHED")
+        await current(binding, resumed=True)
+        return {"status": "applied", **response(row)}
 
     @router.post("/acquire")
     async def acquire(value: AcquireClaim):
@@ -101,7 +160,8 @@ def create_claim_router(store, github, settings):
         if previous:
             owned(OwnedClaim(delivery_id=previous["delivery_id"],
                              lease_id=previous["lease_id"] or "", worker_id=value.worker_id))
-        await current(binding, resumed=previous is not None)
+        snapshot = await current(binding, resumed=previous is not None)
+        binding["base_ref"] = snapshot["base"]["ref"]
         try:
             row = store.claim_external(binding, value.worker_id, value.request_id)
         except RuntimeError as exc:
@@ -117,6 +177,10 @@ def create_claim_router(store, github, settings):
     @router.post("/heartbeat")
     async def heartbeat(value: OwnedClaim):
         row, binding = owned(value)
+        try:
+            row, binding = await refresh_declared_head(store, github, row, binding)
+        except (HandoffGateError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from exc
         projection = json.loads(row.get("checkpoint_json") or "{}").get("projection") or {}
         target = (set(projection["workflow_after"])
                   if projection.get("lease_id") == value.lease_id else None)
